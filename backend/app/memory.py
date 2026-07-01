@@ -13,8 +13,13 @@ from sqlalchemy.orm import Session
 from app.models import Conversation, Memory, Message, PersonaProfile, Preference
 
 
-def build_system_preamble(db: Session) -> str:
-    """Compose the persona + preferences block that precedes JARVIS's instructions."""
+def build_system_preamble(db: Session, query: str = "") -> str:
+    """Compose the persona + preferences block that precedes JARVIS's instructions.
+
+    When ``query`` is given, learned facts are retrieved by semantic similarity
+    (pgvector in prod, in-Python cosine in dev). Falls back to the most recent
+    facts when there is no query or no embeddings yet.
+    """
     persona = db.execute(select(PersonaProfile)).scalars().all()
     prefs = db.execute(select(Preference)).scalars().all()
 
@@ -36,17 +41,30 @@ def build_system_preamble(db: Session) -> str:
         parts.append("\n## Standing preferences (how they like things done — follow these):")
         parts.extend(f"- {p.key}: {p.value}" for p in prefs)
 
-    # A small set of relevant learned facts (Phase 1 will make this semantic).
-    recent_facts = (
-        db.execute(select(Memory).order_by(Memory.created_at.desc()).limit(10))
+    facts = _relevant_facts(db, query)
+    if facts:
+        parts.append("\n## Things you've learned about them:")
+        parts.extend(f"- {m.content}" for m in facts)
+
+    return "\n".join(parts)
+
+
+def _relevant_facts(db: Session, query: str, limit: int = 10):
+    """Semantic recall when possible; otherwise most-recent facts."""
+    if query:
+        try:
+            from app import vectorstore
+
+            hits = vectorstore.search(db, query)
+            if hits:
+                return [m for m, _sim in hits]
+        except Exception:
+            pass  # fall back to recency
+    return (
+        db.execute(select(Memory).order_by(Memory.created_at.desc()).limit(limit))
         .scalars()
         .all()
     )
-    if recent_facts:
-        parts.append("\n## Things you've learned about them:")
-        parts.extend(f"- {m.content}" for m in recent_facts)
-
-    return "\n".join(parts)
 
 
 def get_or_create_conversation(
@@ -104,7 +122,12 @@ def remember(
     if existing:
         return existing
     m = Memory(content=content, category=category, source=source, sensitive=sensitive)
-    db.add(m)
-    db.commit()
-    db.refresh(m)
+    try:
+        from app import vectorstore
+
+        vectorstore.add(db, m)  # commits + stores embedding for semantic recall
+    except Exception:
+        db.add(m)
+        db.commit()
+        db.refresh(m)
     return m

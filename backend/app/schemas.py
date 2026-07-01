@@ -62,3 +62,14 @@ class MessageOut(BaseModel):
     role: str
     content: str
     model_config = {"from_attributes": True}
+
+class JobOut(BaseModel):
+    id: int
+    kind: str
+    status: str
+    attempts: int
+    result: str
+    error: str
+    channel: str
+    thread_key: str
+    model_config = {"from_attributes": True}

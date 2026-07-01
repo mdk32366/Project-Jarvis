@@ -2,7 +2,14 @@
 
 The intent "router" is realized by giving Claude the full tool set and the
 persona/preference context, then letting it choose tools (and answer directly
-for plain Q&A). Phase 1 adds explicit multi-agent delegation and a job queue.
+for plain Q&A).
+
+Phase 1 additions:
+  * the tool registry is built per-request so runtime flags (e.g. ENABLE_TRADING)
+    take effect without a restart;
+  * after each turn a `reflect` job is enqueued so the memory reflector learns
+    durable facts out-of-band (see app/reflector.py, app/jobs.py).
+Explicit multi-agent delegation remains future work.
 """
 
 import json
@@ -12,14 +19,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.handlers.base import Context, build_registry
+from app.handlers.base import Context, Registry, build_registry
+from app.jobs import enqueue
 from app.llm import create_message
 from app.memory import add_message, build_system_preamble, get_or_create_conversation, load_history
 from app.models import ActionAudit, PendingConfirmation
 
 log = logging.getLogger(__name__)
 
-_REGISTRY = build_registry()
 _MAX_ITERS = 6
 
 _AFFIRMATIVE = {"yes", "y", "yep", "yeah", "confirm", "confirmed", "do it", "go ahead", "proceed", "ok", "okay"}
@@ -55,17 +62,17 @@ def _audit(db: Session, ctx: Context, tool: str, args: dict, result: str, status
     db.commit()
 
 
-def _needs_confirmation(name: str, args: dict) -> bool:
+def _needs_confirmation(registry: Registry, name: str, args: dict) -> bool:
     """Gated tools require confirmation when the amount is unknown or >= threshold."""
-    if not _REGISTRY.is_gated(name):
+    if not registry.is_gated(name):
         return False
-    notional = _REGISTRY.notional(name, args)
+    notional = registry.notional(name, args)
     if notional is None:
         return True
     return notional >= settings.confirm_threshold_usd
 
 
-def _resolve_pending(db: Session, ctx: Context, user_text: str) -> str | None:
+def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: str) -> str | None:
     """If a confirmation is pending for this thread, act on yes/no. Returns reply or None."""
     pending = (
         db.execute(
@@ -83,7 +90,7 @@ def _resolve_pending(db: Session, ctx: Context, user_text: str) -> str | None:
     norm = _norm(user_text)
     if norm in _AFFIRMATIVE or any(norm.startswith(a + " ") for a in _AFFIRMATIVE):
         args = json.loads(pending.arguments)
-        result = _REGISTRY.execute(pending.tool, args, ctx)
+        result = registry.execute(pending.tool, args, ctx)
         pending.status = "done"
         db.commit()
         _audit(db, ctx, pending.tool, args, result, "confirmed")
@@ -97,23 +104,35 @@ def _resolve_pending(db: Session, ctx: Context, user_text: str) -> str | None:
     return None  # ambiguous — fall through to normal handling
 
 
+def _enqueue_reflect(db: Session, ctx: Context, convo_id: int) -> None:
+    if not settings.enable_reflector:
+        return
+    try:
+        enqueue(db, "reflect", {"conversation_id": convo_id},
+                channel=ctx.channel, thread_key=ctx.thread_key, actor=ctx.actor)
+    except Exception as e:  # never let bookkeeping break a reply
+        log.warning("could not enqueue reflect job: %s", e)
+
+
 def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, subject: str = "") -> str:
     """Process one inbound message and return JARVIS's reply text."""
+    registry = build_registry()  # per-request: honors runtime flags like ENABLE_TRADING
     convo = get_or_create_conversation(db, channel, thread_key, subject)
     ctx = Context(db=db, channel=channel, actor=actor, thread_key=thread_key)
 
     add_message(db, convo.id, "user", user_text)
 
     # 1) Resolve an outstanding confirmation first.
-    resolved = _resolve_pending(db, ctx, user_text)
+    resolved = _resolve_pending(db, registry, ctx, user_text)
     if resolved is not None:
         add_message(db, convo.id, "assistant", resolved)
+        _enqueue_reflect(db, ctx, convo.id)
         return resolved
 
     # 2) Normal handling: persona + preferences + history + tool loop.
-    system = build_system_preamble(db) + "\n" + _INSTRUCTIONS
+    system = build_system_preamble(db, query=user_text) + "\n" + _INSTRUCTIONS
     messages = load_history(db, convo.id)
-    tools = _REGISTRY.anthropic_tools()
+    tools = registry.anthropic_tools()
     final_text = ""
 
     for _ in range(_MAX_ITERS):
@@ -129,8 +148,8 @@ def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, 
         messages.append({"role": "assistant", "content": resp.content})
         results = []
         for tu in tool_uses:
-            if _needs_confirmation(tu.name, tu.input):
-                summary = _REGISTRY.summarize(tu.name, tu.input)
+            if _needs_confirmation(registry, tu.name, tu.input):
+                summary = registry.summarize(tu.name, tu.input)
                 db.add(
                     PendingConfirmation(
                         thread_key=thread_key,
@@ -146,7 +165,7 @@ def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, 
                     f"confirm before this is executed. Do not call this tool again."
                 )
             else:
-                content = _REGISTRY.execute(tu.name, tu.input, ctx)
+                content = registry.execute(tu.name, tu.input, ctx)
                 _audit(db, ctx, tu.name, tu.input, content, "ok")
 
             results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(content)})
@@ -155,4 +174,5 @@ def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, 
 
     final_text = final_text or "Done."
     add_message(db, convo.id, "assistant", final_text)
+    _enqueue_reflect(db, ctx, convo.id)
     return final_text

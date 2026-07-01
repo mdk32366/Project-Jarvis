@@ -1,14 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import text, select
 from sqlalchemy.orm import Session
 from app.auth import authenticate_user, create_access_token, get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models import Conversation, Memory, Message, PersonaProfile, Preference, User
+from app.models import Conversation, Job, Memory, Message, PersonaProfile, Preference, User
 from app.schemas import (ChatRequest, ChatResponse, ConversationOut, HealthResponse,
-    MemoryIn, MemoryOut, MessageOut, PersonaOut, PreferenceOut, Token, UserOut)
+    JobOut, MemoryIn, MemoryOut, MessageOut, PersonaOut, PreferenceOut, Token, UserOut)
 
+log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 @router.get("/health", response_model=HealthResponse, tags=["system"])
@@ -36,6 +39,30 @@ def chat(req: ChatRequest, current_user: User = Depends(get_current_user), db: S
     reply = orchestrate(db=db, channel="web", thread_key=f"web:{current_user.username}:{req.thread_key}", user_text=req.message, actor=current_user.username)
     return ChatResponse(reply=reply)
 
+# ── SMS channel (Twilio webhook) ─────────────────────────────────────────────
+# Unauthenticated (Twilio calls it) but protected by signature validation + a
+# phone-number whitelist. Replies are returned as TwiML.
+@router.post("/sms/inbound", tags=["jarvis"], include_in_schema=False)
+async def sms_inbound(request: Request, db: Session = Depends(get_db)):
+    from app.channels.sms_pipeline import handle_inbound, to_twiml
+    from app.providers.sms import get_sms_provider
+
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+    signature = request.headers.get("X-Twilio-Signature", "")
+    url = settings.sms_public_url or str(request.url)
+
+    provider = get_sms_provider()
+    if not provider.validate_signature(url, params, signature):
+        log.warning("Rejected SMS webhook: bad signature")
+        raise HTTPException(status_code=403, detail="Invalid signature")
+
+    from_number = params.get("From", "")
+    body = params.get("Body", "")
+    reply = handle_inbound(db, from_number, body)
+    # Non-whitelisted (reply is None) => empty TwiML, no message sent back.
+    return Response(content=to_twiml(reply or ""), media_type="application/xml")
+
 @router.get("/memory/persona", response_model=list[PersonaOut], tags=["memory"])
 def list_persona(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.execute(select(PersonaProfile)).scalars().all()
@@ -50,8 +77,9 @@ def list_memories(_: User = Depends(get_current_user), db: Session = Depends(get
 
 @router.post("/memory", response_model=MemoryOut, tags=["memory"])
 def add_memory(item: MemoryIn, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    m = Memory(content=item.content, category=item.category, sensitive=item.sensitive, source="manual")
-    db.add(m); db.commit(); db.refresh(m); return m
+    from app.memory import remember
+    m = remember(db, content=item.content, category=item.category, source="manual", sensitive=item.sensitive)
+    return m
 
 @router.delete("/memory/{memory_id}", tags=["memory"])
 def delete_memory(memory_id: int, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
@@ -67,3 +95,7 @@ def list_conversations(_: User = Depends(get_current_user), db: Session = Depend
 @router.get("/conversations/{conversation_id}/messages", response_model=list[MessageOut], tags=["jarvis"])
 def conversation_messages(conversation_id: int, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.execute(select(Message).where(Message.conversation_id == conversation_id).order_by(Message.created_at)).scalars().all()
+
+@router.get("/jobs", response_model=list[JobOut], tags=["jarvis"])
+def list_jobs(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return db.execute(select(Job).order_by(Job.created_at.desc()).limit(50)).scalars().all()

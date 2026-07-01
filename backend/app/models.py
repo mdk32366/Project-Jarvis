@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -50,6 +50,11 @@ class Memory(Base):
     source: Mapped[str] = mapped_column(String(64), default="conversation")
     confidence: Mapped[float] = mapped_column(Float, default=1.0)
     sensitive: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Portable embedding storage: JSON array of floats. In production a parallel
+    # pgvector table (see vectorstore.PgVectorStore) mirrors this for fast ANN;
+    # this column keeps the app DB-portable (SQLite dev/tests) and is the source
+    # of truth for the in-Python cosine fallback.
+    embedding: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 class ContactWhitelist(Base):
@@ -81,3 +86,20 @@ class PendingConfirmation(Base):
     summary: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(16), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+class Job(Base):
+    """Durable background job. Survives restarts; claimed and run by the worker."""
+    __tablename__ = "jobs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(64), index=True)
+    payload: Mapped[str] = mapped_column(Text, default="{}")        # JSON args
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)  # queued|running|done|error
+    result: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, default=3)
+    channel: Mapped[str] = mapped_column(String(32), default="")
+    thread_key: Mapped[str] = mapped_column(String(255), default="")
+    actor: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

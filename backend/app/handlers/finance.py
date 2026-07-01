@@ -1,8 +1,13 @@
 """Finance handler — Alpaca stock quotes, portfolio, and (gated) orders.
 
-Falls back to a clear "demo mode" message when no Alpaca keys are configured,
-so the loop stays functional in development. Orders are gated: any order whose
-estimated notional meets the confirmation threshold is routed through the gate.
+Read-only tools (price, portfolio) are always available and fall back to a clear
+"demo mode" message when no Alpaca keys are configured.
+
+Trading (`place_stock_order`) is a REAL money action. It is hard-disabled by
+default via `settings.enable_trading`. While disabled we still register the tool
+so Claude can explain *why* it can't trade, but the handler refuses and nothing
+is placed. When trading is re-enabled (after the dashboard has proper security),
+the order flows through the orchestrator's human-in-the-loop confirmation gate.
 """
 
 import json
@@ -41,6 +46,18 @@ def _get_portfolio(args: dict, ctx: Context) -> str:
     for p in positions:
         lines.append(f"  {p.symbol}: {p.qty} @ ${float(p.avg_entry_price):.2f} (mv ${float(p.market_value):.2f})")
     return "\n".join(lines) if positions else lines[0] + "\n  (no open positions)"
+
+
+# Message returned to the model (and surfaced to the user) while trading is off.
+TRADING_DISABLED_MSG = (
+    "Trading is currently DISABLED on this JARVIS instance (ENABLE_TRADING=false). "
+    "No order was placed. Tell the user trading is turned off pending stronger "
+    "dashboard security, and do not attempt to place orders another way."
+)
+
+
+def _place_stock_order_disabled(args: dict, ctx: Context) -> str:
+    return TRADING_DISABLED_MSG
 
 
 def _place_stock_order(args: dict, ctx: Context) -> str:
@@ -90,25 +107,50 @@ def register(reg: Registry) -> None:
         _get_portfolio,
     )
 
-    reg.register(
-        {
-            "name": "place_stock_order",
-            "description": (
-                "Place a market buy/sell order. This is a real financial action; "
-                "the system will require the user's confirmation before it executes."
-            ),
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "symbol": {"type": "string"},
-                    "qty": {"type": "number", "description": "Number of shares"},
-                    "side": {"type": "string", "enum": ["buy", "sell"]},
+    if settings.enable_trading:
+        order_desc = (
+            "Place a market buy/sell order. This is a real financial action; "
+            "the system will require the user's confirmation before it executes."
+        )
+        reg.register(
+            {
+                "name": "place_stock_order",
+                "description": order_desc,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string"},
+                        "qty": {"type": "number", "description": "Number of shares"},
+                        "side": {"type": "string", "enum": ["buy", "sell"]},
+                    },
+                    "required": ["symbol", "qty", "side"],
                 },
-                "required": ["symbol", "qty", "side"],
             },
-        },
-        _place_stock_order,
-        gated=True,
-        notional=_order_notional,
-        summarize=lambda i: f"{i.get('side','?')} {i.get('qty','?')} share(s) of {str(i.get('symbol','?')).upper()} at market",
-    )
+            _place_stock_order,
+            gated=True,
+            notional=_order_notional,
+            summarize=lambda i: f"{i.get('side','?')} {i.get('qty','?')} share(s) of {str(i.get('symbol','?')).upper()} at market",
+        )
+    else:
+        # Disabled stub: registered so the model has an honest capability, but it
+        # never trades. Not gated — it simply refuses.
+        reg.register(
+            {
+                "name": "place_stock_order",
+                "description": (
+                    "Place a stock order. NOTE: trading is currently DISABLED on this "
+                    "instance; calling this will not place any order. Use it only to "
+                    "inform the user that trading is turned off."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {"type": "string"},
+                        "qty": {"type": "number"},
+                        "side": {"type": "string", "enum": ["buy", "sell"]},
+                    },
+                    "required": ["symbol", "qty", "side"],
+                },
+            },
+            _place_stock_order_disabled,
+        )

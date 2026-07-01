@@ -28,7 +28,7 @@ backend/app/
   notifier.py        outbound Gmail SMTP
   routes.py          /api/chat, /api/memory*, /api/conversations, /api/health
 ui/src/pages/        ChatPage, MemoryPage, DashboardPage (status)
-fly.toml             two processes: api (HTTP) + ingest (email watcher)
+fly.toml             three processes: api (HTTP) + ingest (email) + worker (jobs)
 ```
 
 The intent "router" is the orchestrator handing Claude the full tool set plus
@@ -73,3 +73,7 @@ identical orchestrator.
 ## Deploy to Fly.io
 
 ```bash
+
+## Phase 1
+
+SMS texting, a durable job queue, and an auto-memory reflector have landed; real-money trading is disabled by default (`ENABLE_TRADING=false`). See **PHASE1.md** for details and **backend/tests/** for the runnable pytest suite (`cd backend && pytest`).

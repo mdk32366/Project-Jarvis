@@ -19,6 +19,7 @@ primary_region = "sjc"
 [processes]
   api = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
   ingest = "python -m app.channels.email_pipeline --watch"
+  worker = "python -m app.workers.job_worker --watch"
 
 [http_service]
   internal_port = 8000
@@ -39,4 +40,4 @@ primary_region = "sjc"
   memory = "512mb"
   cpu_kind = "shared"
   cpus = 1
-  processes = ["api", "ingest"]
+  processes = ["api", "ingest", "worker"]

@@ -52,6 +52,16 @@ async def lifespan(app: FastAPI):
     # In dev this bootstraps tables; in prod prefer `alembic upgrade head`.
     Base.metadata.create_all(bind=engine)
     _seed_first_user()
+    try:
+        from app.database import SessionLocal as _SL
+        from app import vectorstore
+        _db = _SL()
+        try:
+            vectorstore.ensure_ready(_db)  # CREATE EXTENSION vector + embedding table (Postgres)
+        finally:
+            _db.close()
+    except Exception as e:  # pragma: no cover
+        logger.warning("vectorstore init skipped: %s", e)
     yield
     logger.info("Shutting down")
 
