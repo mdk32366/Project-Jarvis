@@ -17,3 +17,7 @@ alpaca-trade-api==3.2.0
 
 # ── SMS channel ─────────────────────────────────────────────────────────────
 twilio==9.4.1
+
+# ── Google Calendar (read-only) ──────────────────────────────────────────────
+google-api-python-client==2.149.0
+google-auth==2.35.0

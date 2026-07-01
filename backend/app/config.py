@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     # How many semantically-relevant facts to inject into the system preamble.
     memory_recall_k: int = 8
 
+    # ── Google Calendar (read-only, service account) ─────────────────────────
+    google_service_account_json: str = ""   # the SA key JSON (paste as a Fly secret)
+    google_calendar_id: str = "primary"     # or your calendar's ID/email
+    calendar_timezone: str = "America/Los_Angeles"
+
     # ── Job queue / worker (Phase 1) ─────────────────────────────────────────
     worker_poll_seconds: int = 5
     job_max_attempts: int = 3
