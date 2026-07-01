@@ -1,5 +1,4 @@
-# Set your app name + region before first deploy: fly launch --no-deploy
-app = "jarvis"
+app = "jarvis-mdk"
 primary_region = "sjc"
 
 [build]
@@ -14,13 +13,30 @@ primary_region = "sjc"
   SMTP_PORT = "587"
   INGEST_POLL_SECONDS = "120"
 
-# Run migrations on each deploy (no-op until the first revision exists).
 [deploy]
   release_command = "alembic upgrade head"
 
-# Two process groups from one image: the HTTP API/SPA, and the email watcher.
 [processes]
   api = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
   ingest = "python -m app.channels.email_pipeline --watch"
 
-# HTTP on
+[http_service]
+  internal_port = 8000
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["api"]
+
+  [[http_service.checks]]
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "40s"
+    method = "GET"
+    path = "/api/health"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+  processes = ["api", "ingest"]
