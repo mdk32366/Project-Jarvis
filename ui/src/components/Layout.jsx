@@ -21,4 +21,9 @@ export default function Layout() {
           )}
         </nav>
       </header>
-   
+      <main className="content">
+        <Outlet />
+      </main>
+    </div>
+  );
+}

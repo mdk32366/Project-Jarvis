@@ -22,4 +22,10 @@ export default function App() {
         }
       >
         <Route index element={<ChatPage />} />
-        <Route path="memory" element={<Memory
+        <Route path="memory" element={<MemoryPage />} />
+        <Route path="status" element={<DashboardPage />} />
+      </Route>
+      <Route path="*" element={<NotFoundPage />} />
+    </Routes>
+  );
+}
