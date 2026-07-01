@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     seed_password: str = "changeme"
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     anthropic_api_key: str = ""
-    jarvis_model: str = "claude-sonnet-4-20250514"
+    jarvis_model: str = "claude-sonnet-5"          # was claude-sonnet-4-20250514   
     jarvis_router_model: str = "claude-haiku-4-5-20251001"
     max_tokens: int = 2048
     imap_host: str = "imap.gmail.com"
