@@ -61,18 +61,24 @@ def upgrade() -> None:
     op.execute("CREATE INDEX IF NOT EXISTS ix_jobs_kind ON jobs (kind);")
     op.execute("CREATE INDEX IF NOT EXISTS ix_jobs_status ON jobs (status);")
 
-    # 3) pgvector store (also ensured at app boot; done here so it's ready first).
-    op.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+    # 3) pgvector store (optional). Wrapped so that if the pgvector extension is
+    #    not available on this Postgres (e.g. stock Fly Postgres), the release does
+    #    NOT fail -- the app degrades to the portable JSON + in-Python cosine store.
     op.execute(
         """
         DO $$
         BEGIN
-          IF to_regclass('public.memories') IS NOT NULL THEN
-            CREATE TABLE IF NOT EXISTS memory_embeddings (
-                memory_id INTEGER PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
-                embedding vector(1024)
-            );
-          END IF;
+          BEGIN
+            CREATE EXTENSION IF NOT EXISTS vector;
+            IF to_regclass('public.memories') IS NOT NULL THEN
+              CREATE TABLE IF NOT EXISTS memory_embeddings (
+                  memory_id INTEGER PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+                  embedding vector(1024)
+              );
+            END IF;
+          EXCEPTION WHEN OTHERS THEN
+            RAISE NOTICE 'pgvector unavailable, skipping semantic store: %', SQLERRM;
+          END;
         END $$;
         """
     )

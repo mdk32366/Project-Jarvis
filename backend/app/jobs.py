@@ -119,6 +119,16 @@ def process_available(db: Session, limit: int = 100) -> int:
 
 
 # ── Built-in handlers ────────────────────────────────────────────────────────
+@job_handler("email_copy")
+def _handle_email_copy(db: Session, payload: dict) -> str:
+    """Send an email copy of a reply (used to mirror SMS replies to the inbox)."""
+    from app.notifier import send_email
+
+    to = payload["to"]
+    send_email(to, payload.get("subject", "JARVIS"), payload.get("body", ""))
+    return f"emailed {to}"
+
+
 @job_handler("reflect")
 def _handle_reflect(db: Session, payload: dict) -> str:
     from app.reflector import reflect_conversation

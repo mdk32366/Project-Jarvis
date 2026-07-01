@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     sms_public_url: str = ""
     # Whitelisted phone numbers allowed to command JARVIS (comma-separated, E.164).
     allowed_numbers: str = ""
+    # Email a copy of every SMS reply to the owner (bidirectional: text in ->
+    # text back + email copy). Owner defaults to the first ALLOWED_SENDERS entry.
+    sms_email_copy: bool = True
+    owner_email: str = ""
 
     # ── Action safety ────────────────────────────────────────────────────────
     confirm_threshold_usd: float = 50.0
@@ -66,9 +70,10 @@ class Settings(BaseSettings):
     voyage_api_key: str = ""
     voyage_model: str = "voyage-3"
     embedding_dim: int = 1024
-    # Use a pgvector-backed store when on Postgres; otherwise a portable JSON
-    # store with in-Python cosine (used by tests / SQLite dev).
-    use_pgvector: bool = True
+    # Use a pgvector-backed store when on Postgres AND the extension is available.
+    # Default OFF: stock Fly Postgres has no pgvector; the portable JSON + in-Python
+    # cosine store works fine at personal scale. Flip on only if you install pgvector.
+    use_pgvector: bool = False
     # Cosine similarity at/above which two facts are considered duplicates.
     memory_dedup_threshold: float = 0.92
     # How many semantically-relevant facts to inject into the system preamble.
@@ -98,6 +103,10 @@ class Settings(BaseSettings):
     @property
     def allowed_number_list(self) -> list[str]:
         return [normalize_number(s) for s in self.allowed_numbers.split(",") if s.strip()]
+
+    @property
+    def owner_email_resolved(self) -> str:
+        return self.owner_email or (self.allowed_sender_list[0] if self.allowed_sender_list else "")
 
     @property
     def is_production(self) -> bool:

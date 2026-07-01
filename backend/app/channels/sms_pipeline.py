@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import normalize_number, settings
+from app.jobs import enqueue
 from app.models import ContactWhitelist
 from app.orchestrator import run as orchestrate
 
@@ -41,9 +42,17 @@ def handle_inbound(db: Session, from_number: str, body: str) -> str | None:
     if not is_allowed(db, from_number):
         log.info("Ignoring SMS from non-whitelisted number: %s", from_number)
         return None
-    return orchestrate(
+    reply = orchestrate(
         db=db, channel=CHANNEL, thread_key=from_number, user_text=(body or "").strip(), actor=from_number
     )
+    # Bidirectional: reply over SMS (TwiML, by the caller) AND email a copy.
+    if reply and settings.sms_email_copy and settings.owner_email_resolved:
+        enqueue(
+            db, "email_copy",
+            {"to": settings.owner_email_resolved, "subject": "JARVIS (reply to your text)", "body": reply},
+            channel=CHANNEL, thread_key=from_number, actor=from_number,
+        )
+    return reply
 
 
 def to_twiml(message: str) -> str:
