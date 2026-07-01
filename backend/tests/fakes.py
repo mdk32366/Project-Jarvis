@@ -36,8 +36,10 @@ def install_llm(monkeypatch, fn):
     """Patch create_message everywhere it was imported by name."""
     import app.orchestrator as orch
     import app.reflector as refl
+    import app.agents as agents
     monkeypatch.setattr(orch, "create_message", fn)
     monkeypatch.setattr(refl, "create_message", fn)
+    monkeypatch.setattr(agents, "create_message", fn)
     return fn
 
 

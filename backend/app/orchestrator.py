@@ -116,7 +116,7 @@ def _enqueue_reflect(db: Session, ctx: Context, convo_id: int) -> None:
 
 def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, subject: str = "") -> str:
     """Process one inbound message and return JARVIS's reply text."""
-    registry = build_registry()  # per-request: honors runtime flags like ENABLE_TRADING
+    registry = build_registry(include_delegate=True)  # top-level: honors flags + can delegate
     convo = get_or_create_conversation(db, channel, thread_key, subject)
     ctx = Context(db=db, channel=channel, actor=actor, thread_key=thread_key)
 

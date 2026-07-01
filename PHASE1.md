@@ -64,3 +64,11 @@ pip install -r requirements-dev.txt
 pytest                 # 41 tests, no external services required
 ```
 Tests use SQLite + a stubbed LLM and SMS provider, so they run fully offline.
+
+## Multi-agent delegation
+JARVIS now has a `delegate` tool (top-level only) that hands a scoped subtask to a
+named specialist sub-agent and returns the result to synthesize. Agents live in
+`app/agents.py` (`researcher`, `finance` read-only, `archivist`); each has its own
+role prompt and a restricted toolset. Sub-agents get a registry WITHOUT `delegate`,
+so no recursion. Delegations are recorded in the audit trail (tool=`delegate`).
+Add a specialist by adding one entry to `build_agents()`.

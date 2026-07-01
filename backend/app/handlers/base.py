@@ -58,6 +58,9 @@ class Registry:
     def anthropic_tools(self) -> list[dict]:
         return [t.schema for t in self._tools.values()]
 
+    def anthropic_tools_subset(self, names: list[str]) -> list[dict]:
+        return [self._tools[n].schema for n in names if n in self._tools]
+
     def has(self, name: str) -> bool:
         return name in self._tools
 
@@ -80,11 +83,19 @@ class Registry:
             return f"Error in {name}: {e}"
 
 
-def build_registry() -> Registry:
-    """Assemble the registry from all handler modules."""
+def build_registry(include_delegate: bool = False) -> Registry:
+    """Assemble the registry from all handler modules.
+
+    ``include_delegate`` adds the multi-agent ``delegate`` tool. It is enabled
+    only for the top-level orchestrator; sub-agents get a registry WITHOUT it so
+    they cannot delegate recursively.
+    """
     from app.handlers import finance, general
 
     reg = Registry()
     finance.register(reg)
     general.register(reg)
+    if include_delegate:
+        from app import agents
+        agents.register_delegate(reg)
     return reg
