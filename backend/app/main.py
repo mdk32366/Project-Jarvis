@@ -46,12 +46,25 @@ def _seed_first_user() -> None:
         db.close()
 
 
+def _seed_agents() -> None:
+    """Seed the default specialist roster if the agent_configs table is empty."""
+    from app.agents import seed_agents
+    db = SessionLocal()
+    try:
+        seed_agents(db)
+    except Exception as e:  # pragma: no cover
+        logger.warning("agent seeding skipped: %s", e)
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting %s (%s)", settings.app_name, settings.environment)
     # In dev this bootstraps tables; in prod prefer `alembic upgrade head`.
     Base.metadata.create_all(bind=engine)
     _seed_first_user()
+    _seed_agents()
     try:
         from app.database import SessionLocal as _SL
         from app import vectorstore

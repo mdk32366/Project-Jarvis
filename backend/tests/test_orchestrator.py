@@ -9,10 +9,18 @@ def test_plain_qa_no_tools(db, monkeypatch):
     assert "Atlas" in reply
 
 
-def test_remember_fact_tool_persists(db, monkeypatch):
-    install_llm(monkeypatch, use_tool_then(
-        "Got it — I'll remember that.", "remember_fact",
-        {"content": "Matt's garage code is on file", "category": "context"}))
+def test_remember_via_archivist_delegation(db, monkeypatch):
+    from fakes import ScriptedLLM, response, text_block, tool_block
+    llm = ScriptedLLM(
+        response([tool_block("delegate", {"agent": "archivist", "task": "remember the garage code note"})],
+                 stop_reason="tool_use"),                                   # main -> delegate
+        response([tool_block("remember_fact",
+                             {"content": "Matt's garage code is on file", "category": "context"})],
+                 stop_reason="tool_use"),                                   # archivist -> remember_fact
+        response([text_block("Saved.")], stop_reason="end_turn"),          # archivist synth
+        response([text_block("Done — noted.")], stop_reason="end_turn"),   # main synth
+    )
+    install_llm(monkeypatch, llm)
     run(db, channel="web", thread_key="web:admin:1", user_text="remember my garage code note", actor="admin")
     assert db.query(Memory).filter(Memory.content == "Matt's garage code is on file").count() == 1
 

@@ -1,18 +1,19 @@
-"""Multi-agent delegation (Phase 1).
+"""Multi-agent delegation (Phase 1) — now data-driven.
 
-The top-level orchestrator can hand a scoped task to a named sub-agent via the
-`delegate` tool. Each sub-agent has its own role/system prompt and a restricted
-set of tools, and runs its own small tool loop. Sub-agents cannot delegate
-further (they get a registry without the delegate tool), preventing recursion.
+The specialist roster lives in the DB (AgentConfig), editable from the admin tab
+and read live by the `delegate` tool. DEFAULT_AGENTS is the code-defined seed +
+fallback used when the DB is empty/unavailable (e.g. tests without seeding).
 
-This is the seed of the "manage several agents / orchestrate tasks" goal: add a
-new specialist by adding one entry to build_agents().
+Sub-agents cannot delegate (their registry has no delegate tool) — no recursion.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
+
+from sqlalchemy import select
 
 from app.handlers.base import Context, Registry, build_registry
 from app.llm import create_message
@@ -27,46 +28,78 @@ class Agent:
     name: str
     description: str
     system: str
-    tools: list[str] = field(default_factory=list)  # tool names from the handler registry
+    tools: list[str] = field(default_factory=list)
 
 
-def build_agents() -> dict[str, Agent]:
-    """The roster of specialists JARVIS can delegate to."""
-    return {
-        "researcher": Agent(
-            name="researcher",
-            description="General research, explanation, analysis, and drafting. No external tools.",
-            system=(
-                "You are JARVIS's research and writing specialist. Given a task, produce a "
-                "clear, correct, concise result. You have no external tools; reason from "
-                "knowledge and return the finished work only."
-            ),
-            tools=[],
-        ),
-        "finance": Agent(
-            name="finance",
-            description="Stock prices and portfolio status (read-only market data).",
-            system=(
-                "You are JARVIS's finance analyst. Use the available finance tools to fetch "
-                "prices and portfolio data, then answer succinctly. You cannot place trades."
-            ),
-            tools=["get_stock_price", "get_portfolio"],
-        ),
-        "archivist": Agent(
-            name="archivist",
-            description="Saves durable facts about the user to long-term memory.",
-            system=(
-                "You are JARVIS's archivist. When given information worth keeping, use the "
-                "remember_fact tool to persist it, then confirm what you saved."
-            ),
-            tools=["remember_fact"],
-        ),
-    }
+# Code-defined seed + fallback roster.
+DEFAULT_AGENTS: dict[str, Agent] = {
+    "researcher": Agent(
+        "researcher",
+        "General research, explanation, analysis, and drafting. No external tools.",
+        "You are JARVIS's research and writing specialist. Given a task, produce a clear, "
+        "correct, concise result. You have no external tools; return the finished work only.",
+        [],
+    ),
+    "finance": Agent(
+        "finance",
+        "Stock prices and portfolio status (read-only market data).",
+        "You are JARVIS's finance analyst. Use the available finance tools to fetch prices and "
+        "portfolio data, then answer succinctly. You cannot place trades.",
+        ["get_stock_price", "get_portfolio"],
+    ),
+    "archivist": Agent(
+        "archivist",
+        "Saves durable facts about the user to long-term memory.",
+        "You are JARVIS's archivist. When given information worth keeping, use the remember_fact "
+        "tool to persist it, then confirm what you saved.",
+        ["remember_fact"],
+    ),
+    "scheduling": Agent(
+        "scheduling",
+        "Checks the user's calendar and helps with scheduling (calendar integration pending).",
+        "You are JARVIS's scheduling assistant. Use the calendar tool to look up events and help "
+        "the user plan. If the calendar is not yet connected, say so plainly.",
+        ["calendar_lookup"],
+    ),
+}
+
+
+def build_agents(db=None) -> dict[str, Agent]:
+    """Live roster from the DB; falls back to DEFAULT_AGENTS if none/unavailable."""
+    if db is not None:
+        try:
+            from app.models import AgentConfig
+
+            rows = db.execute(select(AgentConfig).where(AgentConfig.enabled.is_(True))).scalars().all()
+            if rows:
+                return {
+                    r.name: Agent(r.name, r.description, r.system_prompt, json.loads(r.tools or "[]"))
+                    for r in rows
+                }
+        except Exception as e:  # pragma: no cover - defensive
+            log.warning("build_agents DB read failed, using defaults: %s", e)
+    return dict(DEFAULT_AGENTS)
+
+
+def seed_agents(db) -> int:
+    """Insert DEFAULT_AGENTS into an empty agent_configs table. Returns count seeded."""
+    from app.models import AgentConfig
+
+    if db.execute(select(AgentConfig)).scalars().first() is not None:
+        return 0
+    n = 0
+    for a in DEFAULT_AGENTS.values():
+        db.add(AgentConfig(name=a.name, description=a.description,
+                           system_prompt=a.system, tools=json.dumps(a.tools), enabled=True))
+        n += 1
+    db.commit()
+    log.info("seeded %d default agents", n)
+    return n
 
 
 def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_ITERS) -> str:
     """Run a single sub-agent's tool loop for one task and return its final text."""
-    reg = build_registry()  # no delegate tool -> no recursion
+    reg = build_registry()  # no delegate -> no recursion
     tools = reg.anthropic_tools_subset(agent.tools)
     messages = [{"role": "user", "content": task}]
     final_text = ""
@@ -82,7 +115,6 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
         messages.append({"role": "assistant", "content": resp.content})
         results = []
         for tu in tool_uses:
-            # Sub-agents may only use their declared tools.
             if tu.name not in agent.tools:
                 content = f"Tool '{tu.name}' is not available to the {agent.name} agent."
             else:
@@ -96,7 +128,7 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
 def _delegate(args: dict, ctx: Context) -> str:
     agent_name = str(args.get("agent", "")).strip()
     task = str(args.get("task", "")).strip()
-    agents = build_agents()
+    agents = build_agents(ctx.db)
     if agent_name not in agents:
         return f"Unknown agent '{agent_name}'. Available: {', '.join(agents)}."
     if not task:
@@ -106,15 +138,15 @@ def _delegate(args: dict, ctx: Context) -> str:
     return f"[{agent_name}] {result}"
 
 
-def register_delegate(reg: Registry) -> None:
-    agents = build_agents()
+def register_delegate(reg: Registry, db=None) -> None:
+    agents = build_agents(db)
     roster = "; ".join(f"{a.name}: {a.description}" for a in agents.values())
     reg.register(
         {
             "name": "delegate",
             "description": (
-                "Delegate a self-contained subtask to a specialist sub-agent and get its "
-                "result. Use for focused work you can hand off, then synthesize the reply. "
+                "Delegate a self-contained subtask to a specialist sub-agent and get its result. "
+                "Use for focused work you can hand off, then synthesize the reply. "
                 f"Available agents — {roster}."
             ),
             "input_schema": {

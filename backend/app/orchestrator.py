@@ -34,11 +34,16 @@ _NEGATIVE = {"no", "n", "nope", "cancel", "stop", "don't", "dont", "abort"}
 
 _INSTRUCTIONS = """
 ## Operating instructions
-- Answer plainly and act on the user's behalf using the available tools.
-- For financial or irreversible actions, the system enforces a confirmation
-  step automatically; when a tool result says PENDING_CONFIRMATION, tell the
-  user what you intend to do and ask them to reply to confirm. Do not retry the
-  tool yourself.
+- You are the orchestrator. Answer general conversation and simple questions
+  directly. For anything needing a specialist capability, hand it off with the
+  `delegate` tool and then synthesize the result for the user:
+    * market data (stock prices, portfolio)  -> agent "finance"
+    * saving durable facts about the user     -> agent "archivist"
+    * focused research, analysis, or drafting -> agent "researcher"
+  You may delegate more than once and combine the results.
+- Trading is handled here (not delegated) so it stays under the confirmation
+  gate. When a tool result says PENDING_CONFIRMATION, tell the user what you
+  intend to do and ask them to reply to confirm. Do not retry the tool yourself.
 - Be concise; lead with the answer. Match the user's tone and the standing
   preferences above.
 """
@@ -116,7 +121,7 @@ def _enqueue_reflect(db: Session, ctx: Context, convo_id: int) -> None:
 
 def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, subject: str = "") -> str:
     """Process one inbound message and return JARVIS's reply text."""
-    registry = build_registry(include_delegate=True)  # top-level: honors flags + can delegate
+    registry = build_registry(include_delegate=True, db=db)  # top-level: honors flags + live agent roster
     convo = get_or_create_conversation(db, channel, thread_key, subject)
     ctx = Context(db=db, channel=channel, actor=actor, thread_key=thread_key)
 

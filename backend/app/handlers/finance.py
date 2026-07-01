@@ -85,6 +85,7 @@ def _order_notional(args: dict) -> Optional[float]:
 
 
 def register(reg: Registry) -> None:
+    """Read-only market-data tools. Used by the `finance` specialist agent."""
     reg.register(
         {
             "name": "get_stock_price",
@@ -107,6 +108,11 @@ def register(reg: Registry) -> None:
         _get_portfolio,
     )
 
+
+def register_trading(reg: Registry) -> None:
+    """The trade action. Registered ONLY on the governed top-level registry so it
+    always flows through the confirmation gate (sub-agents bypass the gate).
+    Disabled by default via settings.enable_trading."""
     if settings.enable_trading:
         order_desc = (
             "Place a market buy/sell order. This is a real financial action; "
@@ -132,8 +138,6 @@ def register(reg: Registry) -> None:
             summarize=lambda i: f"{i.get('side','?')} {i.get('qty','?')} share(s) of {str(i.get('symbol','?')).upper()} at market",
         )
     else:
-        # Disabled stub: registered so the model has an honest capability, but it
-        # never trades. Not gated — it simply refuses.
         reg.register(
             {
                 "name": "place_stock_order",

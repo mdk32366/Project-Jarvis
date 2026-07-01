@@ -7,9 +7,9 @@ from sqlalchemy.orm import Session
 from app.auth import authenticate_user, create_access_token, get_current_user
 from app.config import settings
 from app.database import get_db
-from app.models import Conversation, Job, Memory, Message, PersonaProfile, Preference, User
-from app.schemas import (ChatRequest, ChatResponse, ConversationOut, HealthResponse,
-    JobOut, MemoryIn, MemoryOut, MessageOut, PersonaOut, PreferenceOut, Token, UserOut)
+from app.models import ActionAudit, AgentConfig, Conversation, Job, Memory, Message, PersonaProfile, Preference, User
+from app.schemas import (AgentIn, AgentOut, AuditOut, ChatRequest, ChatResponse, ConversationOut,
+    HealthResponse, JobOut, MemoryIn, MemoryOut, MessageOut, PersonaOut, PreferenceOut, Token, UserOut)
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -99,3 +99,61 @@ def conversation_messages(conversation_id: int, _: User = Depends(get_current_us
 @router.get("/jobs", response_model=list[JobOut], tags=["jarvis"])
 def list_jobs(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.execute(select(Job).order_by(Job.created_at.desc()).limit(50)).scalars().all()
+
+
+# ── Admin: agents (data-driven specialist roster) ────────────────────────────
+import json as _json
+
+
+def _agent_out(a: AgentConfig) -> AgentOut:
+    return AgentOut(id=a.id, name=a.name, description=a.description,
+                    system_prompt=a.system_prompt, tools=_json.loads(a.tools or "[]"),
+                    enabled=a.enabled)
+
+
+@router.get("/agents", response_model=list[AgentOut], tags=["admin"])
+def list_agents(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    return [_agent_out(a) for a in db.execute(select(AgentConfig).order_by(AgentConfig.name)).scalars().all()]
+
+
+@router.get("/agents/tools", tags=["admin"])
+def assignable_tools(_: User = Depends(get_current_user)):
+    """Tool names a sub-agent can be assigned (the sub-agent registry)."""
+    from app.handlers.base import build_registry
+    return {"tools": [t["name"] for t in build_registry().anthropic_tools()]}
+
+
+@router.post("/agents", response_model=AgentOut, tags=["admin"])
+def create_agent(item: AgentIn, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if db.execute(select(AgentConfig).where(AgentConfig.name == item.name)).scalars().first():
+        raise HTTPException(status_code=409, detail="Agent name already exists")
+    a = AgentConfig(name=item.name, description=item.description, system_prompt=item.system_prompt,
+                    tools=_json.dumps(item.tools), enabled=item.enabled)
+    db.add(a); db.commit(); db.refresh(a)
+    return _agent_out(a)
+
+
+@router.put("/agents/{agent_id}", response_model=AgentOut, tags=["admin"])
+def update_agent(agent_id: int, item: AgentIn, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    a = db.get(AgentConfig, agent_id)
+    if not a:
+        raise HTTPException(status_code=404, detail="Not found")
+    a.name = item.name; a.description = item.description; a.system_prompt = item.system_prompt
+    a.tools = _json.dumps(item.tools); a.enabled = item.enabled
+    db.commit(); db.refresh(a)
+    return _agent_out(a)
+
+
+@router.delete("/agents/{agent_id}", tags=["admin"])
+def delete_agent(agent_id: int, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    a = db.get(AgentConfig, agent_id)
+    if not a:
+        raise HTTPException(status_code=404, detail="Not found")
+    db.delete(a); db.commit()
+    return {"deleted": agent_id}
+
+
+@router.get("/audit", response_model=list[AuditOut], tags=["admin"])
+def list_audit(limit: int = 100, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    rows = db.execute(select(ActionAudit).order_by(ActionAudit.created_at.desc()).limit(limit)).scalars().all()
+    return rows

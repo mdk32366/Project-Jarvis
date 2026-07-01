@@ -83,19 +83,30 @@ class Registry:
             return f"Error in {name}: {e}"
 
 
-def build_registry(include_delegate: bool = False) -> Registry:
+def build_registry(include_delegate: bool = False, db=None) -> Registry:
     """Assemble the registry from all handler modules.
 
     ``include_delegate`` adds the multi-agent ``delegate`` tool. It is enabled
     only for the top-level orchestrator; sub-agents get a registry WITHOUT it so
     they cannot delegate recursively.
     """
-    from app.handlers import finance, general
-
     reg = Registry()
+    if include_delegate:
+        # Top-level orchestrator = pure delegator: it only routes to specialists
+        # (delegate) and governs the one irreversible action (trading) behind the
+        # confirmation gate. All read-only/domain tools live in specialist agents.
+        from app import agents
+        from app.handlers import finance
+
+        agents.register_delegate(reg, db)
+        finance.register_trading(reg)
+        return reg
+
+    # Sub-agent registry: the domain tools specialists draw from (no delegate,
+    # no gated trading -> no recursion, no ungoverned money actions).
+    from app.handlers import finance, general, scheduling
+
     finance.register(reg)
     general.register(reg)
-    if include_delegate:
-        from app import agents
-        agents.register_delegate(reg)
+    scheduling.register(reg)
     return reg

@@ -73,3 +73,28 @@ class JobOut(BaseModel):
     channel: str
     thread_key: str
     model_config = {"from_attributes": True}
+
+class AgentIn(BaseModel):
+    name: str
+    description: str = ""
+    system_prompt: str = ""
+    tools: list[str] = []
+    enabled: bool = True
+
+class AgentOut(BaseModel):
+    id: int
+    name: str
+    description: str
+    system_prompt: str
+    tools: list[str]
+    enabled: bool
+
+class AuditOut(BaseModel):
+    id: int
+    channel: str
+    actor: str
+    tool: str
+    arguments: str
+    result: str
+    status: str
+    model_config = {"from_attributes": True}
