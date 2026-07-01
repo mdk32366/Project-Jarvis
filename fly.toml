@@ -1,0 +1,26 @@
+# Set your app name + region before first deploy: fly launch --no-deploy
+app = "jarvis"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  ENVIRONMENT = "production"
+  PORT = "8000"
+  IMAP_HOST = "imap.gmail.com"
+  IMAP_PORT = "993"
+  SMTP_HOST = "smtp.gmail.com"
+  SMTP_PORT = "587"
+  INGEST_POLL_SECONDS = "120"
+
+# Run migrations on each deploy (no-op until the first revision exists).
+[deploy]
+  release_command = "alembic upgrade head"
+
+# Two process groups from one image: the HTTP API/SPA, and the email watcher.
+[processes]
+  api = "uvicorn app.main:app --host 0.0.0.0 --port 8000"
+  ingest = "python -m app.channels.email_pipeline --watch"
+
+# HTTP on

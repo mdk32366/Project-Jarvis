@@ -1,0 +1,90 @@
+"""Handler/tool registry and execution context.
+
+Each capability (finance, general, …) registers tools into a shared Registry.
+The orchestrator merges them, exposes their schemas to Claude, and dispatches
+tool calls. Tools can be marked `gated` so the orchestrator routes them through
+the human-in-the-loop confirmation gate instead of executing immediately.
+"""
+
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
+
+from sqlalchemy.orm import Session
+
+
+@dataclass
+class Context:
+    """Everything a tool needs to run, plus who/where the request came from."""
+
+    db: Session
+    channel: str          # email | web | sms
+    actor: str            # requesting identity (email address, username, …)
+    thread_key: str
+
+
+@dataclass
+class _ToolSpec:
+    schema: dict
+    fn: Callable[[dict, Context], str]
+    gated: bool
+    # Returns the dollar amount at risk (or None) so the gate can apply a threshold.
+    notional: Optional[Callable[[dict], Optional[float]]]
+    # Human-readable summary for the confirmation prompt.
+    summarize: Callable[[dict], str]
+
+
+class Registry:
+    def __init__(self) -> None:
+        self._tools: dict[str, _ToolSpec] = {}
+
+    def register(
+        self,
+        schema: dict,
+        fn: Callable[[dict, Context], str],
+        *,
+        gated: bool = False,
+        notional: Optional[Callable[[dict], Optional[float]]] = None,
+        summarize: Optional[Callable[[dict], str]] = None,
+    ) -> None:
+        name = schema["name"]
+        self._tools[name] = _ToolSpec(
+            schema=schema,
+            fn=fn,
+            gated=gated,
+            notional=notional,
+            summarize=summarize or (lambda i: f"{name}({i})"),
+        )
+
+    def anthropic_tools(self) -> list[dict]:
+        return [t.schema for t in self._tools.values()]
+
+    def has(self, name: str) -> bool:
+        return name in self._tools
+
+    def is_gated(self, name: str) -> bool:
+        return self._tools[name].gated
+
+    def notional(self, name: str, args: dict) -> Optional[float]:
+        fn = self._tools[name].notional
+        return fn(args) if fn else None
+
+    def summarize(self, name: str, args: dict) -> str:
+        return self._tools[name].summarize(args)
+
+    def execute(self, name: str, args: dict, ctx: Context) -> str:
+        if name not in self._tools:
+            return f"Unknown tool: {name}"
+        try:
+            return self._tools[name].fn(args, ctx)
+        except Exception as e:  # tools must never crash the loop
+            return f"Error in {name}: {e}"
+
+
+def build_registry() -> Registry:
+    """Assemble the registry from all handler modules."""
+    from app.handlers import finance, general
+
+    reg = Registry()
+    finance.register(reg)
+    general.register(reg)
+    return reg

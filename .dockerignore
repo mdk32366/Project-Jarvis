@@ -1,0 +1,12 @@
+**/node_modules
+**/dist
+backend/static
+**/__pycache__
+**/.venv
+**/venv
+**/.env
+**/.env.local
+**/*.log
+.git
+.github
+*.md

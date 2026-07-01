@@ -1,0 +1,158 @@
+"""The JARVIS core loop: route a request, run tools, enforce the gate, reply.
+
+The intent "router" is realized by giving Claude the full tool set and the
+persona/preference context, then letting it choose tools (and answer directly
+for plain Q&A). Phase 1 adds explicit multi-agent delegation and a job queue.
+"""
+
+import json
+import logging
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.config import settings
+from app.handlers.base import Context, build_registry
+from app.llm import create_message
+from app.memory import add_message, build_system_preamble, get_or_create_conversation, load_history
+from app.models import ActionAudit, PendingConfirmation
+
+log = logging.getLogger(__name__)
+
+_REGISTRY = build_registry()
+_MAX_ITERS = 6
+
+_AFFIRMATIVE = {"yes", "y", "yep", "yeah", "confirm", "confirmed", "do it", "go ahead", "proceed", "ok", "okay"}
+_NEGATIVE = {"no", "n", "nope", "cancel", "stop", "don't", "dont", "abort"}
+
+_INSTRUCTIONS = """
+## Operating instructions
+- Answer plainly and act on the user's behalf using the available tools.
+- For financial or irreversible actions, the system enforces a confirmation
+  step automatically; when a tool result says PENDING_CONFIRMATION, tell the
+  user what you intend to do and ask them to reply to confirm. Do not retry the
+  tool yourself.
+- Be concise; lead with the answer. Match the user's tone and the standing
+  preferences above.
+"""
+
+
+def _norm(text: str) -> str:
+    return text.strip().lower().rstrip(".!")
+
+
+def _audit(db: Session, ctx: Context, tool: str, args: dict, result: str, status: str) -> None:
+    db.add(
+        ActionAudit(
+            channel=ctx.channel,
+            actor=ctx.actor,
+            tool=tool,
+            arguments=json.dumps(args)[:4000],
+            result=str(result)[:4000],
+            status=status,
+        )
+    )
+    db.commit()
+
+
+def _needs_confirmation(name: str, args: dict) -> bool:
+    """Gated tools require confirmation when the amount is unknown or >= threshold."""
+    if not _REGISTRY.is_gated(name):
+        return False
+    notional = _REGISTRY.notional(name, args)
+    if notional is None:
+        return True
+    return notional >= settings.confirm_threshold_usd
+
+
+def _resolve_pending(db: Session, ctx: Context, user_text: str) -> str | None:
+    """If a confirmation is pending for this thread, act on yes/no. Returns reply or None."""
+    pending = (
+        db.execute(
+            select(PendingConfirmation)
+            .where(PendingConfirmation.thread_key == ctx.thread_key)
+            .where(PendingConfirmation.status == "pending")
+            .order_by(PendingConfirmation.created_at.desc())
+        )
+        .scalars()
+        .first()
+    )
+    if pending is None:
+        return None
+
+    norm = _norm(user_text)
+    if norm in _AFFIRMATIVE or any(norm.startswith(a + " ") for a in _AFFIRMATIVE):
+        args = json.loads(pending.arguments)
+        result = _REGISTRY.execute(pending.tool, args, ctx)
+        pending.status = "done"
+        db.commit()
+        _audit(db, ctx, pending.tool, args, result, "confirmed")
+        return f"Done — {pending.summary}.\n\n{result}"
+
+    if norm in _NEGATIVE or any(norm.startswith(n + " ") for n in _NEGATIVE):
+        pending.status = "cancelled"
+        db.commit()
+        return f"Cancelled: {pending.summary}."
+
+    return None  # ambiguous — fall through to normal handling
+
+
+def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, subject: str = "") -> str:
+    """Process one inbound message and return JARVIS's reply text."""
+    convo = get_or_create_conversation(db, channel, thread_key, subject)
+    ctx = Context(db=db, channel=channel, actor=actor, thread_key=thread_key)
+
+    add_message(db, convo.id, "user", user_text)
+
+    # 1) Resolve an outstanding confirmation first.
+    resolved = _resolve_pending(db, ctx, user_text)
+    if resolved is not None:
+        add_message(db, convo.id, "assistant", resolved)
+        return resolved
+
+    # 2) Normal handling: persona + preferences + history + tool loop.
+    system = build_system_preamble(db) + "\n" + _INSTRUCTIONS
+    messages = load_history(db, convo.id)
+    tools = _REGISTRY.anthropic_tools()
+    final_text = ""
+
+    for _ in range(_MAX_ITERS):
+        resp = create_message(system=system, messages=messages, tools=tools)
+        text_parts = [b.text for b in resp.content if b.type == "text"]
+        tool_uses = [b for b in resp.content if b.type == "tool_use"]
+        if text_parts:
+            final_text = "\n".join(text_parts)
+
+        if resp.stop_reason != "tool_use" or not tool_uses:
+            break
+
+        messages.append({"role": "assistant", "content": resp.content})
+        results = []
+        for tu in tool_uses:
+            if _needs_confirmation(tu.name, tu.input):
+                summary = _REGISTRY.summarize(tu.name, tu.input)
+                db.add(
+                    PendingConfirmation(
+                        thread_key=thread_key,
+                        channel=channel,
+                        tool=tu.name,
+                        arguments=json.dumps(tu.input),
+                        summary=summary,
+                    )
+                )
+                db.commit()
+                content = (
+                    f"PENDING_CONFIRMATION: '{summary}'. Ask the user to reply to "
+                    f"confirm before this is executed. Do not call this tool again."
+                )
+            else:
+                content = _REGISTRY.execute(tu.name, tu.input, ctx)
+                _audit(db, ctx, tu.name, tu.input, content, "ok")
+
+            results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(content)})
+
+        messages.append({"role": "user", "content": results})
+
+    final_text = final_text or "Done."
+    add_message(db, convo.id, "assistant", final_text)
+    return final_text
