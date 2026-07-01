@@ -118,3 +118,19 @@ code { background: var(--bg); padding: 0.1rem 0.35rem; border-radius: 4px; }
   text-transform: uppercase;
 }
 .memory li .link-btn { margin-left: auto; color: var(--error); }
+
+/* ── Admin tab ─────────────────────────────────────────────────────────── */
+.admin .row { display: flex; gap: .5rem; align-items: center; }
+.admin .row.space { justify-content: space-between; }
+.agent-form { display: flex; flex-direction: column; gap: .5rem; margin: .5rem 0 1rem; }
+.agent-form label { display: flex; flex-direction: column; gap: .25rem; font-size: .9rem; }
+.agent-form input, .agent-form textarea { padding: .4rem; border: 1px solid #ccc; border-radius: 6px; font: inherit; }
+.agent-form .tools { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.tool-check { display: inline-flex; align-items: center; gap: .3rem; font-size: .9rem; }
+.agent-list { list-style: none; padding: 0; }
+.agent-list .agent { border-top: 1px solid #eee; padding: .6rem 0; }
+table.audit { width: 100%; border-collapse: collapse; font-size: .85rem; }
+table.audit th, table.audit td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #eee; vertical-align: top; }
+table.audit td.truncate { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tag.ok, .tag.confirmed { background: #e6f4ea; }
+.tag.error { background: #fce8e6; }

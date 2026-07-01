@@ -14,6 +14,7 @@ export default function Layout() {
           <Link to="/">Chat</Link>
           <Link to="/memory">Memory</Link>
           <Link to="/status">Status</Link>
+          <Link to="/admin">Admin</Link>
           {user && (
             <button className="link-btn" onClick={logout}>
               Log out ({user.username})

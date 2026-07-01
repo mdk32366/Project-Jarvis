@@ -6,6 +6,7 @@ import LoginPage from "./pages/LoginPage.jsx";
 import ChatPage from "./pages/ChatPage.jsx";
 import MemoryPage from "./pages/MemoryPage.jsx";
 import DashboardPage from "./pages/DashboardPage.jsx";
+import AdminPage from "./pages/AdminPage.jsx";
 import NotFoundPage from "./pages/NotFoundPage.jsx";
 
 // Route table. Public: /login. Everything else is gated behind ProtectedRoute
@@ -24,6 +25,7 @@ export default function App() {
         <Route index element={<ChatPage />} />
         <Route path="memory" element={<MemoryPage />} />
         <Route path="status" element={<DashboardPage />} />
+        <Route path="admin" element={<AdminPage />} />
       </Route>
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
