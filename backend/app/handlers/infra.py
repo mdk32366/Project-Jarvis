@@ -58,8 +58,25 @@ def _watched_apps() -> list[str]:
     return settings.watched_fly_app_list
 
 
+def _auth_header_value() -> str:
+    """Build the Authorization value, honoring Fly's two token schemes.
+
+    - ``flyctl auth token`` -> a bare token, sent as ``Bearer <token>``.
+    - ``fly tokens create`` -> a macaroon that already carries its own scheme
+      ``FlyV1 <token>``; it must be sent VERBATIM, not wrapped in ``Bearer``
+      (``Bearer FlyV1 ...`` is a doubled scheme Fly rejects with 401).
+    Also tolerates a stray leading ``Bearer `` and surrounding whitespace.
+    """
+    tok = _token()
+    if tok.lower().startswith("bearer "):
+        tok = tok[len("bearer "):].strip()
+    if tok.startswith("FlyV1 "):
+        return tok  # self-describing scheme — send as-is
+    return f"Bearer {tok}"
+
+
 def _headers() -> dict:
-    return {"Authorization": f"Bearer {_token()}", "Content-Type": "application/json"}
+    return {"Authorization": _auth_header_value(), "Content-Type": "application/json"}
 
 
 def _list_machines(client, app: str) -> list[dict]:

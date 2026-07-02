@@ -167,3 +167,16 @@ def test_briefing_includes_hosted_apps_when_configured(db, monkeypatch):
     from app import briefing
     text = briefing.gather_context(db)
     assert "## Hosted apps" in text and "jarvis-mdk: OK" in text
+
+
+
+def test_auth_header_scheme(monkeypatch):
+    # flyctl auth token style -> Bearer
+    monkeypatch.setattr(settings, "fly_api_token_read", "fm2_bareToken")
+    assert infra._auth_header_value() == "Bearer fm2_bareToken"
+    # fly tokens create style -> sent verbatim (FlyV1 is its own scheme)
+    monkeypatch.setattr(settings, "fly_api_token_read", "FlyV1 fm2_orgToken")
+    assert infra._auth_header_value() == "FlyV1 fm2_orgToken"
+    # stray "Bearer " prefix + whitespace is tolerated
+    monkeypatch.setattr(settings, "fly_api_token_read", "  Bearer FlyV1 fm2_x  ")
+    assert infra._auth_header_value() == "FlyV1 fm2_x"
