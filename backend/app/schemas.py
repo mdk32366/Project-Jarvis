@@ -98,3 +98,7 @@ class AuditOut(BaseModel):
     result: str
     status: str
     model_config = {"from_attributes": True}
+
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str

@@ -65,6 +65,14 @@ export default function AdminPage() {
     onSuccess: () => { setEditingId(null); invalidate(); } });
   const deleteAgent = useMutation({ mutationFn: (id) => api.del(`/agents/${id}`), onSuccess: invalidate });
 
+  const [pw, setPw] = useState({ current_password: "", new_password: "" });
+  const [pwMsg, setPwMsg] = useState(null);
+  const changePw = useMutation({
+    mutationFn: () => api.post("/auth/change-password", pw),
+    onSuccess: () => { setPw({ current_password: "", new_password: "" }); setPwMsg({ ok: true, text: "Password changed." }); },
+    onError: (e) => setPwMsg({ ok: false, text: String(e.message) }),
+  });
+
   const toolList = tools.data?.tools ?? [];
 
   return (
@@ -142,6 +150,23 @@ export default function AdminPage() {
             {audit.data?.length === 0 && <tr><td colSpan={5} className="hint">No activity yet.</td></tr>}
           </tbody>
         </table>
+      </div>
+      <div className="card">
+        <h2>Account</h2>
+        <form className="agent-form" onSubmit={(e) => { e.preventDefault(); changePw.mutate(); }}>
+          <label>Current password
+            <input type="password" value={pw.current_password}
+              onChange={(e) => setPw({ ...pw, current_password: e.target.value })} autoComplete="current-password" />
+          </label>
+          <label>New password (min 8 chars)
+            <input type="password" value={pw.new_password}
+              onChange={(e) => setPw({ ...pw, new_password: e.target.value })} autoComplete="new-password" />
+          </label>
+          <div className="row">
+            <button type="submit" disabled={changePw.isPending}>Change password</button>
+            {pwMsg && <span className={pwMsg.ok ? "hint" : "error"}>{pwMsg.text}</span>}
+          </div>
+        </form>
       </div>
     </div>
   );

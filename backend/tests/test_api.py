@@ -60,3 +60,19 @@ def test_jobs_endpoint(client, auth_headers, monkeypatch):
     client.post("/api/chat", json={"message": "hi", "thread_key": "t1"}, headers=auth_headers)
     jobs = client.get("/api/jobs", headers=auth_headers).json()
     assert any(j["kind"] == "reflect" for j in jobs)
+
+
+def test_change_password_flow(client, auth_headers):
+    # wrong current -> 400
+    assert client.post("/api/auth/change-password", headers=auth_headers,
+                       json={"current_password": "nope", "new_password": "supersecret1"}).status_code == 400
+    # too short -> 400
+    assert client.post("/api/auth/change-password", headers=auth_headers,
+                       json={"current_password": "testpass", "new_password": "short"}).status_code == 400
+    # success
+    r = client.post("/api/auth/change-password", headers=auth_headers,
+                    json={"current_password": "testpass", "new_password": "supersecret1"})
+    assert r.status_code == 200
+    # old password no longer works, new one does
+    assert client.post("/api/auth/login", data={"username": "admin", "password": "testpass"}).status_code == 401
+    assert client.post("/api/auth/login", data={"username": "admin", "password": "supersecret1"}).status_code == 200
