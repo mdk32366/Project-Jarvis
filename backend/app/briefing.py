@@ -51,13 +51,13 @@ def gather_context(db: Session) -> str:
     else:
         fact_lines = "\n".join(f"- {m.content}" for m in facts) or "(none)"
 
-    return (
-        f"## Today's calendar\n{today}\n\n"
-        f"## This week\n{week}\n\n"
-        f"## Portfolio\n{portfolio}\n\n"
-        f"## Recent notes/memory\n{fact_lines}\n\n"
-        f"## Not yet connected\n" + ", ".join(_PENDING_SECTIONS)
-    )
+    sections = [f"## Today's calendar\n{today}", f"## This week\n{week}"]
+    # Only include portfolio if a real brokerage is wired (skip demo/unavailable).
+    if portfolio and not portfolio.startswith("[demo mode]") and not portfolio.startswith("(portfolio unavailable"):
+        sections.append(f"## Portfolio\n{portfolio}")
+    sections.append(f"## Recent notes/memory\n{fact_lines}")
+    sections.append("## Not yet connected\n" + ", ".join(_PENDING_SECTIONS))
+    return "\n\n".join(sections)
 
 
 _BRIEF_INSTRUCTIONS = """
