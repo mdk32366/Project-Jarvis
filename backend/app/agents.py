@@ -119,10 +119,25 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
                 content = f"Tool '{tu.name}' is not available to the {agent.name} agent."
             else:
                 content = reg.execute(tu.name, tu.input, ctx)
+            _audit_subagent(ctx, agent.name, tu.name, tu.input, content)
             results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(content)})
         messages.append({"role": "user", "content": results})
 
     return final_text or "(no result)"
+
+
+def _audit_subagent(ctx: Context, agent_name: str, tool: str, args: dict, result) -> None:
+    """Record a sub-agent's raw tool call in the audit trail (visible in Admin)."""
+    try:
+        from app.models import ActionAudit
+
+        ctx.db.add(ActionAudit(
+            channel=ctx.channel, actor=ctx.actor, tool=f"{agent_name}:{tool}",
+            arguments=json.dumps(args)[:4000], result=str(result)[:4000], status="ok",
+        ))
+        ctx.db.commit()
+    except Exception:
+        ctx.db.rollback()
 
 
 def _delegate(args: dict, ctx: Context) -> str:

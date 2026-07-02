@@ -60,3 +60,25 @@ def test_scheduling_delegation_stub(db, monkeypatch):
     install_llm(monkeypatch, llm)
     reply = run(db, channel="web", thread_key="web:admin:1", user_text="what's on today?", actor="admin")
     assert "isn't connected" in reply.lower() or "not yet connected" in reply.lower()
+
+
+def test_subagent_tool_calls_are_audited(db, monkeypatch):
+    from app.orchestrator import run
+    from app.models import ActionAudit
+    llm = ScriptedLLM(
+        response([tool_block("delegate", {"agent": "finance", "task": "price of AAPL"})], stop_reason="tool_use"),
+        response([tool_block("get_stock_price", {"symbol": "AAPL"})], stop_reason="tool_use"),  # finance agent
+        response([text_block("AAPL is around $200.")], stop_reason="end_turn"),                 # finance synth
+        response([text_block("AAPL ~ $200.")], stop_reason="end_turn"),                         # main synth
+    )
+    install_llm(monkeypatch, llm)
+    run(db, channel="web", thread_key="t", user_text="price of AAPL?", actor="matt")
+    tools = {r.tool for r in db.query(ActionAudit).all()}
+    assert "delegate" in tools and "finance:get_stock_price" in tools
+
+
+def test_calendar_health_endpoint(client, auth_headers):
+    r = client.get("/api/calendar/health", headers=auth_headers)
+    assert r.status_code == 200
+    # unconfigured in tests -> clear message
+    assert "not configured" in r.json()["result"].lower()

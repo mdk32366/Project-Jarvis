@@ -157,3 +157,12 @@ def delete_agent(agent_id: int, _: User = Depends(get_current_user), db: Session
 def list_audit(limit: int = 100, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
     rows = db.execute(select(ActionAudit).order_by(ActionAudit.created_at.desc()).limit(limit)).scalars().all()
     return rows
+
+
+@router.get("/calendar/health", tags=["admin"])
+def calendar_health(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return the RAW calendar_lookup output so calendar setup issues are visible."""
+    from app.handlers.base import Context
+    from app.handlers.scheduling import _calendar_lookup
+    ctx = Context(db=db, channel="web", actor="admin", thread_key="admin")
+    return {"result": _calendar_lookup({"range": "this week"}, ctx)}
