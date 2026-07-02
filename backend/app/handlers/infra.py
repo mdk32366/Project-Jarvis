@@ -58,6 +58,15 @@ def _watched_apps() -> list[str]:
     return settings.watched_fly_app_list
 
 
+def _expected_running(app: str) -> int:
+    """Min RUNNING machines before an app is 'DEGRADED'. Default 1 (>=1 must be up).
+
+    Async/scale-to-zero apps set this to their listener count; always-on multi-
+    process apps set it to their process-group count (e.g. jarvis-mdk = 3).
+    """
+    return max(1, settings.fleet_expected_map.get(app, 1))
+
+
 def _auth_variants() -> list[str]:
     """Ordered Authorization header values to try — Fly has two token schemes.
 
@@ -149,12 +158,17 @@ def _fleet_health(args: dict, ctx: Context) -> str:
             states: dict[str, int] = {}
             for m in machines:
                 st = str(m.get("state") or "unknown")
+                # A "stopped" machine is intentionally parked (you stopped it, or Fly
+                # auto-stopped an idle one) — that's idle, not unhealthy.
+                st = "idle" if st == "stopped" else st
                 states[st] = states.get(st, 0) + 1
             started = states.get("started", 0)
             total = len(machines)
+            expected = _expected_running(app)
             summary = ", ".join(f"{n} {s}" for s, n in sorted(states.items()))
-            flag = "OK" if started == total else "DEGRADED"
-            lines.append(f"- {app}: {flag} — {total} machine(s): {summary}")
+            flag = "OK" if started >= expected else "DEGRADED"
+            detail = summary if flag == "OK" else f"{started}/{expected} up — {summary}"
+            lines.append(f"- {app}: {flag} — {total} machine(s): {detail}")
     return "Fly fleet health:\n" + "\n".join(lines)
 
 

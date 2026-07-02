@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     fly_api_token_read: str = ""
     # Comma-separated Fly app names to report on in the briefing / infra tools.
     watched_fly_apps: str = "jarvis-mdk"
+    # Per-app expected RUNNING machine count, e.g.
+    # "jarvis-mdk:3,ffis-scrubber:1". Health flags DEGRADED only when started
+    # drops below this. Apps not listed default to 1 (at least one must be up).
+    fleet_expected: str = ""
 
     # ── Job queue / worker (Phase 1) ─────────────────────────────────────────
     worker_poll_seconds: int = 5
@@ -119,6 +123,20 @@ class Settings(BaseSettings):
     @property
     def allowed_number_list(self) -> list[str]:
         return [normalize_number(s) for s in self.allowed_numbers.split(",") if s.strip()]
+
+    @property
+    def fleet_expected_map(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for pair in self.fleet_expected.split(","):
+            if ":" in pair:
+                name, _, num = pair.partition(":")
+                name = name.strip()
+                try:
+                    if name:
+                        out[name] = int(num.strip())
+                except ValueError:
+                    continue
+        return out
 
     @property
     def watched_fly_app_list(self) -> list[str]:

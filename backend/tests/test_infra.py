@@ -78,12 +78,35 @@ def test_health_all_started_is_ok(db, monkeypatch):
     assert "jarvis-mdk: OK" in out and "2 machine(s)" in out
 
 
-def test_health_flags_degraded(db, monkeypatch):
+def test_health_stopped_shown_as_idle_and_ok_by_default(db, monkeypatch):
+    # Default expected is 1; an async listener with 1 up + 2 parked = OK, and
+    # "stopped" is reported as "idle".
     monkeypatch.setattr(settings, "fly_api_token_read", "tok")
-    monkeypatch.setattr(settings, "watched_fly_apps", "app1")
-    monkeypatch.setattr(infra, "_list_machines", lambda c, app: [_machine("started"), _machine("stopped")])
+    monkeypatch.setattr(settings, "watched_fly_apps", "ffis-scrubber")
+    monkeypatch.setattr(settings, "fleet_expected", "")
+    monkeypatch.setattr(infra, "_list_machines",
+                        lambda c, app: [_machine("started"), _machine("stopped"), _machine("stopped")])
     out = infra._fleet_health({}, _ctx(db))
-    assert "DEGRADED" in out and "1 started" in out and "1 stopped" in out
+    assert "ffis-scrubber: OK" in out
+    assert "1 started" in out and "2 idle" in out and "stopped" not in out
+
+
+def test_health_degraded_when_below_expected(db, monkeypatch):
+    # jarvis-mdk expects 3 running; only 2 up -> DEGRADED with "2/3 up".
+    monkeypatch.setattr(settings, "fly_api_token_read", "tok")
+    monkeypatch.setattr(settings, "watched_fly_apps", "jarvis-mdk")
+    monkeypatch.setattr(settings, "fleet_expected", "jarvis-mdk:3")
+    monkeypatch.setattr(infra, "_list_machines",
+                        lambda c, app: [_machine("started"), _machine("started"), _machine("stopped")])
+    out = infra._fleet_health({}, _ctx(db))
+    assert "jarvis-mdk: DEGRADED" in out and "2/3 up" in out
+
+
+def test_expected_running_parsing_and_default(monkeypatch):
+    monkeypatch.setattr(settings, "fleet_expected", "jarvis-mdk:3, ffis-scrubber:1 ,bad")
+    assert infra._expected_running("jarvis-mdk") == 3
+    assert infra._expected_running("ffis-scrubber") == 1
+    assert infra._expected_running("unlisted-app") == 1   # default
 
 
 def test_health_per_app_error_isolated(db, monkeypatch):
