@@ -43,3 +43,11 @@ def test_briefing_api(client, auth_headers, monkeypatch):
     install_llm(monkeypatch, say("Your day ahead."))
     r = client.get("/api/briefing", headers=auth_headers)
     assert r.status_code == 200 and "Your day ahead." in r.json()["briefing"]
+
+
+def test_briefing_survives_failing_source(db, monkeypatch):
+    from app.handlers import finance
+    def boom(args, ctx): raise RuntimeError("alpaca down")
+    monkeypatch.setattr(finance, "_get_portfolio", boom)
+    ctx = briefing.gather_context(db)
+    assert "portfolio unavailable" in ctx.lower()  # noted, not raised

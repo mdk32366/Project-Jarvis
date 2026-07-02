@@ -26,18 +26,30 @@ log = logging.getLogger(__name__)
 _PENDING_SECTIONS = ["Upcoming bills", "Weekend & travel", "Project status", "Hosted-app health & spend"]
 
 
+def _safe(label: str, fn):
+    """Run a data-source call; never let one failing source sink the briefing."""
+    try:
+        return fn()
+    except Exception as e:  # noqa: BLE001
+        log.warning("briefing source '%s' failed: %s", label, e)
+        return f"({label} unavailable right now: {e})"
+
+
 def gather_context(db: Session) -> str:
     """Collect raw material from every live source into one text block."""
     from app.handlers.finance import _get_portfolio
     from app.handlers.scheduling import _calendar_lookup
 
     ctx = Context(db=db, channel="briefing", actor="system", thread_key="briefing")
-    today = _calendar_lookup({"range": "today"}, ctx)
-    week = _calendar_lookup({"range": "this week"}, ctx)
-    portfolio = _get_portfolio({}, ctx)
+    today = _safe("calendar", lambda: _calendar_lookup({"range": "today"}, ctx))
+    week = _safe("calendar", lambda: _calendar_lookup({"range": "this week"}, ctx))
+    portfolio = _safe("portfolio", lambda: _get_portfolio({}, ctx))
 
-    facts = db.execute(select(Memory).order_by(Memory.created_at.desc()).limit(5)).scalars().all()
-    fact_lines = "\n".join(f"- {m.content}" for m in facts) or "(none)"
+    facts = _safe("memory", lambda: db.execute(select(Memory).order_by(Memory.created_at.desc()).limit(5)).scalars().all())
+    if isinstance(facts, str):
+        fact_lines = facts
+    else:
+        fact_lines = "\n".join(f"- {m.content}" for m in facts) or "(none)"
 
     return (
         f"## Today's calendar\n{today}\n\n"
@@ -58,11 +70,18 @@ one short phrase; do not invent anything. End with a brief, useful nudge if warr
 
 
 def compose_briefing(db: Session) -> str:
-    system = build_system_preamble(db) + "\n" + _BRIEF_INSTRUCTIONS
     data = gather_context(db)
-    resp = create_message(system=system, messages=[{"role": "user", "content": data}])
-    parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
-    return "\n".join(parts).strip() or "(no briefing generated)"
+    try:
+        system = build_system_preamble(db) + "\n" + _BRIEF_INSTRUCTIONS
+        resp = create_message(system=system, messages=[{"role": "user", "content": data}])
+        parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
+        text = "\n".join(parts).strip()
+        if text:
+            return text
+    except Exception as e:  # noqa: BLE001
+        log.error("briefing compose failed: %s", e)
+        return f"Could not generate the written briefing ({e}).\n\nHere is the raw data:\n\n{data}"
+    return "(no briefing generated)\n\n" + data
 
 
 def send_briefing(db: Session) -> str:
