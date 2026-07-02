@@ -54,6 +54,7 @@ export default function AdminPage() {
   const tools = useQuery({ queryKey: ["agent-tools"], queryFn: () => api.get("/agents/tools") });
   const audit = useQuery({ queryKey: ["audit"], queryFn: () => api.get("/audit"), refetchInterval: 15000 });
   const calHealth = useQuery({ queryKey: ["cal-health"], queryFn: () => api.get("/calendar/health") });
+  const infraHealth = useQuery({ queryKey: ["infra-health"], queryFn: () => api.get("/infra/health") });
 
   const [editingId, setEditingId] = useState(null);
   const [creating, setCreating] = useState(false);
@@ -105,6 +106,20 @@ export default function AdminPage() {
           <pre className="cal-result">{calHealth.data.result}</pre>
         )}
         <p className="hint">Raw output of the calendar tool — no AI paraphrasing.</p>
+      </div>
+
+      <div className="card">
+        <div className="row space">
+          <h2>Hosted apps</h2>
+          <button onClick={() => infraHealth.refetch()} disabled={infraHealth.isFetching}>
+            {infraHealth.isFetching ? "Checking…" : "Re-check"}
+          </button>
+        </div>
+        {infraHealth.isError && <p className="error">Could not reach infra check.</p>}
+        {infraHealth.data && (
+          <pre className="cal-result">{infraHealth.data.health}{"\n\n"}{infraHealth.data.spend}</pre>
+        )}
+        <p className="hint">Fly fleet status &amp; spend — raw tool output, no AI paraphrasing. Set FLY_API_TOKEN_READ / WATCHED_FLY_APPS on the server.</p>
       </div>
 
       <div className="card">
