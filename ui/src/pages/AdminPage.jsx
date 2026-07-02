@@ -53,6 +53,7 @@ export default function AdminPage() {
   const agents = useQuery({ queryKey: ["agents"], queryFn: () => api.get("/agents") });
   const tools = useQuery({ queryKey: ["agent-tools"], queryFn: () => api.get("/agents/tools") });
   const audit = useQuery({ queryKey: ["audit"], queryFn: () => api.get("/audit"), refetchInterval: 15000 });
+  const calHealth = useQuery({ queryKey: ["cal-health"], queryFn: () => api.get("/calendar/health") });
 
   const [editingId, setEditingId] = useState(null);
   const [creating, setCreating] = useState(false);
@@ -70,6 +71,20 @@ export default function AdminPage() {
     <div className="admin">
       <h1>Admin</h1>
       <p className="hint">Configure specialist agents and review JARVIS's activity.</p>
+
+      <div className="card">
+        <div className="row space">
+          <h2>Calendar status</h2>
+          <button onClick={() => calHealth.refetch()} disabled={calHealth.isFetching}>
+            {calHealth.isFetching ? "Checking…" : "Re-check"}
+          </button>
+        </div>
+        {calHealth.isError && <p className="error">Could not reach calendar check.</p>}
+        {calHealth.data && (
+          <pre className="cal-result">{calHealth.data.result}</pre>
+        )}
+        <p className="hint">Raw output of the calendar tool — no AI paraphrasing.</p>
+      </div>
 
       <div className="card">
         <div className="row space">

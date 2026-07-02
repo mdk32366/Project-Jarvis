@@ -134,3 +134,4 @@ table.audit th, table.audit td { text-align: left; padding: .35rem .5rem; border
 table.audit td.truncate { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tag.ok, .tag.confirmed { background: #e6f4ea; }
 .tag.error { background: #fce8e6; }
+.cal-result { background:#f6f8fa; border:1px solid #eee; border-radius:6px; padding:.6rem .8rem; white-space:pre-wrap; font-size:.85rem; margin:.4rem 0; }
