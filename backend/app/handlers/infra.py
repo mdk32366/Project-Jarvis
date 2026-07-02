@@ -58,29 +58,44 @@ def _watched_apps() -> list[str]:
     return settings.watched_fly_app_list
 
 
-def _auth_header_value() -> str:
-    """Build the Authorization value, honoring Fly's two token schemes.
+def _auth_variants() -> list[str]:
+    """Ordered Authorization header values to try — Fly has two token schemes.
 
-    - ``flyctl auth token`` -> a bare token, sent as ``Bearer <token>``.
-    - ``fly tokens create`` -> a macaroon that already carries its own scheme
-      ``FlyV1 <token>``; it must be sent VERBATIM, not wrapped in ``Bearer``
-      (``Bearer FlyV1 ...`` is a doubled scheme Fly rejects with 401).
-    Also tolerates a stray leading ``Bearer `` and surrounding whitespace.
+    ``flyctl auth token`` issues a Bearer-compatible token; ``fly tokens create``
+    issues a macaroon that needs the ``FlyV1`` scheme. Rather than require the
+    user to know which they pasted, we try one then fall back to the other on
+    401/403. Tolerates a stray ``Bearer `` prefix and surrounding whitespace.
     """
     tok = _token()
     if tok.lower().startswith("bearer "):
         tok = tok[len("bearer "):].strip()
     if tok.startswith("FlyV1 "):
-        return tok  # self-describing scheme — send as-is
-    return f"Bearer {tok}"
+        core = tok[len("FlyV1 "):].strip()
+        return [tok, f"Bearer {core}"]          # already FlyV1-scheme; try that first
+    return [f"Bearer {tok}", f"FlyV1 {tok}"]     # bare token; Bearer then FlyV1
 
 
-def _headers() -> dict:
-    return {"Authorization": _auth_header_value(), "Content-Type": "application/json"}
+def _headers(auth: str) -> dict:
+    return {"Authorization": auth, "Content-Type": "application/json"}
+
+
+def _request(client, method: str, url: str, **kw):
+    """Issue a request, retrying across auth schemes on 401/403.
+
+    Returns the first response that isn't an auth failure, or the last auth
+    failure if every scheme is rejected (so the caller can surface the status).
+    """
+    last = None
+    for auth in _auth_variants():
+        r = client.request(method, url, headers=_headers(auth), **kw)
+        if r.status_code not in (401, 403):
+            return r
+        last = r
+    return last
 
 
 def _list_machines(client, app: str) -> list[dict]:
-    r = client.get(f"{_MACHINES_BASE}/apps/{app}/machines", headers=_headers())
+    r = _request(client, "GET", f"{_MACHINES_BASE}/apps/{app}/machines")
     if r.status_code == 404:
         raise RuntimeError(f"app '{app}' not found (404)")
     if r.status_code in (401, 403):
@@ -155,7 +170,7 @@ def _fleet_spend(args: dict, ctx: Context) -> str:
     query = ("{ personalOrganization { name creditBalance creditBalanceFormatted } }")
     try:
         with httpx.Client(timeout=_TIMEOUT) as client:
-            r = client.post(_GRAPHQL_URL, headers=_headers(), json={"query": query})
+            r = _request(client, "POST", _GRAPHQL_URL, json={"query": query})
             r.raise_for_status()
             payload = r.json()
         if payload.get("errors"):

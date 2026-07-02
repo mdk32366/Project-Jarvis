@@ -38,6 +38,9 @@ class _FakeClient:
         return self
     def __exit__(self, *a):
         return False
+    def request(self, method, url, **kw):
+        # GraphQL POST returns the payload; machine GETs return [] (patched in tests).
+        return _FakeResp(self._payload if method.upper() == "POST" else [])
     def post(self, url, **kw):
         return _FakeResp(self._payload)
     def get(self, url, **kw):
@@ -170,13 +173,39 @@ def test_briefing_includes_hosted_apps_when_configured(db, monkeypatch):
 
 
 
-def test_auth_header_scheme(monkeypatch):
-    # flyctl auth token style -> Bearer
-    monkeypatch.setattr(settings, "fly_api_token_read", "fm2_bareToken")
-    assert infra._auth_header_value() == "Bearer fm2_bareToken"
-    # fly tokens create style -> sent verbatim (FlyV1 is its own scheme)
-    monkeypatch.setattr(settings, "fly_api_token_read", "FlyV1 fm2_orgToken")
-    assert infra._auth_header_value() == "FlyV1 fm2_orgToken"
-    # stray "Bearer " prefix + whitespace is tolerated
+def test_auth_variants_both_schemes(monkeypatch):
+    # bare token -> try Bearer first, then FlyV1 fallback
+    monkeypatch.setattr(settings, "fly_api_token_read", "fm2_bare")
+    assert infra._auth_variants() == ["Bearer fm2_bare", "FlyV1 fm2_bare"]
+    # FlyV1-prefixed -> try verbatim first, then Bearer of the core
+    monkeypatch.setattr(settings, "fly_api_token_read", "FlyV1 fm2_org")
+    assert infra._auth_variants() == ["FlyV1 fm2_org", "Bearer fm2_org"]
+    # stray "Bearer " prefix + whitespace tolerated
     monkeypatch.setattr(settings, "fly_api_token_read", "  Bearer FlyV1 fm2_x  ")
-    assert infra._auth_header_value() == "FlyV1 fm2_x"
+    assert infra._auth_variants() == ["FlyV1 fm2_x", "Bearer fm2_x"]
+
+
+class _SchemeClient:
+    """Rejects (401) every scheme except the one it declares acceptable."""
+    def __init__(self, ok_auth):
+        self.ok_auth = ok_auth
+        self.tried = []
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def request(self, method, url, headers=None, **kw):
+        auth = (headers or {}).get("Authorization")
+        self.tried.append(auth)
+        code = 200 if auth == self.ok_auth else 401
+        class R:
+            status_code = code
+            def json(self): return []
+            def raise_for_status(self): pass
+        return R()
+
+
+def test_request_falls_back_to_second_scheme(monkeypatch):
+    monkeypatch.setattr(settings, "fly_api_token_read", "fm2_bare")
+    c = _SchemeClient(ok_auth="FlyV1 fm2_bare")  # only FlyV1 works
+    r = infra._request(c, "GET", "https://x/y")
+    assert r.status_code == 200
+    assert c.tried == ["Bearer fm2_bare", "FlyV1 fm2_bare"]  # tried Bearer, then FlyV1
