@@ -177,3 +177,17 @@ def change_password(body: ChangePasswordIn, current_user: User = Depends(get_cur
     current_user.hashed_password = hash_password(body.new_password)
     db.commit()
     return {"status": "password changed"}
+
+
+@router.get("/briefing", tags=["jarvis"])
+def briefing_preview(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Compose the morning briefing on demand (does not email)."""
+    from app.briefing import compose_briefing
+    return {"briefing": compose_briefing(db)}
+
+
+@router.post("/briefing/send", tags=["jarvis"])
+def briefing_send(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Compose and email the briefing to the owner now."""
+    from app.briefing import send_briefing
+    return {"status": send_briefing(db)}

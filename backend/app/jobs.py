@@ -129,6 +129,13 @@ def _handle_email_copy(db: Session, payload: dict) -> str:
     return f"emailed {to}"
 
 
+@job_handler("morning_briefing")
+def _handle_morning_briefing(db: Session, payload: dict) -> str:
+    from app.briefing import send_briefing
+
+    return send_briefing(db)
+
+
 @job_handler("reflect")
 def _handle_reflect(db: Session, payload: dict) -> str:
     from app.reflector import reflect_conversation

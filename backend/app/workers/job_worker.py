@@ -30,8 +30,37 @@ def run_once() -> int:
         db.close()
 
 
+def _start_briefing_scheduler():
+    """Schedule the daily morning briefing (enqueues a job the worker then runs)."""
+    if not settings.briefing_enabled:
+        log.info("morning briefing disabled (BRIEFING_ENABLED=false)")
+        return None
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+
+        def _enqueue():
+            db = SessionLocal()
+            try:
+                from app.jobs import enqueue
+                enqueue(db, "morning_briefing", {}, channel="briefing", actor="scheduler")
+                log.info("enqueued morning_briefing")
+            finally:
+                db.close()
+
+        sched = BackgroundScheduler(timezone=settings.calendar_timezone)
+        sched.add_job(_enqueue, "cron", hour=settings.briefing_hour, minute=settings.briefing_minute)
+        sched.start()
+        log.info("briefing scheduled daily at %02d:%02d %s",
+                 settings.briefing_hour, settings.briefing_minute, settings.calendar_timezone)
+        return sched
+    except Exception as e:  # noqa: BLE001
+        log.error("could not start briefing scheduler: %s", e)
+        return None
+
+
 def watch(interval: int) -> None:
     log.info("Job worker watching every %ss", interval)
+    _start_briefing_scheduler()
     while True:
         try:
             n = run_once()

@@ -73,6 +73,19 @@ export default function AdminPage() {
     onError: (e) => setPwMsg({ ok: false, text: String(e.message) }),
   });
 
+  const [briefing, setBriefing] = useState("");
+  const [briefStatus, setBriefStatus] = useState(null);
+  const previewBriefing = useMutation({
+    mutationFn: () => api.get("/briefing"),
+    onSuccess: (d) => setBriefing(d.briefing),
+    onError: (e) => setBriefStatus(String(e.message)),
+  });
+  const sendBriefing = useMutation({
+    mutationFn: () => api.post("/briefing/send", {}),
+    onSuccess: (d) => setBriefStatus(d.status),
+    onError: (e) => setBriefStatus(String(e.message)),
+  });
+
   const toolList = tools.data?.tools ?? [];
 
   return (
@@ -92,6 +105,23 @@ export default function AdminPage() {
           <pre className="cal-result">{calHealth.data.result}</pre>
         )}
         <p className="hint">Raw output of the calendar tool — no AI paraphrasing.</p>
+      </div>
+
+      <div className="card">
+        <div className="row space">
+          <h2>Morning briefing</h2>
+          <span>
+            <button onClick={() => previewBriefing.mutate()} disabled={previewBriefing.isPending}>
+              {previewBriefing.isPending ? "Composing…" : "Preview"}
+            </button>
+            <button className="link-btn" onClick={() => sendBriefing.mutate()} disabled={sendBriefing.isPending}>
+              {sendBriefing.isPending ? "Sending…" : "Send to my email now"}
+            </button>
+          </span>
+        </div>
+        {briefStatus && <p className="hint">{briefStatus}</p>}
+        {briefing && <pre className="cal-result">{briefing}</pre>}
+        <p className="hint">Daily send is controlled by BRIEFING_ENABLED / BRIEFING_HOUR on the server.</p>
       </div>
 
       <div className="card">

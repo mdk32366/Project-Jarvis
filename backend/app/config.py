@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     # How many semantically-relevant facts to inject into the system preamble.
     memory_recall_k: int = 8
 
+    # ── Morning briefing (Phase 2) ───────────────────────────────────────────
+    briefing_enabled: bool = False          # turn on to send the daily email
+    briefing_hour: int = 6                  # local hour (24h) to send
+    briefing_minute: int = 30
+
     # ── Google Calendar (read-only, service account) ─────────────────────────
     google_service_account_json: str = ""   # the SA key JSON (paste as a Fly secret)
     google_calendar_id: str = "primary"     # or your calendar's ID/email
