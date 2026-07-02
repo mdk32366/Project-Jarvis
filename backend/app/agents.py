@@ -54,6 +54,15 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "tool to persist it, then confirm what you saved.",
         ["remember_fact"],
     ),
+    "infra": Agent(
+        "infra",
+        "Reports hosted-app (Fly.io) health and estimated spend (read-only).",
+        "You are JARVIS's infrastructure monitor. Use fleet_health to report which hosted "
+        "apps/machines are up, and fleet_spend for credit balance and estimated run-rate. "
+        "Be precise about status; flag anything not fully 'started'. Note that spend is an "
+        "estimate, not an exact bill.",
+        ["fleet_health", "fleet_spend"],
+    ),
     "scheduling": Agent(
         "scheduling",
         "Checks the user's calendar and helps with scheduling (calendar integration pending).",
@@ -82,18 +91,25 @@ def build_agents(db=None) -> dict[str, Agent]:
 
 
 def seed_agents(db) -> int:
-    """Insert DEFAULT_AGENTS into an empty agent_configs table. Returns count seeded."""
+    """Additively seed any DEFAULT_AGENTS missing (by name) from agent_configs.
+
+    Safe to run every startup: inserts only default agents not already present,
+    so newly code-defined specialists (e.g. `infra`) appear after a deploy while
+    user-edited rows are never touched. Returns the count newly inserted.
+    """
     from app.models import AgentConfig
 
-    if db.execute(select(AgentConfig)).scalars().first() is not None:
-        return 0
+    existing = {r.name for r in db.execute(select(AgentConfig)).scalars().all()}
     n = 0
     for a in DEFAULT_AGENTS.values():
+        if a.name in existing:
+            continue
         db.add(AgentConfig(name=a.name, description=a.description,
                            system_prompt=a.system, tools=json.dumps(a.tools), enabled=True))
         n += 1
-    db.commit()
-    log.info("seeded %d default agents", n)
+    if n:
+        db.commit()
+        log.info("seeded %d default agent(s)", n)
     return n
 
 

@@ -23,7 +23,7 @@ from app.models import Memory
 log = logging.getLogger(__name__)
 
 # Sources not yet integrated — shown so the briefing is honest about coverage.
-_PENDING_SECTIONS = ["Upcoming bills", "Weekend & travel", "Project status", "Hosted-app health & spend"]
+_PENDING_SECTIONS = ["Upcoming bills", "Weekend & travel", "Project status"]
 
 
 def _safe(label: str, fn):
@@ -39,11 +39,14 @@ def gather_context(db: Session) -> str:
     """Collect raw material from every live source into one text block."""
     from app.handlers.finance import _get_portfolio
     from app.handlers.scheduling import _calendar_lookup
+    from app.handlers.infra import _fleet_health, _fleet_spend
 
     ctx = Context(db=db, channel="briefing", actor="system", thread_key="briefing")
     today = _safe("calendar", lambda: _calendar_lookup({"range": "today"}, ctx))
     week = _safe("calendar", lambda: _calendar_lookup({"range": "this week"}, ctx))
     portfolio = _safe("portfolio", lambda: _get_portfolio({}, ctx))
+    health = _safe("infra", lambda: _fleet_health({}, ctx))
+    spend = _safe("infra", lambda: _fleet_spend({}, ctx))
 
     facts = _safe("memory", lambda: db.execute(select(Memory).order_by(Memory.created_at.desc()).limit(5)).scalars().all())
     if isinstance(facts, str):
@@ -56,6 +59,12 @@ def gather_context(db: Session) -> str:
     if portfolio and not portfolio.startswith("[demo mode]") and not portfolio.startswith("(portfolio unavailable"):
         sections.append(f"## Portfolio\n{portfolio}")
     sections.append(f"## Recent notes/memory\n{fact_lines}")
+    # Hosted apps — only when a Fly token is configured (mirror portfolio skip).
+    if isinstance(health, str) and not health.startswith("[infra not configured]"):
+        block = health
+        if isinstance(spend, str) and not spend.startswith("[infra not configured]"):
+            block += "\n\n" + spend
+        sections.append(f"## Hosted apps\n{block}")
     sections.append("## Not yet connected\n" + ", ".join(_PENDING_SECTIONS))
     return "\n\n".join(sections)
 

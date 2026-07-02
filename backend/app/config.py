@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     google_calendar_id: str = "primary"     # or your calendar's ID/email
     calendar_timezone: str = "America/Los_Angeles"
 
+    # ── Infra / hosted-app monitoring (Phase 2) ──────────────────────────────
+    # Fly API token (read-only or deploy token) for fleet health + credit balance.
+    fly_api_token_read: str = ""
+    # Comma-separated Fly app names to report on in the briefing / infra tools.
+    watched_fly_apps: str = "jarvis-mdk"
+
     # ── Job queue / worker (Phase 1) ─────────────────────────────────────────
     worker_poll_seconds: int = 5
     job_max_attempts: int = 3
@@ -113,6 +119,10 @@ class Settings(BaseSettings):
     @property
     def allowed_number_list(self) -> list[str]:
         return [normalize_number(s) for s in self.allowed_numbers.split(",") if s.strip()]
+
+    @property
+    def watched_fly_app_list(self) -> list[str]:
+        return [a.strip() for a in self.watched_fly_apps.split(",") if a.strip()]
 
     @property
     def owner_email_resolved(self) -> str:

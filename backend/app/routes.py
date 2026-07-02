@@ -168,6 +168,16 @@ def calendar_health(_: User = Depends(get_current_user), db: Session = Depends(g
     return {"result": _calendar_lookup({"range": "this week"}, ctx)}
 
 
+@router.get("/infra/health", tags=["admin"])
+def infra_health(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return RAW fleet health + spend so Fly setup issues are visible in the UI."""
+    from app.handlers.base import Context
+    from app.handlers.infra import _fleet_health, _fleet_spend
+
+    ctx = Context(db=db, channel="admin", actor="admin", thread_key="infra")
+    return {"health": _fleet_health({}, ctx), "spend": _fleet_spend({}, ctx)}
+
+
 @router.post("/auth/change-password", tags=["auth"])
 def change_password(body: ChangePasswordIn, current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     if not verify_password(body.current_password, current_user.hashed_password):
