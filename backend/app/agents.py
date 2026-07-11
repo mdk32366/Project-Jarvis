@@ -56,7 +56,8 @@ DEFAULT_AGENTS: dict[str, Agent] = {
     ),
     "infra": Agent(
         "infra",
-        "Reports hosted-app (Fly.io) health and estimated spend (read-only).",
+        "The user's HOSTED apps on Fly.io: are they up, and what are they costing "
+        "(read-only). NOT the local network machines (that's `netstatus`).",
         "You are JARVIS's infrastructure monitor. Use fleet_health to report which hosted "
         "apps/machines are up, and fleet_spend for credit balance and estimated run-rate. "
         "Be precise about status; flag anything not fully 'started'. Note that spend is an "
@@ -65,7 +66,10 @@ DEFAULT_AGENTS: dict[str, Agent] = {
     ),
     "secretary": Agent(
         "secretary",
-        "Drafts emails, and manages the user's tasks and captured ideas.",
+        "Email drafting; tasks; captured ideas; the address book (look up and save people's "
+        "email addresses); the OWNER'S OWN details (email, phone, home airport, frequent "
+        "flyer numbers); syncing GOOGLE CONTACTS; checking GOOGLE connection status; and "
+        "scheduling JARVIS to CALL THE USER BACK.",
         "You are JARVIS's secretary. Draft emails with draft_email and return the FULL "
         "draft (to, subject, body) as your result — the orchestrator sends it, behind a "
         "confirmation gate. Never say email cannot be sent; say the draft is ready to send. "
@@ -81,7 +85,8 @@ DEFAULT_AGENTS: dict[str, Agent] = {
     ),
     "travel": Agent(
         "travel",
-        "Reports the user's trips (learned from airline confirmation emails) and searches flights.",
+        "Flight SEARCH (real fares, times, carriers — one-way, round trip, and open-jaw); "
+        "the user's booked trips, learned from airline confirmation emails. Cannot book.",
         "You are JARVIS's travel assistant. Use list_trips for booked travel — JARVIS learns "
         "trips from confirmation emails sent to its inbox, so it holds no airline credentials "
         "and cannot access airline accounts. Use search_flights to research options. You "
@@ -92,7 +97,8 @@ DEFAULT_AGENTS: dict[str, Agent] = {
     ),
     "netstatus": Agent(
         "netstatus",
-        "Reports local network status: Proxmox nodes and Uptime Kuma monitors (read-only).",
+        "Local network status: Proxmox nodes and Uptime Kuma monitors — is a machine up or "
+        "down (read-only). NOT Tailscale, and NOT the hosted Fly apps (that's `infra`).",
         "You are JARVIS's network monitor. Use get_node_status for Proxmox hosts and "
         "get_service_health for Kuma reachability. Be precise about what is down. "
         "If a node name is unrecognized, ask which was meant — never guess.",
@@ -100,7 +106,9 @@ DEFAULT_AGENTS: dict[str, Agent] = {
     ),
     "scheduling": Agent(
         "scheduling",
-        "Checks the user's calendar and helps with scheduling (calendar integration pending).",
+        "READS the user's Google Calendar (what's on today, this week, is a slot free). "
+        "Cannot create events — the orchestrator does that itself, behind the confirmation "
+        "gate.",
         "You are JARVIS's scheduling assistant. Use the calendar tool to look up events and help "
         "the user plan. If the calendar is not yet connected, say so plainly.",
         ["calendar_lookup"],
@@ -126,25 +134,88 @@ def build_agents(db=None) -> dict[str, Agent]:
 
 
 def seed_agents(db) -> int:
-    """Additively seed any DEFAULT_AGENTS missing (by name) from agent_configs.
+    """Seed missing agents AND reconcile the tool rosters of existing ones.
 
-    Safe to run every startup: inserts only default agents not already present,
-    so newly code-defined specialists (e.g. `infra`) appear after a deploy while
-    user-edited rows are never touched. Returns the count newly inserted.
+    THE BUG THIS FIXES. This used to be purely additive: `if name in existing:
+    continue`. New agents appeared after a deploy; existing ones were frozen at
+    whatever they looked like on the day they were first inserted.
+
+    That is fatal, because build_agents() reads the roster LIVE FROM THE DB. So a
+    tool added to an existing agent in DEFAULT_AGENTS was simply invisible in
+    production — the code said the secretary could sync contacts, the database
+    said she couldn't, and the database won. JARVIS then truthfully reported "I
+    don't have that capability" about a tool that demonstrably existed.
+
+    It went unnoticed for several deploys precisely because it fails SILENTLY and
+    the symptom (an agent claiming a missing capability) looks like a model
+    problem rather than a data problem.
+
+    THE RECONCILIATION RULE. Tools defined in code are ADDED to the DB roster;
+    tools present in the DB but not in code are LEFT ALONE. So:
+
+      * a new code-defined tool reaches production, which is the whole point;
+      * an admin who adds a tool via /api/agents keeps it;
+      * an admin who REMOVES a code-defined tool will see it come back on the
+        next deploy. That is the deliberate trade — silently losing a new
+        capability is far worse than an admin removal being undone, and the
+        latter is visible and easy to notice.
+
+    description/system_prompt are NOT touched: those are prose, and an admin who
+    tunes them should keep their wording.
+
+    Returns the number of rows inserted or changed.
     """
     from app.models import AgentConfig
 
-    existing = {r.name for r in db.execute(select(AgentConfig)).scalars().all()}
+    rows = {r.name: r for r in db.execute(select(AgentConfig)).scalars().all()}
     n = 0
+
     for a in DEFAULT_AGENTS.values():
-        if a.name in existing:
+        row = rows.get(a.name)
+
+        if row is None:
+            db.add(AgentConfig(name=a.name, description=a.description,
+                               system_prompt=a.system, tools=json.dumps(a.tools),
+                               enabled=True))
+            n += 1
             continue
-        db.add(AgentConfig(name=a.name, description=a.description,
-                           system_prompt=a.system, tools=json.dumps(a.tools), enabled=True))
-        n += 1
+
+        try:
+            have = json.loads(row.tools or "[]")
+        except (TypeError, ValueError):
+            have = []
+
+        missing = [t for t in a.tools if t not in have]
+        if missing:
+            row.tools = json.dumps(have + missing)      # union: never drop
+            n += 1
+            log.info("agent %r: added %s", a.name, missing)
+
+        # The DESCRIPTION is the routing signal, not documentation. It is what the
+        # orchestrator reads (via the delegate tool's enum) to decide where to send
+        # a request. A capability absent from the description is INVISIBLE, however
+        # many tools the agent actually holds.
+        #
+        # This is exactly what happened: the secretary's roster gained
+        # sync_google_contacts, but her description still said only "drafts emails,
+        # manages tasks and ideas". The orchestrator read that, saw nothing about
+        # Google, and never routed there — it delegated a QUESTION ("do you have
+        # access to Google Contacts?") instead of the TASK. The secretary, unable to
+        # introspect, answered from her prompt: "no."
+        #
+        # So descriptions must reconcile too. Unlike tools (union), this OVERWRITES:
+        # a stale description is actively harmful, and there is no sane way to merge
+        # two English sentences. An admin who rewrites one will see it reverted on
+        # deploy — the correct trade, since a silently unroutable capability is far
+        # worse. system_prompt is still left alone: that's tuning, not routing.
+        if row.description != a.description:
+            log.info("agent %r: description updated", a.name)
+            row.description = a.description
+            n += 1
+
     if n:
         db.commit()
-        log.info("seeded %d default agent(s)", n)
+        log.info("seeded/reconciled %d agent(s)", n)
     return n
 
 
@@ -244,16 +315,22 @@ def register_delegate(reg: Registry, db=None) -> None:
         {
             "name": "delegate",
             "description": (
-                "Delegate a self-contained subtask to a specialist sub-agent and get its result. "
-                "Use for focused work you can hand off, then synthesize the reply. "
-                f"Available agents — {roster}."
+                "Hand a specialist an ACTION TO PERFORM, and get its result back.\n\n"
+                "Delegate the TASK, never a question about the task. Say 'Sync the user's "
+                "Google contacts', not 'Do you have access to Google Contacts?' — a "
+                "sub-agent cannot introspect its own capabilities and will simply guess, "
+                "usually wrongly. If a specialist below lists a capability, it HAS it: "
+                "tell it to do the thing.\n\n"
+                f"Specialists — {roster}"
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "agent": {"type": "string", "description": "Which specialist to use.",
                               "enum": list(agents.keys())},
-                    "task": {"type": "string", "description": "The self-contained task for the sub-agent."},
+                    "task": {"type": "string",
+                             "description": "The self-contained ACTION for the specialist to "
+                                            "perform. An imperative, not a question."},
                 },
                 "required": ["agent", "task"],
             },

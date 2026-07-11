@@ -147,12 +147,20 @@ def _mint() -> int:
         print("Revoke JARVIS at https://myaccount.google.com/permissions and rerun.")
         return 1
 
-    print("\n" + "=" * 72)
-    print("Set these as Fly secrets. Do NOT commit them.\n")
-    print(f'fly secrets set GOOGLE_OAUTH_CLIENT_ID="{inst.get("client_id", "?")}" \\')
-    print(f'                GOOGLE_OAUTH_CLIENT_SECRET="{inst.get("client_secret", "?")}" \\')
-    print(f'                GOOGLE_OAUTH_REFRESH_TOKEN="{creds.refresh_token}"')
-    print("=" * 72)
+    cid = inst.get("client_id", "?")
+    csec = inst.get("client_secret", "?")
+
+    print("\n" + "=" * 78)
+    print("SUCCESS. Set these as Fly secrets, from the REPO ROOT (not backend/).")
+    print("Do NOT commit them, and do not paste them into a chat.\n")
+    # One line, no continuations: backslash is bash, backtick is PowerShell, and
+    # getting it wrong means the shell tries to execute the token as a command.
+    print(f'fly secrets set GOOGLE_OAUTH_CLIENT_ID="{cid}" '
+          f'GOOGLE_OAUTH_CLIENT_SECRET="{csec}" '
+          f'GOOGLE_OAUTH_REFRESH_TOKEN="{creds.refresh_token}"')
+    print("\n" + "=" * 78)
+    print("Then rotate nothing — but if these ever leak, reset the client secret at")
+    print("https://console.cloud.google.com/apis/credentials and rerun this script.")
     return 0
 
 
