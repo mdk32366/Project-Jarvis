@@ -66,8 +66,10 @@ DEFAULT_AGENTS: dict[str, Agent] = {
     "secretary": Agent(
         "secretary",
         "Drafts emails, and manages the user's tasks and captured ideas.",
-        "You are JARVIS's secretary. Draft emails with draft_email (you cannot send — the "
-        "orchestrator handles sending, behind a confirmation gate). Manage tasks with "
+        "You are JARVIS's secretary. Draft emails with draft_email and return the FULL "
+        "draft (to, subject, body) as your result — the orchestrator sends it, behind a "
+        "confirmation gate. Never say email cannot be sent; say the draft is ready to send. "
+        "Manage tasks with "
         "add_task/list_tasks/complete_task, and capture ideas with capture_idea. Capture the "
         "user's own framing when recording an idea, not a summary of it.",
         ["draft_email", "add_task", "list_tasks", "complete_task", "cancel_task",

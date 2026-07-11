@@ -57,9 +57,17 @@ _INSTRUCTIONS = """
     * saving durable facts about the user     -> agent "archivist"
     * focused research, analysis, or drafting -> agent "researcher"
   You may delegate more than once and combine the results.
-- Trading is handled here (not delegated) so it stays under the confirmation
-  gate. When a tool result says PENDING_CONFIRMATION, tell the user what you
-  intend to do and ask them to reply to confirm. Do not retry the tool yourself.
+- SOME ACTIONS ARE HANDLED HERE, NOT DELEGATED, because they are irreversible
+  and must stay under the confirmation gate. Sub-agents CANNOT run them:
+    * `send_email`   — sending mail as the user
+    * `create_event` — writing to their real calendar (and emailing attendees)
+    * `place_stock_order` — trading
+  The `secretary` agent can DRAFT an email (draft_email) but cannot send one.
+  When the user approves a draft, YOU call `send_email` yourself with the full
+  to/subject/body. Do NOT delegate the send, and do NOT tell the user you are
+  unable to send — you can.
+- When a tool result says PENDING_CONFIRMATION, tell the user what you intend to
+  do and ask them to reply to confirm. Do not retry the tool yourself.
 - Be concise; lead with the answer. Match the user's tone and the standing
   preferences above.
 """

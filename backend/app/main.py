@@ -266,7 +266,7 @@ third parties.</p>
 <footer>
 <p>JARVIS Assistant is a private, single-user personal assistant. It is not a commercial
 messaging service and does not send marketing messages.</p>
-<p>Last updated: 2026-07-11 &middot; <a href="/app">Owner sign-in</a></p>
+<p>Last updated: 2026-07-11 &middot; <a href="/login">Owner sign-in</a></p>
 </footer>
 </body></html>"""
 

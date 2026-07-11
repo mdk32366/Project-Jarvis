@@ -62,7 +62,7 @@ def test_twiml_working_alternates_filler():
 def test_run_turn_stores_reply(db, monkeypatch):
     install_llm(monkeypatch, say("All nodes are online."))
     open_turn(db, "CA_TEST", 0, "status of the cluster?")
-    run_turn(db, "CA_TEST", 0, "+15551230000", "status of the cluster?")
+    run_turn("CA_TEST", 0, "+15551230000", "status of the cluster?")
 
     row = get_turn(db, "CA_TEST", 0)
     assert row.status == "done"
@@ -75,7 +75,7 @@ def test_run_turn_records_error_rather_than_raising(db, monkeypatch):
 
     monkeypatch.setattr("app.orchestrator.create_message", boom)
     open_turn(db, "CA_ERR", 0, "hello")
-    run_turn(db, "CA_ERR", 0, "+15551230000", "hello")   # must not raise
+    run_turn("CA_ERR", 0, "+15551230000", "hello")   # must not raise
 
     row = get_turn(db, "CA_ERR", 0)
     assert row.status == "error"
@@ -92,8 +92,8 @@ def test_thread_key_is_call_sid_not_number(db, monkeypatch):
     from app.memory import get_or_create_conversation
 
     install_llm(monkeypatch, say("ok"))
-    run_turn(db, "CA_ONE", 0, "+15551230000", "hello")
-    run_turn(db, "CA_TWO", 0, "+15551230000", "hello")
+    run_turn("CA_ONE", 0, "+15551230000", "hello")
+    run_turn("CA_TWO", 0, "+15551230000", "hello")
 
     c1 = get_or_create_conversation(db, "voice", "CA_ONE", "")
     c2 = get_or_create_conversation(db, "voice", "CA_TWO", "")
@@ -226,3 +226,102 @@ def test_unknown_node_asks_rather_than_guessing(db):
 
     assert "do not guess" in out.lower()
     assert "pve-01" in out          # offers the known set
+
+
+def test_run_turn_opens_its_own_session(db, monkeypatch):
+    """REGRESSION: run_turn must NOT depend on the request-scoped session.
+
+    Depends(get_db) closes the session in a `finally` when the response is sent;
+    a BackgroundTask runs AFTER that. run_turn was originally handed the request's
+    db and wrote through a CLOSED session — which raced, and reliably lost on the
+    last turn of a call. That was the `JARVIS: [error]` on every hangup.
+
+    The proof: close the caller's session first, then run the turn. If run_turn
+    still depends on it, this raises. If it opens its own, it works.
+    """
+    install_llm(monkeypatch, say("All good."))
+    open_turn(db, "CA_CLOSED", 0, "status?")
+    db.commit()
+    db.close()                      # simulate FastAPI tearing the session down
+
+    run_turn("CA_CLOSED", 0, "+15551230000", "status?")   # must not raise
+
+    from app.database import SessionLocal
+    fresh = SessionLocal()
+    try:
+        row = get_turn(fresh, "CA_CLOSED", 0)
+        assert row.status == "done", f"turn failed with a closed caller session: {row.error}"
+        assert "good" in row.reply.lower()
+    finally:
+        fresh.close()
+
+
+def test_transcript_is_emailed_once_per_call(db, monkeypatch):
+    """REGRESSION: three transcripts arrived for one call.
+
+    Four call sites can fire (max turns, "goodbye", poll-budget exhaustion, and
+    the hangup status callback) and one call can trip several. Each emailed the
+    WHOLE call, so you got escalating duplicates.
+    """
+    from app.channels.voice_pipeline import _transcript_sent, email_transcript
+    from app.models import Job
+
+    _transcript_sent.clear()
+    install_llm(monkeypatch, say("done"))
+    open_turn(db, "CA_DUP", 0, "hi")
+    run_turn("CA_DUP", 0, "+15551230000", "hi")
+
+    # Every call site, all firing on the same call.
+    email_transcript(db, "CA_DUP", "+15551230000")
+    email_transcript(db, "CA_DUP", "+15551230000")
+    email_transcript(db, "CA_DUP", "+15551230000")
+
+    jobs = db.query(Job).filter_by(kind="email_copy", thread_key="CA_DUP").all()
+    assert len(jobs) == 1, f"expected 1 transcript, queued {len(jobs)}"
+
+
+def test_new_turn_is_deferred_while_prior_turn_still_running(db):
+    """REGRESSION: THE [error] bug.
+
+    From the prod logs:
+        20:03:59 WARNING - poll budget exhausted for CA.../2
+        20:04:03 httpx  - POST api.anthropic.com "200 OK"     <- turn 2 STILL RUNNING
+        20:04:04 INFO   - Voice turn CA.../3: 'Ninth from Sacramento.'
+
+    The poll budget expired, JARVIS said "I'll email you," the caller spoke
+    again — and turn 3 started while turn 2 was still orchestrating. Both share
+    a CallSid, so both share a thread_key and a conversation row. They collided;
+    the loser was recorded as [error].
+
+    Every single [error] in the transcripts is immediately preceded by a "poll
+    budget exhausted" for the PRIOR turn.
+    """
+    from app.channels.voice_pipeline import prior_turn_still_running
+
+    open_turn(db, "CA_RACE", 0, "first")          # left pending — still running
+    assert prior_turn_still_running(db, "CA_RACE", 1) is True
+
+    row = get_turn(db, "CA_RACE", 0)
+    row.status = "done"
+    db.commit()
+    assert prior_turn_still_running(db, "CA_RACE", 1) is False
+
+
+def test_poll_budget_covers_real_orchestration_time():
+    """The old budget (8 polls ~= 16s) was exhausted on nearly every substantive
+    turn — prod logs show 20-35s for a delegate hop. That produced BOTH the
+    constant "I'll email you" AND, via the overlap above, the [error]s."""
+    from app.channels.voice_pipeline import MAX_POLLS, POLL_INTERVAL_SECONDS
+
+    assert MAX_POLLS * POLL_INTERVAL_SECONDS >= 35, "budget still shorter than real turns"
+
+
+def test_send_email_is_not_in_any_agent_roster():
+    """The secretary was told to handle email, but send_email is gated and lives
+    ONLY on the top-level registry — so the secretary genuinely could not send,
+    and correctly told the user so. The orchestrator must send it instead."""
+    from app.agents import DEFAULT_AGENTS
+
+    for name, agent in DEFAULT_AGENTS.items():
+        assert "send_email" not in agent.tools, f"{name} claims send_email but cannot run it"
+    assert "draft_email" in DEFAULT_AGENTS["secretary"].tools

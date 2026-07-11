@@ -142,11 +142,29 @@ async def voice_gather(
         vp.email_transcript(db, call_sid, from_number)
         return _xml(vp.twiml_hangup("Very good. Goodbye."))
 
+    # THE [error] FIX: never start a turn while an earlier one is still
+    # orchestrating. Two run_turns sharing a CallSid share a thread_key, share a
+    # conversation row, and collide — the loser was recorded as [error].
+    #
+    # This happened constantly because the poll budget expired mid-orchestration,
+    # the caller heard "I'll email you," and spoke again while the abandoned task
+    # was still running.
+    if vp.prior_turn_still_running(db, call_sid, turn):
+        log.info("turn %s/%s deferred — prior turn still running", call_sid, turn)
+        return _xml(vp.twiml_gather(
+            "Still finishing the last one — give me a moment, then say that again.",
+            turn=turn,
+        ))
+
     log.info("Voice turn %s/%s: %r", call_sid, turn, speech)
     vp.open_turn(db, call_sid, turn, speech)
     # Runs after this response is sent. THIS is why we don't call orchestrate()
     # inline — it can take far longer than Twilio will wait.
-    background.add_task(vp.run_turn, db, call_sid, turn, from_number, speech)
+    # NOTE: run_turn deliberately does NOT receive `db`. Depends(get_db) closes
+    # the session when this response is sent; a BackgroundTask runs after that.
+    # run_turn opens its own session. Passing `db` here caused every call's last
+    # turn to fail with "[error]".
+    background.add_task(vp.run_turn, call_sid, turn, from_number, speech)
 
     return _xml(vp.twiml_working(call_sid, turn, poll=0))
 

@@ -99,14 +99,19 @@ VOICE_NEGATIVE = {"negative", "cancel", "abort", "belay", "no"}
 
 # ── Poll budget (TDD §6.2) ───────────────────────────────────────────────────
 POLL_INTERVAL_SECONDS = 2
-MAX_POLLS = 8  # ~16s of orchestration before we bail to email
+# Real orchestration on this app takes 20-35s: several Anthropic round-trips plus
+# a `delegate` hop into a sub-agent (which runs its OWN tool loop). The original
+# 8 polls (~16s) was exhausted on nearly every substantive turn, which is what
+# produced both the constant "I'll email you" AND the [error]s: the abandoned
+# background task kept running and collided with the next turn.
+MAX_POLLS = 20  # ~40s
 MAX_TURNS = 40  # hard stop on call length
 
-GREETING = "What's shakin'?"
+GREETING = "JARVIS here. What do you need?"
 FILLER = "Copy that."
 TIMEOUT_FALLBACK = (
-    "That's taking longer than I can hold the line for. "
-    "I'll email you the answer. Anything else?"
+    "Still working on that one — I'll email you the full answer. "
+    "Anything else while I finish?"
 )
 NOT_AUTHORIZED = "I'm not able to help with that. Goodbye."
 
@@ -151,41 +156,111 @@ def get_turn(db: Session, call_sid: str, turn: int) -> VoiceTurn | None:
     )
 
 
-def run_turn(db: Session, call_sid: str, turn: int, from_number: str, user_text: str) -> None:
+def prior_turn_still_running(db: Session, call_sid: str, turn: int) -> bool:
+    """Is an EARLIER turn of this call still orchestrating?
+
+    THE [error] BUG. The poll budget would expire while the background task kept
+    running. The caller, hearing "I'll email you," would speak again — starting
+    turn N+1 while turn N was still mid-orchestration. Two run_turn calls then
+    shared one CallSid (= one thread_key = one conversation row) and collided.
+    The loser raised, and its turn was recorded as [error].
+
+    Every [error] in the transcripts is immediately preceded by a "poll budget
+    exhausted" for the PRIOR turn. That is the signature.
+    """
+    return (
+        db.execute(
+            select(VoiceTurn)
+            .where(VoiceTurn.call_sid == call_sid)
+            .where(VoiceTurn.turn < turn)
+            .where(VoiceTurn.status == "pending")
+        )
+        .scalars()
+        .first()
+        is not None
+    )
+
+
+def run_turn(call_sid: str, turn: int, from_number: str, user_text: str) -> None:
     """Background: orchestrate one turn and park the result.
 
-    Runs OUTSIDE the webhook request/response cycle. Must never raise into the
-    caller — a failure here becomes a spoken apology, not a 500.
+    OPENS ITS OWN DB SESSION. This is not optional.
+
+    FastAPI's Depends(get_db) yields a REQUEST-SCOPED session and closes it in a
+    `finally` the moment the response is sent. A BackgroundTask runs AFTER that.
+    Passing the request's session in here meant the orchestrator was writing
+    through a closed session — which sometimes won the race and sometimes didn't.
+
+    That was the `JARVIS: [error]` at the end of every call: the last turn, still
+    orchestrating as the request finished, reliably lost the race.
     """
-    row = get_turn(db, call_sid, turn)
-    if row is None:
-        log.error("run_turn: no row for %s/%s", call_sid, turn)
-        return
+    from app.database import SessionLocal
+
+    db = SessionLocal()
     try:
-        reply = orchestrate(
-            db=db,
-            channel=CHANNEL,
-            thread_key=call_sid,  # per-call scoping — see module docstring
-            user_text=user_text,
-            actor=from_number,
-        )
-        row.reply = reply or "Done."
-        row.status = "done"
-        db.commit()
-    except Exception as e:  # noqa: BLE001 — a dropped call is worse than a logged error
-        log.exception("voice turn failed: %s/%s", call_sid, turn)
-        row.status = "error"
-        row.error = str(e)[:2000]
-        db.commit()
+        row = get_turn(db, call_sid, turn)
+        if row is None:
+            log.error("run_turn: no row for %s/%s", call_sid, turn)
+            return
+        try:
+            reply = orchestrate(
+                db=db,
+                channel=CHANNEL,
+                thread_key=call_sid,  # per-call scoping — see module docstring
+                user_text=user_text,
+                actor=from_number,
+            )
+            row.reply = reply or "Done."
+            row.status = "done"
+            db.commit()
+        except Exception as e:  # noqa: BLE001 — a dropped call is worse than a logged error
+            log.exception("voice turn failed: %s/%s", call_sid, turn)
+            db.rollback()
+            row = get_turn(db, call_sid, turn)
+            if row is not None:
+                row.status = "error"
+                row.error = str(e)[:2000]
+                db.commit()
+    finally:
+        db.close()
+
+
+_transcript_sent: set[str] = set()
 
 
 def email_transcript(db: Session, call_sid: str, from_number: str) -> None:
-    """Queue an emailed transcript of the call.
+    """Queue ONE emailed transcript per call.
 
     Spoken replies vanish; this is the durable audit trail. Uses the job queue
     (correct here — not latency-sensitive), unlike the orchestration step.
+
+    DEDUPED. There are four call sites (max turns, "goodbye", poll-budget
+    exhaustion, and the hangup status callback) and a single call can trip
+    several of them — a call with two slow turns plus a hangup emailed THREE
+    transcripts, each a superset of the last.
+
+    The guard is the DB, not the in-process set: `api` may be multi-machine and
+    the set is per-process. The set is only a cheap fast path.
     """
     if not settings.owner_email_resolved:
+        return
+    if call_sid in _transcript_sent:
+        return
+
+    # Authoritative check: has a transcript job for this call already been queued?
+    from app.models import Job
+
+    dupe = (
+        db.execute(
+            select(Job)
+            .where(Job.kind == "email_copy")
+            .where(Job.thread_key == call_sid)
+        )
+        .scalars()
+        .first()
+    )
+    if dupe is not None:
+        _transcript_sent.add(call_sid)
         return
     rows = (
         db.execute(
@@ -215,6 +290,7 @@ def email_transcript(db: Session, call_sid: str, from_number: str) -> None:
         thread_key=call_sid,
         actor=from_number,
     )
+    _transcript_sent.add(call_sid)
 
 
 # ── TwiML builders ───────────────────────────────────────────────────────────
