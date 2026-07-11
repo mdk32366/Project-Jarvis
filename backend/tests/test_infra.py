@@ -75,7 +75,9 @@ def test_health_all_started_is_ok(db, monkeypatch):
     monkeypatch.setattr(settings, "watched_fly_apps", "jarvis-mdk")
     monkeypatch.setattr(infra, "_list_machines", lambda c, app: [_machine(), _machine()])
     out = infra._fleet_health({}, _ctx(db))
-    assert "jarvis-mdk: OK" in out and "2 machine(s)" in out
+    # "machine(s)" -> "machines": TTS reads the parens aloud as
+    # "two machine open paren s close paren". Harmless in email, awful on a call.
+    assert "jarvis-mdk: OK" in out and "2 machines" in out  # not "machine(s)"
 
 
 def test_health_stopped_shown_as_idle_and_ok_by_default(db, monkeypatch):

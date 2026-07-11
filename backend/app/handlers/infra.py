@@ -145,15 +145,20 @@ def _fleet_health(args: dict, ctx: Context) -> str:
     import httpx
 
     lines: list[str] = []
+    healthy: list[str] = []
+    degraded: list[str] = []
+    errors: list[str] = []
     with httpx.Client(timeout=_TIMEOUT) as client:
         for app in apps:
             try:
                 machines = _list_machines(client, app)
             except Exception as e:  # noqa: BLE001 — report per-app, keep going
                 lines.append(f"- {app}: error — {e}")
+                errors.append(f"{app} ({e})")
                 continue
             if not machines:
                 lines.append(f"- {app}: no machines")
+                degraded.append(f"{app} (no machines)")
                 continue
             states: dict[str, int] = {}
             for m in machines:
@@ -168,8 +173,35 @@ def _fleet_health(args: dict, ctx: Context) -> str:
             summary = ", ".join(f"{n} {s}" for s, n in sorted(states.items()))
             flag = "OK" if started >= expected else "DEGRADED"
             detail = summary if flag == "OK" else f"{started}/{expected} up — {summary}"
-            lines.append(f"- {app}: {flag} — {total} machine(s): {detail}")
-    return "Fly fleet health:\n" + "\n".join(lines)
+            plural = "machine" if total == 1 else "machines"
+            lines.append(f"- {app}: {flag} — {total} {plural}: {detail}")
+            if flag == "OK":
+                healthy.append(app)
+            else:
+                degraded.append(f"{app} ({started} of {expected} up)")
+
+    # Report the EXCEPTION, not the table — but ONLY on voice.
+    #
+    # A table is perfectly readable with your eyes: the briefing, the dashboard,
+    # and email all keep it. Spoken aloud it is dreadful — enumerating every
+    # app's machine states is exactly what makes an assistant sound like a robot.
+    # So the channel decides, and `verbose` overrides.
+    table = "Fly fleet health:\n" + "\n".join(lines)
+    if ctx.channel != "voice" or args.get("verbose"):
+        return table
+
+    if errors:
+        return ("Couldn't reach some apps: " + "; ".join(errors)
+                + (f". The rest are up ({len(healthy)})." if healthy else "."))
+    if not degraded:
+        n = len(healthy)
+        if n == 1:
+            return f"{healthy[0]} is up and healthy."
+        return f"All {n} apps are up and healthy."
+    if len(degraded) == 1:
+        rest = f" Everything else is up ({len(healthy)})." if healthy else ""
+        return f"{degraded[0]} is degraded.{rest}"
+    return f"{len(degraded)} apps are degraded: " + "; ".join(degraded) + "."
 
 
 def _fleet_spend(args: dict, ctx: Context) -> str:
@@ -235,9 +267,19 @@ def register(reg: Registry) -> None:
     reg.register(
         {
             "name": "fleet_health",
-            "description": "Report the up/down status of the user's hosted Fly.io apps "
-                           "(per-app machine states). Read-only.",
-            "input_schema": {"type": "object", "properties": {}},
+            "description": "Status of the user's hosted Fly.io apps. Returns a SUMMARY by "
+                           "default ('all 3 apps are up' / 'jarvis-mdk is degraded') rather "
+                           "than a table. Read-only.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "verbose": {
+                        "type": "boolean",
+                        "description": "Full per-app machine detail. Default false. Only set "
+                                       "true if the user explicitly asks for details.",
+                    }
+                },
+            },
         },
         _fleet_health,
     )

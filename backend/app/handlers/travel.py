@@ -133,21 +133,145 @@ def _list_trips(args: dict, ctx: Context) -> str:
     return f"{len(rows)} trip(s) on file:\n" + "\n".join(lines)
 
 
-def _search_flights(args: dict, ctx: Context) -> str:
-    """STUB until an Amadeus/Duffel key is configured.
+_DUFFEL_API = "https://api.duffel.com"
+_DUFFEL_TIMEOUT = 30.0
+# Duffel's own supplier timeout defaults to 20s. Ask for less so we get partial
+# results back rather than an empty response — a caller on the phone would
+# rather hear three options than wait for all of them.
+_SUPPLIER_TIMEOUT_MS = 12000
 
-    Search is a legitimate API problem — unlike account access, which has no
-    consumer API and would require credentials + scraping. Booking stays manual:
-    JARVIS researches, emails options, opens a task. The user books.
+
+def _duffel_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {settings.duffel_api_key}",
+        "Duffel-Version": "v2",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+
+def _money(offer: dict) -> str:
+    amt = offer.get("total_amount", "?")
+    cur = offer.get("total_currency", "")
+    try:
+        return f"${float(amt):,.0f}" if cur == "USD" else f"{amt} {cur}"
+    except (TypeError, ValueError):
+        return f"{amt} {cur}"
+
+
+def _fmt_slice(sl: dict) -> str:
+    """One slice, spoken-friendly. Segments matter: 'direct' vs '1 stop'."""
+    segs = sl.get("segments") or []
+    if not segs:
+        return "?"
+    first, last = segs[0], segs[-1]
+
+    def _t(iso: str) -> str:
+        try:
+            return datetime.fromisoformat(iso).strftime("%-I:%M %p")
+        except (TypeError, ValueError):
+            return "?"
+
+    orig = (first.get("origin") or {}).get("iata_code", "?")
+    dest = (last.get("destination") or {}).get("iata_code", "?")
+    dep = _t(first.get("departing_at", ""))
+    arr = _t(last.get("arriving_at", ""))
+
+    stops = len(segs) - 1
+    hops = "direct" if stops == 0 else f"{stops} stop" if stops == 1 else f"{stops} stops"
+
+    # US regulation: the OPERATING carrier must be shown, not just the marketer.
+    carrier = ((first.get("operating_carrier") or {}).get("name")
+               or (first.get("marketing_carrier") or {}).get("name") or "?")
+
+    return f"{orig} to {dest}, departs {dep}, arrives {arr}, {hops}, {carrier}"
+
+
+def _search_flights(args: dict, ctx: Context) -> str:
+    """Search real flights via Duffel.
+
+    RESEARCH ONLY. This cannot book, and that is deliberate: booking is
+    irreversible, and voice authenticates on caller ID, which is spoofable. The
+    intended loop is JARVIS researches -> emails you the options -> opens a task
+    -> YOU book -> the airline's confirmation email comes back in and the trip is
+    captured automatically (see record_trip_from_email).
     """
-    if not settings.duffel_api_key and not settings.amadeus_api_key:
+    if not settings.duffel_api_key:
         return (
             "[flight search not configured] I can't search flights yet — that needs a "
-            "Duffel or Amadeus API key (DUFFEL_API_KEY / AMADEUS_API_KEY). "
-            "I can still tell you about trips you've already booked, since airlines "
-            "email the confirmations here."
+            "Duffel API key (DUFFEL_API_KEY). I can still tell you about trips you've "
+            "already booked, since airlines email the confirmations here."
         )
-    return "[flight search configured but not yet implemented]"
+
+    origin = (args.get("origin") or "").strip().upper()
+    dest = (args.get("destination") or "").strip().upper()
+    date = (args.get("date") or "").strip()
+    ret = (args.get("return_date") or "").strip()
+    if not (origin and dest and date):
+        return "Need an origin, a destination, and a date."
+
+    slices = [{"origin": origin, "destination": dest, "departure_date": date}]
+    if ret:
+        # Open-jaw is supported: the return slice can start somewhere else.
+        ret_from = (args.get("return_from") or dest).strip().upper()
+        ret_to = (args.get("return_to") or origin).strip().upper()
+        slices.append({"origin": ret_from, "destination": ret_to, "departure_date": ret})
+
+    payload = {
+        "data": {
+            "slices": slices,
+            "passengers": [{"type": "adult"}] * max(1, int(args.get("passengers") or 1)),
+            "cabin_class": (args.get("cabin") or "economy").lower(),
+        }
+    }
+
+    import httpx
+
+    try:
+        with httpx.Client(timeout=_DUFFEL_TIMEOUT) as client:
+            r = client.post(
+                f"{_DUFFEL_API}/air/offer_requests",
+                headers=_duffel_headers(),
+                params={"return_offers": "true", "supplier_timeout": _SUPPLIER_TIMEOUT_MS},
+                json=payload,
+            )
+        if r.status_code == 401:
+            return "Duffel rejected the API key. Check DUFFEL_API_KEY."
+        if r.status_code >= 400:
+            detail = ""
+            try:
+                errs = r.json().get("errors") or []
+                detail = "; ".join(e.get("message", "") for e in errs)
+            except Exception:  # noqa: BLE001
+                detail = r.text[:200]
+            return f"Flight search failed ({r.status_code}): {detail}"
+        offers = ((r.json().get("data") or {}).get("offers")) or []
+    except Exception as e:  # noqa: BLE001 — tools must never crash the loop
+        log.error("duffel search failed: %s", e)
+        return f"Couldn't reach the flight search service: {e}"
+
+    if not offers:
+        return (f"No flights found for {origin} to {dest} on {date}. "
+                f"Try a nearby airport or a different date.")
+
+    # Cheapest first. Spoken aloud, three is plenty — more is noise.
+    def _amt(o):
+        try:
+            return float(o.get("total_amount") or 1e9)
+        except (TypeError, ValueError):
+            return 1e9
+
+    offers.sort(key=_amt)
+    top = offers[: int(args.get("limit") or 3)]
+
+    lines = [f"{len(offers)} options, cheapest first:"]
+    for i, o in enumerate(top, 1):
+        legs = " | ".join(_fmt_slice(sl) for sl in (o.get("slices") or []))
+        lines.append(f"{i}. {_money(o)} — {legs}")
+    if len(offers) > len(top):
+        lines.append(f"({len(offers) - len(top)} more available.)")
+    lines.append("I can't book — say the word and I'll email these to you and open a task.")
+    return "\n".join(lines)
 
 
 def register(reg: Registry) -> None:
@@ -163,14 +287,30 @@ def register(reg: Registry) -> None:
     reg.register(
         {
             "name": "search_flights",
-            "description": "Search for available flights (requires a Duffel/Amadeus key). "
-                           "This only RESEARCHES — it cannot book. Read-only.",
+            "description": (
+                "Search real flights via Duffel. RESEARCH ONLY — this cannot book, and "
+                "never will over voice. Supports one-way, round trip, and open-jaw "
+                "(returning from a different city). Returns the cheapest options."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "origin": {"type": "string", "description": "Airport code, e.g. SEA"},
-                    "destination": {"type": "string"},
-                    "date": {"type": "string", "description": "ISO date"},
+                    "origin": {"type": "string", "description": "IATA code, e.g. SEA"},
+                    "destination": {"type": "string", "description": "IATA code, e.g. SFO"},
+                    "date": {"type": "string", "description": "Departure date, ISO (2026-08-04)"},
+                    "return_date": {"type": "string",
+                                    "description": "ISO date. Omit for one-way."},
+                    "return_from": {"type": "string",
+                                    "description": "IATA code the return departs FROM. Only "
+                                                   "needed for an open-jaw (e.g. fly into SFO, "
+                                                   "home from SMF). Defaults to `destination`."},
+                    "return_to": {"type": "string",
+                                  "description": "IATA code the return lands at. Defaults to "
+                                                 "`origin`."},
+                    "passengers": {"type": "integer", "description": "Adults. Default 1."},
+                    "cabin": {"type": "string",
+                              "enum": ["economy", "premium_economy", "business", "first"]},
+                    "limit": {"type": "integer", "description": "How many options. Default 3."},
                 },
                 "required": ["origin", "destination", "date"],
             },

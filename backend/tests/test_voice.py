@@ -204,16 +204,48 @@ def test_voice_agent_allowlist_matches_default_rosters():
 
 
 # ── Status tools speak like humans (TDD 7.1) ─────────────────────────────────
-def test_node_status_renders_for_speech(db):
+def test_node_status_summarizes_rather_than_reading_the_table(db):
+    """She should sound like a colleague, not a machine.
+
+    "rpi-02 is offline, everything else is up" — NOT every row with CPU and
+    memory read aloud. Reading the table is what makes an assistant sound weird.
+    """
     from app.handlers.netstatus import _get_node_status
 
     ctx = Context(db=db, channel="voice", actor="x", thread_key="t")
     out = _get_node_status({}, ctx)
 
+    assert "rpi-02" in out and "OFFLINE" in out       # leads with what's WRONG
+    assert "Everything else is up" in out
+    assert "pve-01" not in out                        # healthy nodes NOT enumerated
     assert "3221225472" not in out and "481203" not in out   # no raw bytes/epochs
-    assert "(s)" not in out                                   # TTS reads parens aloud
-    assert "gigabytes" in out and "days" in out
-    assert "OFFLINE" in out
+    assert "(s)" not in out                           # TTS reads parens aloud
+
+
+def test_node_status_says_all_good_when_all_good(db, monkeypatch):
+    import app.handlers.netstatus as ns
+
+    monkeypatch.setattr(ns, "_PROXMOX_NODES", [
+        {"node": "a", "status": "online", "uptime": 100000, "cpu": 0.1,
+         "maxcpu": 4, "mem": 1_073_741_824, "maxmem": 4_294_967_296},
+        {"node": "b", "status": "online", "uptime": 100000, "cpu": 0.1,
+         "maxcpu": 4, "mem": 1_073_741_824, "maxmem": 4_294_967_296},
+    ])
+    ctx = Context(db=db, channel="voice", actor="x", thread_key="t")
+    out = ns._get_node_status({}, ctx)
+
+    assert out == "All 2 nodes are up."               # one line. that's it.
+
+
+def test_verbose_still_gives_full_detail(db):
+    """The detail is available — it just isn't the default."""
+    from app.handlers.netstatus import _get_node_status
+
+    ctx = Context(db=db, channel="voice", actor="x", thread_key="t")
+    out = _get_node_status({"verbose": True}, ctx)
+
+    assert "pve-01" in out and "rpi-01" in out and "rpi-02" in out
+    assert "gigabytes" in out
 
 
 def test_unknown_node_asks_rather_than_guessing(db):

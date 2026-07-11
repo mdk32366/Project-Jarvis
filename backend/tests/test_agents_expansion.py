@@ -207,3 +207,135 @@ def test_voice_agents_rosters_are_all_within_the_tool_allowlist():
     for name in VOICE_AGENTS_PHASE1:
         extra = set(DEFAULT_AGENTS[name].tools) - VOICE_TOOLS_PHASE1
         assert not extra, f"agent {name!r} needs {extra} added to VOICE_TOOLS_PHASE1"
+
+
+# ── Duffel flight search ─────────────────────────────────────────────────────
+def _duffel_offer(amount, dep, arr, orig="SEA", dest="SFO", stops=0, carrier="Alaska Airlines"):
+    segs = [{
+        "origin": {"iata_code": orig},
+        "destination": {"iata_code": "PDX" if stops else dest},
+        "departing_at": dep,
+        "arriving_at": arr,
+        "operating_carrier": {"name": carrier},
+    }]
+    if stops:
+        segs.append({
+            "origin": {"iata_code": "PDX"},
+            "destination": {"iata_code": dest},
+            "departing_at": dep,
+            "arriving_at": arr,
+            "operating_carrier": {"name": carrier},
+        })
+    return {"total_amount": amount, "total_currency": "USD", "slices": [{"segments": segs}]}
+
+
+def test_search_flights_returns_cheapest_first(ctx, monkeypatch):
+    import httpx
+    from app.config import settings
+    from app.handlers import travel
+
+    monkeypatch.setattr(settings, "duffel_api_key", "duffel_test_x")
+
+    offers = [
+        _duffel_offer("312.40", "2026-08-04T09:15:00", "2026-08-04T11:30:00"),
+        _duffel_offer("189.00", "2026-08-04T06:00:00", "2026-08-04T08:20:00"),
+        _duffel_offer("245.99", "2026-08-04T14:00:00", "2026-08-04T18:45:00", stops=1),
+    ]
+
+    class R:
+        status_code = 200
+        def json(self): return {"data": {"offers": offers}}
+
+    class C:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **kw): return R()
+
+    monkeypatch.setattr(httpx, "Client", C)
+
+    out = travel._search_flights(
+        {"origin": "SEA", "destination": "SFO", "date": "2026-08-04"}, ctx)
+
+    assert "3 options" in out
+    assert out.index("$189") < out.index("$246")     # cheapest first
+    assert "direct" in out and "1 stop" in out
+    assert "Alaska Airlines" in out                   # operating carrier (US reg)
+    assert "can't book" in out.lower()                # honest about the limit
+
+
+def test_search_flights_supports_open_jaw(ctx, monkeypatch):
+    """Fly into SFO Aug 4, home from Sacramento Aug 9 — the exact trip he tested."""
+    import httpx
+    from app.config import settings
+    from app.handlers import travel
+
+    monkeypatch.setattr(settings, "duffel_api_key", "duffel_test_x")
+    captured = {}
+
+    class R:
+        status_code = 200
+        def json(self): return {"data": {"offers": []}}
+
+    class C:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, **kw):
+            captured.update(kw.get("json") or {})
+            return R()
+
+    monkeypatch.setattr(httpx, "Client", C)
+
+    travel._search_flights({
+        "origin": "SEA", "destination": "SFO", "date": "2026-08-04",
+        "return_date": "2026-08-09", "return_from": "SMF", "return_to": "SEA",
+    }, ctx)
+
+    slices = captured["data"]["slices"]
+    assert len(slices) == 2
+    assert slices[0] == {"origin": "SEA", "destination": "SFO", "departure_date": "2026-08-04"}
+    assert slices[1] == {"origin": "SMF", "destination": "SEA", "departure_date": "2026-08-09"}
+
+
+def test_search_flights_reports_a_bad_key_plainly(ctx, monkeypatch):
+    import httpx
+    from app.config import settings
+    from app.handlers import travel
+
+    monkeypatch.setattr(settings, "duffel_api_key", "bad")
+
+    class R:
+        status_code = 401
+        def json(self): return {}
+
+    class C:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **kw): return R()
+
+    monkeypatch.setattr(httpx, "Client", C)
+    out = travel._search_flights(
+        {"origin": "SEA", "destination": "SFO", "date": "2026-08-04"}, ctx)
+    assert "DUFFEL_API_KEY" in out
+
+
+def test_search_flights_never_crashes_the_loop(ctx, monkeypatch):
+    """A tool that raises would kill the whole turn. It must degrade to a string."""
+    import httpx
+    from app.config import settings
+    from app.handlers import travel
+
+    monkeypatch.setattr(settings, "duffel_api_key", "x")
+
+    class C:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, *a, **kw): raise RuntimeError("network is on fire")
+
+    monkeypatch.setattr(httpx, "Client", C)
+    out = travel._search_flights(
+        {"origin": "SEA", "destination": "SFO", "date": "2026-08-04"}, ctx)
+    assert "couldn't reach" in out.lower()

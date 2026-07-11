@@ -115,9 +115,37 @@ def _render_monitor(m: dict) -> str:
 
 
 # ── Tools (signature mirrors app/handlers/infra.py) ──────────────────────────
+def _summarize(items: list[dict], label: str, is_ok, render, name_of) -> str:
+    """Report the EXCEPTION, not the table.
+
+    A human colleague asked "how are the servers?" says "all good" or "rpi-02 is
+    down." They do not read you every row with CPU and memory for each. Reading
+    the table aloud is what makes an assistant sound like a machine.
+
+    So: if everything is healthy, say so in one line. If something is wrong, lead
+    with THAT and give detail only for the broken thing. Detail on the healthy
+    ones is available on request — see the `verbose` flag.
+    """
+    bad = [i for i in items if not is_ok(i)]
+    n = len(items)
+
+    if not bad:
+        if n == 1:
+            return f"{name_of(items[0])} is up."
+        return f"All {n} {label}s are up."
+
+    if len(bad) == 1:
+        return f"{render(bad[0])}\nEverything else is up ({n - 1} of {n})."
+
+    names = ", ".join(name_of(b) for b in bad)
+    return (f"{len(bad)} of {n} {label}s are down: {names}.\n"
+            + "\n".join(render(b) for b in bad))
+
+
 def _get_node_status(args: dict, ctx: Context) -> str:
     """STUB — Proxmox-shaped. Swap the fixture for a real client at migration."""
     target = (args.get("node") or "").strip().lower()
+    verbose = bool(args.get("verbose"))
 
     nodes = _PROXMOX_NODES
     if target:
@@ -133,16 +161,23 @@ def _get_node_status(args: dict, ctx: Context) -> str:
                 f"Ask the user which one they meant — do not guess."
             )
 
-    offline = [n for n in nodes if n["status"] != "online"]
-    lines = [_render_node(n) for n in nodes]
-    # NB: never "node(s)" — TTS reads that aloud as "node open paren s close paren".
-    header = "" if target else f"{_plural(len(nodes), 'node')}, {len(offline)} offline."
-    return "\n".join([header, *lines]).strip()
+    # A specific node was asked about, or full detail requested: give the row.
+    if target or verbose:
+        return "\n".join(_render_node(n) for n in nodes)
+
+    # Otherwise summarize. Don't read the table aloud.
+    return _summarize(
+        nodes, "node",
+        is_ok=lambda n: n["status"] == "online",
+        render=_render_node,
+        name_of=lambda n: n["node"],
+    )
 
 
 def _get_service_health(args: dict, ctx: Context) -> str:
     """STUB — Uptime Kuma-shaped. Swap the fixture for a real client at migration."""
     target = (args.get("service") or "").strip().lower()
+    verbose = bool(args.get("verbose"))
 
     mons = _KUMA_MONITORS
     if target:
@@ -154,10 +189,15 @@ def _get_service_health(args: dict, ctx: Context) -> str:
                 f"Ask the user which one they meant — do not guess."
             )
 
-    down = [m for m in mons if m["status"] != 1]
-    lines = [_render_monitor(m) for m in mons]
-    header = "" if target else f"{_plural(len(mons), 'monitor')}, {len(down)} down."
-    return "\n".join([header, *lines]).strip()
+    if target or verbose:
+        return "\n".join(_render_monitor(m) for m in mons)
+
+    return _summarize(
+        mons, "service",
+        is_ok=lambda m: m["status"] == 1,
+        render=_render_monitor,
+        name_of=lambda m: m["name"],
+    )
 
 
 # ── Registry wiring ──────────────────────────────────────────────────────────
@@ -177,8 +217,9 @@ def register(reg) -> None:
         {
             "name": "get_node_status",
             "description": (
-                "Get status of Proxmox nodes on the local network: online/offline, "
-                "uptime, CPU, memory. Omit `node` for all nodes. Read-only."
+                "Status of Proxmox nodes on the local network. Returns a SUMMARY by "
+                "default ('all 3 are up' / 'rpi-02 is down') — not a table. Omit `node` "
+                "for all. Read-only."
             ),
             "input_schema": {
                 "type": "object",
@@ -186,7 +227,13 @@ def register(reg) -> None:
                     "node": {
                         "type": "string",
                         "description": "Node name, e.g. 'pve-01'. Omit for all nodes.",
-                    }
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "description": "Full per-node detail. Default false, which gives a "
+                                       "SUMMARY ('all 3 nodes are up' / 'rpi-02 is down'). "
+                                       "Only set true if the user explicitly asks for details.",
+                    },
                 },
             },
         },
@@ -205,7 +252,12 @@ def register(reg) -> None:
                     "service": {
                         "type": "string",
                         "description": "Monitor name. Omit for all monitors.",
-                    }
+                    },
+                    "verbose": {
+                        "type": "boolean",
+                        "description": "Full per-service detail. Default false, which gives a "
+                                       "SUMMARY. Only set true if the user asks for details.",
+                    },
                 },
             },
         },
