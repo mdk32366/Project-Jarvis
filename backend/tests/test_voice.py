@@ -149,23 +149,24 @@ def test_netstatus_tools_registered_in_subagent_registry():
     assert reg.has("get_service_health")
 
 
-def test_voice_cannot_delegate_to_disallowed_agent(db):
-    """finance is not in VOICE_AGENTS_PHASE1 — a phone call must not reach it."""
+def test_voice_cannot_delegate_to_unknown_agent(db):
+    """An agent not in VOICE_AGENTS_PHASE1 must be unreachable from a phone call."""
     from app.agents import _delegate
 
     ctx = Context(db=db, channel="voice", actor="+15551230000", thread_key="CA_X")
-    out = _delegate({"agent": "finance", "task": "buy AAPL"}, ctx)
+    out = _delegate({"agent": "nonexistent_specialist", "task": "do a thing"}, ctx)
     assert "isn't available over voice" in out
 
 
-def test_web_channel_can_still_delegate_to_finance(db, monkeypatch):
-    """The gate is voice-scoped; other channels are unaffected."""
-    from app.agents import _delegate
+def test_voice_can_reach_finance_but_finance_cannot_trade(db):
+    """finance IS reachable from voice (prices are read-only) — but the trading
+    tool is not in its roster and lives on the gated top-level registry, so a
+    phone call cannot place an order no matter what it asks for."""
+    from app.agents import DEFAULT_AGENTS
 
-    install_llm(monkeypatch, say("AAPL is ~$200."))
-    ctx = Context(db=db, channel="web", actor="admin", thread_key="web:1")
-    out = _delegate({"agent": "finance", "task": "price of AAPL"}, ctx)
-    assert "isn't available over voice" not in out
+    assert "finance" in VOICE_AGENTS_PHASE1
+    assert "place_stock_order" not in DEFAULT_AGENTS["finance"].tools
+    assert "place_stock_order" not in VOICE_TOOLS_PHASE1
 
 
 def test_admin_edited_agent_cannot_widen_voice_reach(db):

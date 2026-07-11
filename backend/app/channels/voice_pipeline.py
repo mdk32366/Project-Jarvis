@@ -52,17 +52,44 @@ CHANNEL = "voice"
 # Allowlist, NOT denylist. Fail closed.
 VOICE_TOOLS_PHASE1: set[str] = {
     "delegate",  # required — the only route to any tool
+    # netstatus
     "get_node_status",
     "get_service_health",
-    "remember_fact",
+    # infra (real Fly data)
     "fleet_health",
     "fleet_spend",
+    # archivist
+    "remember_fact",
+    # finance — READ ONLY. place_stock_order is NOT here and is not reachable:
+    # it lives on the top-level registry behind the gate, and the finance agent's
+    # roster does not include it.
+    "get_stock_price",
+    "get_portfolio",
+    # scheduling — read. create_event is gated and top-level only.
+    "calendar_lookup",
+    # secretary — tasks, ideas, and DRAFTING email. Sending is gated + top-level.
+    "draft_email",
+    "add_task",
+    "list_tasks",
+    "complete_task",
+    "cancel_task",
+    "capture_idea",
+    "list_ideas",
+    # travel — read only; JARVIS cannot book.
+    "list_trips",
+    "search_flights",
 }
 
 # Which specialists voice may reach. `_delegate` also re-validates each agent's
 # LIVE DB roster against VOICE_TOOLS_PHASE1 at call time, so editing an agent in
 # the admin UI cannot silently widen what a phone call can do.
-VOICE_AGENTS_PHASE1: set[str] = {"netstatus", "infra", "archivist", "researcher"}
+VOICE_AGENTS_PHASE1: set[str] = {
+    "netstatus", "infra", "archivist", "researcher",
+    "finance",     # prices/portfolio only — the agent cannot place orders
+    "scheduling",  # calendar read
+    "secretary",   # tasks, ideas, email DRAFTS
+    "travel",      # booked trips + flight research
+}
 
 # ── Confirmation vocabulary (TDD §8.2) ───────────────────────────────────────
 # Deliberately NARROWER than the orchestrator's typed-text sets. Anything not

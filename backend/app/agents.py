@@ -63,6 +63,25 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "estimate, not an exact bill.",
         ["fleet_health", "fleet_spend"],
     ),
+    "secretary": Agent(
+        "secretary",
+        "Drafts emails, and manages the user's tasks and captured ideas.",
+        "You are JARVIS's secretary. Draft emails with draft_email (you cannot send — the "
+        "orchestrator handles sending, behind a confirmation gate). Manage tasks with "
+        "add_task/list_tasks/complete_task, and capture ideas with capture_idea. Capture the "
+        "user's own framing when recording an idea, not a summary of it.",
+        ["draft_email", "add_task", "list_tasks", "complete_task", "cancel_task",
+         "capture_idea", "list_ideas"],
+    ),
+    "travel": Agent(
+        "travel",
+        "Reports the user's trips (learned from airline confirmation emails) and searches flights.",
+        "You are JARVIS's travel assistant. Use list_trips for booked travel — JARVIS learns "
+        "trips from confirmation emails sent to its inbox, so it holds no airline credentials "
+        "and cannot access airline accounts. Use search_flights to research options. You "
+        "cannot book; if the user wants to book, say so plainly and offer to open a task.",
+        ["list_trips", "search_flights"],
+    ),
     "netstatus": Agent(
         "netstatus",
         "Reports local network status: Proxmox nodes and Uptime Kuma monitors (read-only).",
@@ -141,6 +160,23 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
         for tu in tool_uses:
             if tu.name not in agent.tools:
                 content = f"Tool '{tu.name}' is not available to the {agent.name} agent."
+            elif not reg.has(tu.name) or reg.is_gated(tu.name):
+                # STRUCTURAL SAFETY: the confirmation gate lives in
+                # orchestrator.run(); run_agent calls reg.execute() directly and
+                # has no gate. A gated tool reaching a sub-agent would therefore
+                # execute with NO confirmation at all — the gated=True flag would
+                # be silently inert.
+                #
+                # Rather than rely on the convention "don't put gated tools in
+                # agent rosters" (a convention that fails silently), refuse here.
+                # A mis-configured AgentConfig now fails CLOSED instead of, say,
+                # sending email as the user unconfirmed.
+                log.error("agent %r tried gated tool %r — refusing (gate is top-level only)",
+                          agent.name, tu.name)
+                content = (
+                    f"'{tu.name}' requires the user's confirmation and cannot be run by a "
+                    f"sub-agent. Tell the orchestrator to call it directly."
+                )
             else:
                 content = reg.execute(tu.name, tu.input, ctx)
             _audit_subagent(ctx, agent.name, tu.name, tu.input, content)

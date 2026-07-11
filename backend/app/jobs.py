@@ -143,3 +143,16 @@ def _handle_reflect(db: Session, payload: dict) -> str:
     convo_id = int(payload["conversation_id"])
     stored = reflect_conversation(db, convo_id)
     return f"stored {stored} fact(s)"
+
+
+@job_handler("commit_idea")
+def _handle_commit_idea(db: Session, payload: dict) -> str:
+    """Push a captured idea to the ideas repo.
+
+    Runs out-of-band on purpose: the Idea row is already committed to the DB
+    before this is enqueued, so a bad token or a GitHub outage can delay the
+    commit but can never lose the thought. Failure re-queues with backoff.
+    """
+    from app.handlers.ideas import commit_idea_to_repo
+
+    return commit_idea_to_repo(db, int(payload["idea_id"]))

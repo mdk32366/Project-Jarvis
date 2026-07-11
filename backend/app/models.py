@@ -144,3 +144,73 @@ class VoiceTurn(Base):
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class Task(Base):
+    """A task JARVIS owns.
+
+    Deliberately NOT Google Tasks: the calendar integration uses a service
+    account, and service accounts cannot access a consumer Google account's task
+    list (no domain-wide delegation for @gmail.com). Rather than force an OAuth
+    refresh-token flow just for tasks, JARVIS keeps its own — surfaced in the
+    dashboard and the morning briefing, which is where the rest of its state
+    already lives. Google Tasks sync, if ever wanted, becomes an export, not the
+    source of truth.
+    """
+
+    __tablename__ = "tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(500))
+    notes: Mapped[str] = mapped_column(Text, default="")
+    # open | done | cancelled
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    priority: Mapped[str] = mapped_column(String(16), default="normal")  # low|normal|high
+    source: Mapped[str] = mapped_column(String(32), default="")          # channel that created it
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Idea(Base):
+    """A captured idea.
+
+    Written to the DB immediately on capture (so a network failure can never eat
+    the thought), then committed to a git repo out-of-band by the `commit_idea`
+    job. `committed_sha` is NULL until that lands.
+    """
+
+    __tablename__ = "ideas"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text, default="")
+    tags: Mapped[str] = mapped_column(String(300), default="")   # comma-separated
+    source: Mapped[str] = mapped_column(String(32), default="")  # channel
+    committed_sha: Mapped[str] = mapped_column(String(64), default="")
+    commit_error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Trip(Base):
+    """An itinerary parsed out of a confirmation email.
+
+    No airline credentials, no scraping: the airline mails the confirmation to
+    JARVIS's inbox, the email pipeline already reads that inbox, and the parser
+    turns it into structure. JARVIS knows about the trip because the trip was
+    mailed to it. That is the correct trust boundary, not a workaround.
+    """
+
+    __tablename__ = "trips"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    carrier: Mapped[str] = mapped_column(String(64), default="")
+    confirmation: Mapped[str] = mapped_column(String(32), default="", index=True)
+    origin: Mapped[str] = mapped_column(String(8), default="")
+    destination: Mapped[str] = mapped_column(String(8), default="")
+    depart_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    arrive_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    flight_no: Mapped[str] = mapped_column(String(16), default="")
+    seat: Mapped[str] = mapped_column(String(16), default="")
+    raw: Mapped[str] = mapped_column(Text, default="")           # source email, for re-parsing
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

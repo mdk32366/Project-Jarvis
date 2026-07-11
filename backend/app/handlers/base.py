@@ -65,7 +65,11 @@ class Registry:
         return name in self._tools
 
     def is_gated(self, name: str) -> bool:
-        return self._tools[name].gated
+        # Must not KeyError: callers ask about tools that may not be in THIS
+        # registry (e.g. run_agent checking a rogue roster entry). Unknown =>
+        # not gated here; the caller's `has()` check handles absence.
+        spec = self._tools.get(name)
+        return bool(spec and spec.gated)
 
     def notional(self, name: str, args: dict) -> Optional[float]:
         fn = self._tools[name].notional
@@ -100,21 +104,32 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # (delegate) and governs the one irreversible action (trading) behind the
         # confirmation gate. All read-only/domain tools live in specialist agents.
         from app import agents
-        from app.handlers import finance
+        from app.handlers import finance, scheduling, secretary
 
         agents.register_delegate(reg, db)
         finance.register_trading(reg)
+        # Gated tools MUST be registered here, at top level. The confirmation
+        # gate only runs in orchestrator.run(); sub-agents call reg.execute()
+        # directly and bypass it (run_agent now refuses gated tools outright).
+        # So anything irreversible lives up here, alongside trading.
+        secretary.register_gated(reg)     # send_email
+        scheduling.register_gated(reg)    # create_event
         if allow is not None:
             reg.restrict(allow)
         return reg
 
     # Sub-agent registry: the domain tools specialists draw from (no delegate,
     # no gated trading -> no recursion, no ungoverned money actions).
-    from app.handlers import finance, general, infra, netstatus, scheduling
+    from app.handlers import (finance, general, ideas, infra, netstatus, scheduling,
+                              secretary, tasks, travel)
 
     finance.register(reg)
     general.register(reg)
     scheduling.register(reg)
     infra.register(reg)
     netstatus.register(reg)
+    tasks.register(reg)
+    ideas.register(reg)
+    secretary.register(reg)
+    travel.register(reg)
     return reg

@@ -92,6 +92,26 @@ def process_inbox(send: bool = True) -> int:
             message_id = msg.get("Message-ID", "")
 
             if not _is_allowed(db, sender):
+                # Airlines are NOT whitelisted senders and never will be — the
+                # whitelist governs who may COMMAND JARVIS. But a confirmation
+                # email is not a command; it is data addressed to us. Capture the
+                # itinerary (read-only, no orchestration, no reply) and then drop
+                # the message as usual.
+                #
+                # This is the whole trust boundary for travel: JARVIS knows about
+                # the trip because the airline mailed it here. No credentials, no
+                # scraping, no account access.
+                try:
+                    from app.handlers.travel import looks_like_confirmation, record_trip_from_email
+
+                    if looks_like_confirmation(subject, sender):
+                        trip = record_trip_from_email(db, subject, _body_text(msg))
+                        if trip is not None:
+                            log.info("captured trip from %s: %s %s",
+                                     sender, trip.carrier, trip.confirmation)
+                except Exception as e:  # noqa: BLE001 — never let this break ingest
+                    log.warning("trip capture failed for %s: %s", sender, e)
+
                 log.info("Ignoring message from non-whitelisted sender: %s", sender)
                 imap.store(mid, "+FLAGS", "\\Seen")
                 continue

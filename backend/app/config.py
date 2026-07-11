@@ -51,6 +51,17 @@ class Settings(BaseSettings):
     sms_email_copy: bool = True
     owner_email: str = ""
 
+    # ── Public compliance pages (Twilio / carrier review) ────────────────────
+    # Carrier reviewers visit the ROOT domain to verify the messaging program.
+    # A bare SPA login screen fails review (30919 / 30921).
+    # MUST match the business name on your Twilio Brand Registration exactly —
+    # reviewers cross-reference the site against the registered brand. For a sole
+    # proprietor this is normally your legal name, e.g. "Matthew Kelly".
+    business_name: str = "JARVIS Assistant"
+    # Do not use a personal address here — this is published publicly. Gmail
+    # plus-addressing works (you+compliance@gmail.com); a real domain is better.
+    compliance_email: str = "jarvismajorus+compliance@gmail.com"
+
     # ── Voice channel (Phase 1) ──────────────────────────────────────────────
     voice_enabled: bool = False
     voice_tts_voice: str = "Polly.Matthew-Neural"
@@ -96,6 +107,19 @@ class Settings(BaseSettings):
     google_service_account_json: str = ""   # the SA key JSON (paste as a Fly secret)
     google_calendar_id: str = "primary"     # or your calendar's ID/email
     calendar_timezone: str = "America/Los_Angeles"
+
+    # ── Ideas repo (separate private GitHub repo) ────────────────────────────
+    # PAT with `repo` scope. Ideas are captured to the DB first and committed
+    # out-of-band, so a bad token can never lose a thought.
+    github_token: str = ""
+    ideas_repo: str = ""                    # "owner/jarvis-ideas"
+    ideas_branch: str = "main"
+
+    # ── Travel ───────────────────────────────────────────────────────────────
+    # Trips are learned from confirmation emails — no airline credentials, no
+    # scraping. These keys are for flight SEARCH only (research, not booking).
+    duffel_api_key: str = ""
+    amadeus_api_key: str = ""
 
     # ── Infra / hosted-app monitoring (Phase 2) ──────────────────────────────
     # Fly API token (read-only or deploy token) for fleet health + credit balance.

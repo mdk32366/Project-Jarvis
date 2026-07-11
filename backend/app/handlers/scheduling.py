@@ -20,7 +20,10 @@ from app.handlers.base import Context, Registry
 
 log = logging.getLogger(__name__)
 
-_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+# Full calendar scope (not .readonly) so create_event can write. The service
+# account must be re-shared on the calendar as "Make changes to events" — Reader
+# is not enough. Read still works if only Reader is granted; writes will 403.
+_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 
 def _load_sa_info(raw: str) -> dict | None:
@@ -135,3 +138,97 @@ def register(reg: Registry) -> None:
         },
         _calendar_lookup,
     )
+
+
+def register_gated(reg: Registry) -> None:
+    """Gated — top-level registry only. See secretary.register_gated."""
+    reg.register(
+        {
+            "name": "create_event",
+            "description": (
+                "Create an event on the user's Google Calendar (a meeting, appointment, "
+                "or block of time). This writes to their real calendar and, if attendees "
+                "are given, EMAILS THEM AN INVITE — so the system will require the user's "
+                "explicit confirmation before it executes."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "start": {"type": "string",
+                              "description": "ISO datetime, e.g. 2026-07-15T14:00. "
+                                             "Resolve relative dates yourself first."},
+                    "duration_minutes": {"type": "integer", "description": "Default 60."},
+                    "location": {"type": "string"},
+                    "description": {"type": "string"},
+                    "attendees": {"type": "string",
+                                  "description": "Comma-separated emails. They WILL be "
+                                                 "emailed an invite."},
+                },
+                "required": ["title", "start"],
+            },
+        },
+        _create_event,
+        gated=True,                # notional is None -> confirmation ALWAYS required
+        summarize=_summarize_event,
+    )
+
+
+def _create_event(args: dict, ctx: Context) -> str:
+    """Create a calendar event. GATED — see register()."""
+    service = _service()
+    if service is None:
+        return ("[calendar not configured] Set GOOGLE_SERVICE_ACCOUNT_JSON and share "
+                "your calendar with the service account (Make changes to events).")
+
+    title = (args.get("title") or "").strip()
+    start_raw = (args.get("start") or "").strip()
+    if not title or not start_raw:
+        return "Need at least a title and a start time."
+
+    tz = _tz()
+    try:
+        start = datetime.fromisoformat(start_raw)
+    except ValueError:
+        return (f"Could not parse the start time {start_raw!r}. Give an ISO datetime "
+                f"like 2026-07-15T14:00. Nothing was created.")
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=tz)
+
+    minutes = int(args.get("duration_minutes") or 60)
+    end = start + timedelta(minutes=minutes)
+
+    body = {
+        "summary": title,
+        "start": {"dateTime": start.isoformat(), "timeZone": str(tz)},
+        "end": {"dateTime": end.isoformat(), "timeZone": str(tz)},
+    }
+    if args.get("location"):
+        body["location"] = args["location"]
+    if args.get("description"):
+        body["description"] = args["description"]
+    attendees = [a.strip() for a in (args.get("attendees") or "").split(",") if a.strip()]
+    if attendees:
+        body["attendees"] = [{"email": a} for a in attendees]
+
+    try:
+        ev = service.events().insert(
+            calendarId=settings.google_calendar_id, body=body,
+            sendUpdates="all" if attendees else "none",
+        ).execute()
+    except Exception as e:  # noqa: BLE001
+        # A 403 here almost always means the SA has Reader, not writer.
+        return (f"Could not create the event: {e}\n"
+                f"If this is a permissions error, re-share the calendar with the "
+                f"service account as 'Make changes to events'.")
+
+    when = start.astimezone(tz).strftime("%a %b %-d at %-I:%M %p")
+    return f"Created: {title} — {when} ({minutes} min). {ev.get('htmlLink', '')}"
+
+
+def _summarize_event(args: dict) -> str:
+    """Readback line for the confirmation gate."""
+    who = args.get("attendees")
+    bit = f" with {who}" if who else ""
+    return (f"create calendar event '{args.get('title', '?')}' at "
+            f"{args.get('start', '?')} for {args.get('duration_minutes', 60)} minutes{bit}")

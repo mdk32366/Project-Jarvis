@@ -40,6 +40,8 @@ def gather_context(db: Session) -> str:
     from app.handlers.finance import _get_portfolio
     from app.handlers.scheduling import _calendar_lookup
     from app.handlers.infra import _fleet_health, _fleet_spend
+    from app.handlers.tasks import open_task_summary
+    from app.handlers.travel import _list_trips
 
     ctx = Context(db=db, channel="briefing", actor="system", thread_key="briefing")
     today = _safe("calendar", lambda: _calendar_lookup({"range": "today"}, ctx))
@@ -47,6 +49,8 @@ def gather_context(db: Session) -> str:
     portfolio = _safe("portfolio", lambda: _get_portfolio({}, ctx))
     health = _safe("infra", lambda: _fleet_health({}, ctx))
     spend = _safe("infra", lambda: _fleet_spend({}, ctx))
+    tasks = _safe("tasks", lambda: open_task_summary(db))
+    trips = _safe("trips", lambda: _list_trips({}, ctx))
 
     facts = _safe("memory", lambda: db.execute(select(Memory).order_by(Memory.created_at.desc()).limit(5)).scalars().all())
     if isinstance(facts, str):
@@ -55,6 +59,12 @@ def gather_context(db: Session) -> str:
         fact_lines = "\n".join(f"- {m.content}" for m in facts) or "(none)"
 
     sections = [f"## Today's calendar\n{today}", f"## This week\n{week}"]
+    # Open tasks: always worth surfacing — this is the list JARVIS owns.
+    if isinstance(tasks, str) and tasks and not tasks.startswith("No open tasks"):
+        sections.append(f"## Open tasks\n{tasks}")
+    # Upcoming trips (captured from confirmation emails).
+    if isinstance(trips, str) and trips and not trips.startswith("No trips on file"):
+        sections.append(f"## Travel\n{trips}")
     # Only include portfolio if a real brokerage is wired (skip demo/unavailable).
     if portfolio and not portfolio.startswith("[demo mode]") and not portfolio.startswith("(portfolio unavailable"):
         sections.append(f"## Portfolio\n{portfolio}")
