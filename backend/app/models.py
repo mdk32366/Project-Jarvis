@@ -168,6 +168,9 @@ class Task(Base):
     due: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     priority: Mapped[str] = mapped_column(String(16), default="normal")  # low|normal|high
     source: Mapped[str] = mapped_column(String(32), default="")          # channel that created it
+    # Google Tasks id, once pushed. Empty until the sync job lands (or forever,
+    # if Google isn't connected — the local table is the source of truth).
+    google_id: Mapped[str] = mapped_column(String(128), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -214,3 +217,56 @@ class Trip(Base):
     seat: Mapped[str] = mapped_column(String(16), default="")
     raw: Mapped[str] = mapped_column(Text, default="")           # source email, for re-parsing
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Contact(Base):
+    """People JARVIS knows. Distinct from ContactWhitelist, which is an AUTH
+    boundary (who may command JARVIS). This is an address book (who JARVIS can
+    look up), and being in it grants no permissions whatsoever."""
+
+    __tablename__ = "contacts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), index=True)
+    email: Mapped[str] = mapped_column(String(255), default="")
+    phone: Mapped[str] = mapped_column(String(40), default="")
+    notes: Mapped[str] = mapped_column(String(500), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class OutboundCall(Base):
+    """A call JARVIS places TO the owner.
+
+    This is the piece that turns her from an IVR into an assistant. Work that
+    can't fit inside a phone call's poll budget no longer has to die in a log or
+    get demoted to an email: she hangs up, does the work, and rings back.
+
+    Three kinds:
+      * briefing  — scheduled. The morning brief, as a call rather than an alarm.
+      * callback  — she owes an answer to something asked on an earlier call.
+      * alert     — something happened that she judged worth interrupting for.
+
+    `opening` is the load-bearing field. On an INBOUND call the caller speaks
+    first, so JARVIS can just say "JARVIS here." On an OUTBOUND call she is the
+    one who rang, so she must open by saying WHY — otherwise the person answering
+    has no idea what this is about.
+    """
+
+    __tablename__ = "outbound_calls"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    to_number: Mapped[str] = mapped_column(String(32))
+    kind: Mapped[str] = mapped_column(String(16), default="callback")  # briefing|callback|alert
+    # What she says the moment the call connects. Generated BEFORE dialling, so
+    # there is no dead air while an LLM thinks.
+    opening: Mapped[str] = mapped_column(Text, default="")
+    # Context handed to the orchestrator once the conversation starts.
+    context: Mapped[str] = mapped_column(Text, default="")
+    # queued | ringing | answered | no_answer | failed | done
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    call_sid: Mapped[str] = mapped_column(String(64), default="", index=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    # Don't ring at 3am. The scheduler respects this.
+    not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    placed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

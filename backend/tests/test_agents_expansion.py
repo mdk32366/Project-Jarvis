@@ -9,7 +9,7 @@ sub-agent registry.
 import pytest
 
 from app.handlers.base import Context, build_registry
-from app.models import AgentConfig, Idea, Task, Trip
+from app.models import AgentConfig, Contact, Idea, Task, Trip
 
 
 @pytest.fixture
@@ -189,13 +189,35 @@ def test_search_flights_is_honest_about_being_unconfigured(ctx):
 
 
 # ── Voice reach ──────────────────────────────────────────────────────────────
-def test_voice_can_draft_but_not_send_email():
+def test_voice_can_send_email_but_only_through_the_gate():
+    """Voice CAN send mail and write the calendar — because the confirmation gate
+    genuinely works (readback, then an explicit "confirm"/"affirmative"; "ok" and
+    "yeah" are deliberately NOT accepted).
+
+    Withholding these from the allowlist as well was redundant with the gate, and
+    it meant JARVIS truthfully told the user she couldn't send an email she was
+    otherwise fully equipped to send.
+
+    Trading stays out: spending money over a spoofable channel is a different
+    risk class from sending a mail.
+    """
+    from app.handlers.base import build_registry
     from app.channels.voice_pipeline import VOICE_TOOLS_PHASE1
 
-    assert "draft_email" in VOICE_TOOLS_PHASE1
-    assert "send_email" not in VOICE_TOOLS_PHASE1      # gated, top-level only
-    assert "create_event" not in VOICE_TOOLS_PHASE1    # gated, top-level only
-    assert "place_stock_order" not in VOICE_TOOLS_PHASE1
+    reg = build_registry(include_delegate=True, allow=VOICE_TOOLS_PHASE1)
+
+    assert reg.has("send_email") and reg.is_gated("send_email")
+    assert reg.has("create_event") and reg.is_gated("create_event")
+    assert not reg.has("place_stock_order")
+
+
+def test_voice_output_is_told_not_to_use_markdown():
+    """Markdown is fed straight to TTS: a table is read aloud as "horizontal
+    line, horizontal line, horizontal line"."""
+    from app.orchestrator import _VOICE_INSTRUCTIONS
+
+    assert "NEVER use markdown" in _VOICE_INSTRUCTIONS
+    assert "horizontal line" in _VOICE_INSTRUCTIONS
 
 
 def test_voice_agents_rosters_are_all_within_the_tool_allowlist():
@@ -339,3 +361,158 @@ def test_search_flights_never_crashes_the_loop(ctx, monkeypatch):
     out = travel._search_flights(
         {"origin": "SEA", "destination": "SFO", "date": "2026-08-04"}, ctx)
     assert "couldn't reach" in out.lower()
+
+
+# ── Contacts + identity ──────────────────────────────────────────────────────
+def test_whoami_stops_her_asking_for_the_owners_own_email(ctx, monkeypatch):
+    """THE gap: she emailed him a transcript after EVERY call, then asked
+    'what email should I send it to?' — the address lived in the job queue where
+    the model could never see it."""
+    from app.config import settings
+    from app.handlers.contacts import _whoami
+
+    monkeypatch.setattr(settings, "owner_name", "Matthew Kelly")
+    monkeypatch.setattr(settings, "owner_email", "mdk32366@gmail.com")
+    monkeypatch.setattr(settings, "owner_home_airport", "SEA")
+    monkeypatch.setattr(settings, "owner_frequent_flyer", "Alaska MP 12345678")
+
+    out = _whoami({}, ctx)
+    assert "mdk32366@gmail.com" in out
+    assert "SEA" in out
+    assert "Alaska MP" in out
+
+
+def test_save_then_lookup_contact(ctx, db):
+    from app.handlers.contacts import _lookup_contact, _save_contact
+
+    _save_contact({"name": "Nick", "email": "nictipoff@gmail.com"}, ctx)
+    assert "nictipoff@gmail.com" in _lookup_contact({"name": "Nick"}, ctx)
+    # ...and she should never have to ask a second time.
+    assert "nictipoff@gmail.com" in _lookup_contact({"name": "nick"}, ctx)
+
+
+def test_unknown_contact_asks_rather_than_guessing(ctx):
+    """Never snap to the closest name — a wrong recipient is unrecoverable once
+    the mail is sent. Ask, then SAVE, so it's asked exactly once."""
+    from app.handlers.contacts import _lookup_contact, _save_contact
+
+    _save_contact({"name": "Nick", "email": "n@x.com"}, ctx)
+    out = _lookup_contact({"name": "Bartholomew"}, ctx)
+    assert "don't guess" in out.lower()
+    assert "save_contact" in out
+
+
+def test_empty_address_book_explains_itself(ctx):
+    """'No contacts' looks broken. Say WHY, and what to do about it."""
+    from app.handlers.contacts import _lookup_contact
+
+    out = _lookup_contact({"name": "Anyone"}, ctx)
+    assert "empty" in out.lower()
+    assert "google" in out.lower()        # points at the actual fix
+
+
+def test_google_status_is_honest_when_not_connected(ctx):
+    from app.handlers.contacts import _google_status
+
+    out = _google_status({}, ctx)
+    assert "not connected" in out.lower()
+    assert "calendar still works" in out.lower()   # doesn't overstate the breakage
+
+
+def test_ambiguous_contact_asks_which_one(ctx):
+    from app.handlers.contacts import _lookup_contact, _save_contact
+
+    _save_contact({"name": "Nick Tipoff", "email": "a@x.com"}, ctx)
+    _save_contact({"name": "Nick Cave", "email": "b@x.com"}, ctx)
+    out = _lookup_contact({"name": "Nick"}, ctx)
+    assert "ask which one" in out.lower()
+
+
+def test_contacts_table_is_not_an_auth_boundary(ctx, db):
+    """Contact != ContactWhitelist. Being in the address book grants NOTHING."""
+    from app.channels.voice_pipeline import is_allowed
+    from app.handlers.contacts import _save_contact
+
+    _save_contact({"name": "Stranger", "email": "s@x.com", "phone": "+19998887777"}, ctx)
+    assert is_allowed(db, "+19998887777") is False       # still cannot command JARVIS
+
+
+def test_travel_agent_can_see_the_home_airport():
+    """So 'find me a flight to SFO' doesn't need 'from where?'"""
+    from app.agents import DEFAULT_AGENTS
+
+    assert "whoami" in DEFAULT_AGENTS["travel"].tools
+    assert "whoami" in DEFAULT_AGENTS["secretary"].tools
+
+
+# ── Google OAuth ─────────────────────────────────────────────────────────────
+def test_oauth_degrades_cleanly_when_unconfigured():
+    """Nothing may raise just because Google isn't connected."""
+    from app import google_oauth
+
+    assert google_oauth.is_configured() is False
+    assert google_oauth.credentials() is None
+    assert google_oauth.people_service() is None
+    assert google_oauth.tasks_service() is None
+
+
+def test_oauth_scopes_cover_contacts_and_tasks():
+    """These are the two things a service account CANNOT do for a consumer
+    account — the whole reason OAuth exists here."""
+    from app.google_oauth import SCOPES
+
+    assert any("contacts" in s for s in SCOPES)
+    assert any("tasks" in s for s in SCOPES)
+
+
+def test_sync_contacts_reports_not_connected_rather_than_exploding(ctx):
+    from app.handlers.contacts import _sync_contacts
+
+    out = _sync_contacts({}, ctx)
+    assert "not connected" in out.lower()
+
+
+def test_task_creation_works_with_google_disconnected(ctx, db):
+    """The local table is the source of truth. Google being down must never stop
+    a task from being created — that's why the push is a job, not inline."""
+    from app.handlers.tasks import _add_task
+
+    out = _add_task({"title": "works regardless"}, ctx)
+    assert "added" in out.lower()
+
+    t = db.query(Task).first()
+    assert t.google_id == ""          # not pushed; that's fine
+
+
+def test_google_contacts_sync_upserts_rather_than_duplicating(db, monkeypatch):
+    """A contact JARVIS learned on a phone call must survive a Google sync — and
+    a blank field from Google must not clobber what she already knows."""
+    from app.handlers import contacts as C
+
+    db.add(Contact(name="Nick", email="learned-on-a-call@x.com"))
+    db.commit()
+
+    class People:
+        def connections(self): return self
+        def list(self, **kw): return self
+        def execute(self):
+            return {"connections": [
+                {"names": [{"displayName": "Nick"}],
+                 "phoneNumbers": [{"value": "+15551110000"}]},      # no email!
+                {"names": [{"displayName": "Dave"}],
+                 "emailAddresses": [{"value": "dave@x.com"}]},
+                {"emailAddresses": [{"value": "noname@x.com"}]},    # unusable
+            ]}
+
+    class Svc:
+        def people(self): return People()
+
+    monkeypatch.setattr(C, "people_service", lambda: Svc(), raising=False)
+    monkeypatch.setattr("app.google_oauth.people_service", lambda: Svc())
+
+    out = C.sync_google_contacts(db)
+    assert "1 new" in out and "1 updated" in out and "1 skipped" in out
+
+    nick = db.query(Contact).filter_by(name="Nick").one()
+    assert nick.email == "learned-on-a-call@x.com"   # NOT clobbered by a blank
+    assert nick.phone == "+15551110000"              # but the phone was added

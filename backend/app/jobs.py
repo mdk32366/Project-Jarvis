@@ -156,3 +156,63 @@ def _handle_commit_idea(db: Session, payload: dict) -> str:
     from app.handlers.ideas import commit_idea_to_repo
 
     return commit_idea_to_repo(db, int(payload["idea_id"]))
+
+
+@job_handler("sync_contacts")
+def _handle_sync_contacts(db: Session, payload: dict) -> str:
+    """Import Google Contacts. Out-of-band: a full address book is several
+    paginated API calls, far too slow to sit inside a phone call."""
+    from app.handlers.contacts import sync_google_contacts
+
+    return sync_google_contacts(db)
+
+
+@job_handler("push_task")
+def _handle_push_task(db: Session, payload: dict) -> str:
+    """Push a task to Google Tasks so it appears on the user's phone."""
+    from app.handlers.tasks import push_task_to_google
+
+    return push_task_to_google(db, int(payload["task_id"]))
+
+
+@job_handler("complete_task_google")
+def _handle_complete_task_google(db: Session, payload: dict) -> str:
+    from app.handlers.tasks import complete_task_in_google
+
+    return complete_task_in_google(db, int(payload["task_id"]))
+
+
+@job_handler("briefing_call")
+def _handle_briefing_call(db: Session, payload: dict) -> str:
+    """The morning brief, as a CALL rather than an alarm you have to set.
+
+    The brief is composed FIRST and stored as the call's opening line, so there
+    is no dead air while an LLM thinks after you pick up. If composing fails we
+    simply don't ring — better silence than a call with nothing to say.
+    """
+    from app.briefing import compose_briefing
+    from app.channels.outbound_voice import schedule_call
+
+    text = compose_briefing(db)
+    if not text or text.startswith("(no briefing"):
+        return "nothing to brief"
+
+    opening = f"Good morning. Here's your brief. {text}"
+    row = schedule_call(db, opening=opening, kind="briefing",
+                        context="Morning briefing. The user may ask follow-ups.")
+    return f"queued briefing call #{row.id}" if row else "could not queue briefing call"
+
+
+@job_handler("place_calls")
+def _handle_place_calls(db: Session, payload: dict) -> str:
+    """Dial anything queued and due. Runs on the worker's tick."""
+    from app.channels.outbound_voice import due_calls, place_call
+
+    if not settings.outbound_calls_enabled:
+        return "outbound disabled"
+
+    rows = due_calls(db)
+    if not rows:
+        return "nothing due"
+    results = [place_call(db, r) for r in rows]
+    return f"placed {len(results)}: " + "; ".join(results)

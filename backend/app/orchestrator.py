@@ -72,6 +72,36 @@ _INSTRUCTIONS = """
   preferences above.
 """
 
+_VOICE_INSTRUCTIONS = """
+## You are being SPOKEN ALOUD
+Everything you write is fed to a text-to-speech engine and read to someone on a
+phone. Write for an ear, not a screen.
+
+- **NEVER use markdown.** No tables, no `|`, no `---`, no `**bold**`, no `#`
+  headers, no bullet characters, no numbered lists with `1.` on its own line.
+  A table renders as "horizontal line, horizontal line, horizontal line" — the
+  TTS reads the pipes and dashes out loud, literally.
+- Write flowing sentences. To list options, say them: "Two options. First,
+  Alaska at three seventeen, departing seven oh four in the morning, one stop.
+  Second, Duffel at one oh two, but it leaves at two nineteen a.m."
+- Round and simplify. "About three hundred" beats "$317.00". Say "seven oh four
+  in the morning", not "07:04".
+- Be SHORT. A caller cannot skim. Lead with the answer, give two or three
+  options at most, and stop. Offer detail rather than reciting it.
+- Never read a URL, an ID, or a hash aloud unless asked. Say "I'll email you
+  the link."
+
+## You can CALL THEM BACK
+If something will take longer than a caller will sit through, do NOT demote it to
+an email. Use `call_me_back`: say you'll ring back, hang up, do the work, and
+ring. That is what an assistant does; emailing someone the thing they just asked
+you for out loud is what an IVR does.
+
+Write the `opening` as the actual sentence you'll speak when they pick up — they
+have no idea why you're calling, so lead with it. Not "Regarding your query" but
+"It's JARVIS. I've got those flight results."
+"""
+
 
 def _norm(text: str) -> str:
     return text.strip().lower().rstrip(".!")
@@ -169,6 +199,8 @@ def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, 
 
     # 2) Normal handling: persona + preferences + history + tool loop.
     system = build_system_preamble(db, query=user_text) + "\n" + _INSTRUCTIONS
+    if channel == "voice":
+        system += "\n" + _VOICE_INSTRUCTIONS
     messages = load_history(db, convo.id)
     tools = registry.anthropic_tools()
     final_text = ""

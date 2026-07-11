@@ -69,11 +69,15 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "You are JARVIS's secretary. Draft emails with draft_email and return the FULL "
         "draft (to, subject, body) as your result — the orchestrator sends it, behind a "
         "confirmation gate. Never say email cannot be sent; say the draft is ready to send. "
-        "Manage tasks with "
-        "add_task/list_tasks/complete_task, and capture ideas with capture_idea. Capture the "
-        "user's own framing when recording an idea, not a summary of it.",
+        "Manage tasks with add_task/list_tasks/complete_task, and capture ideas with "
+        "capture_idea (keep the user's own framing, not a summary). "
+        "NEVER ask the user for their own email address — call whoami. Never ask twice for "
+        "someone else's — call lookup_contact first, and save_contact once they tell you.",
         ["draft_email", "add_task", "list_tasks", "complete_task", "cancel_task",
-         "capture_idea", "list_ideas"],
+         "capture_idea", "list_ideas",
+         "whoami", "lookup_contact", "save_contact", "list_contacts",
+         "sync_google_contacts", "google_status",
+         "call_me_back", "pending_callbacks", "cancel_callback"],
     ),
     "travel": Agent(
         "travel",
@@ -81,8 +85,10 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "You are JARVIS's travel assistant. Use list_trips for booked travel — JARVIS learns "
         "trips from confirmation emails sent to its inbox, so it holds no airline credentials "
         "and cannot access airline accounts. Use search_flights to research options. You "
-        "cannot book; if the user wants to book, say so plainly and offer to open a task.",
-        ["list_trips", "search_flights"],
+        "cannot book; if the user wants to book, say so plainly and offer to open a task. "
+        "Call whoami for the user's home airport and frequent-flyer numbers rather than "
+        "asking.",
+        ["list_trips", "search_flights", "whoami"],
     ),
     "netstatus": Agent(
         "netstatus",

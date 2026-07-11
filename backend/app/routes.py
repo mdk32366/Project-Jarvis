@@ -212,6 +212,44 @@ async def voice_poll(
     return _xml(vp.twiml_working(call_sid, turn, poll=poll))
 
 
+@router.post("/voice/outbound", tags=["jarvis"], include_in_schema=False)
+async def voice_outbound(request: Request, call: int = 0, db: Session = Depends(get_db)):
+    """JARVIS placed this call. Twilio fetches TwiML here once it's answered.
+
+    The difference from /voice/inbound: SHE rang, so she opens by saying who she
+    is and why — the person answering has no idea what this is about otherwise.
+    The opening was written BEFORE dialling, so there's no dead air.
+    """
+    from app.channels import outbound_voice as ov
+    from app.channels import voice_pipeline as vp
+
+    params = await _validated_params(request)
+    row = ov.get_by_id(db, call)
+    if row is None:
+        log.error("outbound webhook for unknown call id %s", call)
+        return _xml(vp.twiml_hangup("Sorry, wrong number."))
+
+    # Answering machine: leave the opening and go. Don't monologue at voicemail.
+    if (params.get("AnsweredBy") or "").startswith("machine"):
+        log.info("call #%s hit voicemail", row.id)
+        row.status = "no_answer"
+        db.commit()
+        return _xml(vp.twiml_hangup(row.opening))
+
+    row.status = "answered"
+    if not row.call_sid:
+        row.call_sid = params.get("CallSid", "")
+    db.commit()
+
+    # Seed the conversation with WHY she called, so the first thing the user says
+    # ("go on", "what about it?") lands in context rather than in a vacuum.
+    if row.context:
+        vp.seed_context(db, row.call_sid or params.get("CallSid", ""), row.context)
+
+    log.info("outbound call #%s answered (%s)", row.id, row.kind)
+    return _xml(vp.twiml_gather(row.opening, turn=0))
+
+
 @router.post("/voice/status", tags=["jarvis"], include_in_schema=False)
 async def voice_status(request: Request, db: Session = Depends(get_db)):
     """Twilio status callback — fires on call completion. Emails the transcript.
@@ -228,6 +266,14 @@ async def voice_status(request: Request, db: Session = Depends(get_db)):
     if call_status == "completed":
         log.info("Voice call ended: %s", call_sid)
         vp.email_transcript(db, call_sid, from_number)
+
+        # If this was a call SHE placed, close the row out.
+        from app.channels import outbound_voice as ov
+
+        row = ov.get_by_sid(db, call_sid)
+        if row is not None and row.status in ("ringing", "answered"):
+            row.status = "done" if row.status == "answered" else "no_answer"
+            db.commit()
 
     return _xml(vp.twiml_empty())
 

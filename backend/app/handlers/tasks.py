@@ -1,14 +1,23 @@
 """Tasks handler — JARVIS owns its own task list.
 
-WHY NOT GOOGLE TASKS: the calendar integration authenticates with a **service
-account**, and a service account cannot reach a consumer Google account's task
-list — Google Tasks has no domain-wide delegation for @gmail.com. The SA would
-get its own invisible list, not yours. Supporting Google Tasks would mean adding
-a full OAuth refresh-token flow purely for tasks.
+JARVIS OWNS THE TASKS. The DB is the source of truth, not Google.
 
-So JARVIS keeps its own tasks, in the DB where the rest of its state already
-lives, surfaced in the dashboard and the morning briefing. If Google Tasks sync
-matters later it becomes an *export*, not the source of truth.
+Originally this was forced: the calendar uses a *service account*, and a service
+account cannot reach a consumer Google account's task list at all (no domain-wide
+delegation for @gmail.com — it would get its own invisible list).
+
+OAuth now makes Google Tasks reachable (see app/google_oauth.py), so tasks can be
+PUSHED to Google — which is what puts them on the user's phone. But the local
+table stays authoritative:
+
+  * JARVIS creates tasks mid-phone-call. A network round-trip to Google inside a
+    voice turn is latency we cannot afford.
+  * The morning briefing and dashboard read the DB directly.
+  * If Google is unreachable, task creation must still work.
+
+So: write locally, push to Google out-of-band via a job. One-way, deliberately —
+two-way sync means conflict resolution, and that is a lot of complexity for a
+personal task list.
 
 `add_task` and `list_tasks` are safe. `complete_task` is a small write but not
 destructive (it sets status, keeps the row), so it is ungated — a mistaken
@@ -85,6 +94,21 @@ def _fmt_due(dt: datetime | None) -> str:
     return f"due {local.strftime('%a %b %-d')}"
 
 
+def _push_async(ctx: Context, kind: str, task_id: int) -> None:
+    """Queue a Google sync. Bookkeeping must NEVER break the user's reply."""
+    from app.google_oauth import is_configured
+
+    if not is_configured():
+        return
+    try:
+        from app.jobs import enqueue
+
+        enqueue(ctx.db, kind, {"task_id": task_id}, channel=ctx.channel,
+                thread_key=ctx.thread_key, actor=ctx.actor)
+    except Exception as e:  # noqa: BLE001
+        log.warning("could not enqueue %s for task %s: %s", kind, task_id, e)
+
+
 def _add_task(args: dict, ctx: Context) -> str:
     title = (args.get("title") or "").strip()
     if not title:
@@ -99,6 +123,10 @@ def _add_task(args: dict, ctx: Context) -> str:
     ctx.db.add(t)
     ctx.db.commit()
     ctx.db.refresh(t)
+
+    # Push to Google out-of-band so it appears on the user's phone. Never inline:
+    # a round-trip to Google inside a voice turn is latency we can't afford.
+    _push_async(ctx, "push_task", t.id)
 
     warn = ""
     if args.get("due") and t.due is None:
@@ -138,6 +166,7 @@ def _complete_task(args: dict, ctx: Context) -> str:
     t.status = "done"
     t.completed_at = datetime.now(_tz())
     ctx.db.commit()
+    _push_async(ctx, "complete_task_google", t.id)
     return f"Task #{t.id} complete: {t.title}"
 
 
@@ -221,3 +250,55 @@ def register(reg: Registry) -> None:
         },
         _cancel_task,
     )
+
+
+# ── Google Tasks push (needs OAuth — impossible with the service account) ────
+def push_task_to_google(db, task_id: int) -> str:
+    """Push one task to Google Tasks so it lands on the user's phone.
+
+    Runs as a job. One-way (JARVIS -> Google), deliberately: two-way sync means
+    conflict resolution, which is a lot of machinery for a personal task list.
+    """
+    from app.google_oauth import NOT_CONNECTED, tasks_service
+
+    task = db.get(Task, task_id)
+    if task is None:
+        return f"no task #{task_id}"
+    if task.google_id:
+        return f"task #{task_id} already pushed"
+
+    svc = tasks_service()
+    if svc is None:
+        return NOT_CONNECTED
+
+    body = {"title": task.title}
+    if task.notes:
+        body["notes"] = task.notes
+    if task.due:
+        # Google Tasks takes RFC3339 and, irritatingly, ignores the time part —
+        # it stores date only. Not worth fighting.
+        body["due"] = task.due.astimezone(_tz()).isoformat()
+
+    created = svc.tasks().insert(tasklist="@default", body=body).execute()
+    task.google_id = created.get("id", "")
+    db.commit()
+    log.info("pushed task #%s to Google Tasks", task_id)
+    return f"pushed task #{task_id} to Google Tasks"
+
+
+def complete_task_in_google(db, task_id: int) -> str:
+    """Mirror a completion to Google so it doesn't sit there ticked-off-nowhere."""
+    from app.google_oauth import tasks_service
+
+    task = db.get(Task, task_id)
+    if task is None or not task.google_id:
+        return "nothing to complete in Google"
+
+    svc = tasks_service()
+    if svc is None:
+        return "google not connected"
+
+    svc.tasks().patch(
+        tasklist="@default", task=task.google_id, body={"status": "completed"}
+    ).execute()
+    return f"completed task #{task_id} in Google Tasks"

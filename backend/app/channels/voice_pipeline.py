@@ -67,8 +67,24 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "get_portfolio",
     # scheduling — read. create_event is gated and top-level only.
     "calendar_lookup",
-    # secretary — tasks, ideas, and DRAFTING email. Sending is gated + top-level.
+    # secretary — tasks, ideas, and DRAFTING email.
     "draft_email",
+    # GATED ACTIONS. These are irreversible, and they are reachable from voice
+    # ONLY because the confirmation gate genuinely works: JARVIS reads the action
+    # back, and nothing executes until an explicit "confirm" / "affirmative".
+    # Note that voice deliberately does NOT accept "ok" or "yeah" for these
+    # (orchestrator._VOCAB) — conversational filler must never fire an
+    # irreversible action.
+    #
+    # They were originally withheld because Phase 1 voice was read-only. But the
+    # gate is the real control; keeping them out of the allowlist as well just
+    # meant JARVIS truthfully told the user she couldn't send an email she was
+    # otherwise fully equipped to send.
+    #
+    # place_stock_order stays OUT. Spending money on a spoofable channel is a
+    # different risk class from sending a mail or booking a meeting.
+    "send_email",
+    "create_event",
     "add_task",
     "list_tasks",
     "complete_task",
@@ -78,6 +94,19 @@ VOICE_TOOLS_PHASE1: set[str] = {
     # travel — read only; JARVIS cannot book.
     "list_trips",
     "search_flights",
+    # identity + address book. `whoami` is why she stops asking the owner for
+    # their own email address after emailing them a transcript every single call.
+    "whoami",
+    "lookup_contact",
+    "save_contact",
+    "list_contacts",
+    "sync_google_contacts",
+    "google_status",
+    # She can ring back. This is what stops "I'll email you" being the answer to
+    # every slow request.
+    "call_me_back",
+    "pending_callbacks",
+    "cancel_callback",
 }
 
 # Which specialists voice may reach. `_delegate` also re-validates each agent's
@@ -110,8 +139,8 @@ MAX_TURNS = 40  # hard stop on call length
 GREETING = "JARVIS here. What do you need?"
 FILLER = "Copy that."
 TIMEOUT_FALLBACK = (
-    "Still working on that one — I'll email you the full answer. "
-    "Anything else while I finish?"
+    "Still working on that one. I can call you back with it, or keep going here — "
+    "which would you rather?"
 )
 NOT_AUTHORIZED = "I'm not able to help with that. Goodbye."
 
@@ -133,6 +162,23 @@ def is_allowed(db: Session, number: str) -> bool:
         .all()
     )
     return any(normalize_number(r.identifier) == num for r in rows)
+
+
+def seed_context(db: Session, call_sid: str, context: str) -> None:
+    """Seed an OUTBOUND call's conversation with why JARVIS rang.
+
+    Without this she'd open with "I've got those flight results" and then, the
+    moment the user says "go on", have no idea what she was talking about — the
+    opening line is TwiML, not conversation history. This writes the reason into
+    the conversation so the first real turn has context.
+    """
+    from app.memory import add_message, get_or_create_conversation
+
+    if not call_sid or not context:
+        return
+    convo = get_or_create_conversation(db, CHANNEL, call_sid, "")
+    add_message(db, convo.id, "assistant",
+                f"(I placed this call. Reason: {context})")
 
 
 # ── Turn store ───────────────────────────────────────────────────────────────

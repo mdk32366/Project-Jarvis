@@ -25,9 +25,29 @@ log = logging.getLogger(__name__)
 def run_once() -> int:
     db = SessionLocal()
     try:
-        return process_available(db)
+        n = process_available(db)
+        _place_due_calls(db)
+        return n
     finally:
         db.close()
+
+
+def _place_due_calls(db) -> None:
+    """Dial any queued outbound calls that are due.
+
+    Runs on every worker tick (5s), so a callback the user asked for goes out
+    within seconds rather than waiting for a job to be enqueued. Never raises:
+    a dialling failure must not stop the job queue.
+    """
+    if not settings.outbound_calls_enabled:
+        return
+    try:
+        from app.channels.outbound_voice import due_calls, place_call
+
+        for row in due_calls(db):
+            place_call(db, row)
+    except Exception as e:  # noqa: BLE001
+        log.error("outbound dial loop error: %s", e)
 
 
 def _start_briefing_scheduler():
@@ -42,8 +62,12 @@ def _start_briefing_scheduler():
             db = SessionLocal()
             try:
                 from app.jobs import enqueue
-                enqueue(db, "morning_briefing", {}, channel="briefing", actor="scheduler")
-                log.info("enqueued morning_briefing")
+
+                # A call, not an alarm you have to set. That was the whole idea.
+                kind = ("briefing_call" if settings.briefing_by_phone
+                        and settings.outbound_calls_enabled else "morning_briefing")
+                enqueue(db, kind, {}, channel="briefing", actor="scheduler")
+                log.info("enqueued %s", kind)
             finally:
                 db.close()
 

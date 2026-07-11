@@ -108,6 +108,40 @@ class Settings(BaseSettings):
     google_calendar_id: str = "primary"     # or your calendar's ID/email
     calendar_timezone: str = "America/Los_Angeles"
 
+    # ── Outbound calling (JARVIS rings the owner) ────────────────────────────
+    outbound_calls_enabled: bool = False
+    # She does not ring at 3am. Briefings and alerts respect this; a callback the
+    # user explicitly ASKED for does not — they asked.
+    quiet_hours_start: int = 21        # 9pm
+    quiet_hours_end: int = 7           # 7am
+    # Backstop against a bug that dials in a loop. The person on the other end
+    # cannot easily make that stop.
+    max_outbound_calls_per_hour: int = 6
+    # Morning brief as a CALL instead of an email. Uses briefing_hour/minute.
+    briefing_by_phone: bool = False
+
+    # ── Google OAuth (acts AS the owner) ─────────────────────────────────────
+    # REQUIRED for Contacts and Tasks. A service account cannot reach a consumer
+    # Google account's contacts or task list at all — no scope, no setting, and
+    # no delegation makes that work for @gmail.com. Only OAuth can.
+    #
+    # Additive: the service account keeps handling Calendar. Mint a token with
+    #     python -m app.google_oauth --client-secrets client.json
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_refresh_token: str = ""
+
+    # ── Owner identity ───────────────────────────────────────────────────────
+    # Facts about the owner that never change. JARVIS was emailing the owner a
+    # transcript after every call while still ASKING for their email address —
+    # the address lived in the job queue, where the model couldn't see it. The
+    # `whoami` tool exposes these as knowledge.
+    owner_name: str = ""
+    owner_phone: str = ""
+    owner_home_airport: str = ""          # e.g. SEA — so "find me a flight to SFO" just works
+    owner_home_address: str = ""
+    owner_frequent_flyer: str = ""        # e.g. "Alaska MP 12345678, Delta SM 987654"
+
     # ── Ideas repo (separate private GitHub repo) ────────────────────────────
     # PAT with `repo` scope. Ideas are captured to the DB first and committed
     # out-of-band, so a bad token can never lose a thought.
