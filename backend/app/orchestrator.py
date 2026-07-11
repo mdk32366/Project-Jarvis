@@ -32,6 +32,22 @@ _MAX_ITERS = 6
 _AFFIRMATIVE = {"yes", "y", "yep", "yeah", "confirm", "confirmed", "do it", "go ahead", "proceed", "ok", "okay"}
 _NEGATIVE = {"no", "n", "nope", "cancel", "stop", "don't", "dont", "abort"}
 
+# Channel-specific confirmation vocabulary (TDD 8.2). On a phone line "ok" and
+# "yeah" are conversational filler and are UNSAFE triggers for a gated action —
+# STT will happily transcribe an idle "yeah..." mid-sentence. For voice we
+# NARROW rather than widen: an explicit token is required, and anything else is
+# ambiguous and falls through, causing JARVIS to re-ask. That is the point.
+_VOCAB = {
+    "voice": (
+        {"confirm", "confirmed", "affirmative", "execute", "roger", "do it"},
+        {"negative", "cancel", "abort", "belay", "no"},
+    ),
+}
+
+
+def _vocab(channel: str) -> tuple[set[str], set[str]]:
+    return _VOCAB.get(channel, (_AFFIRMATIVE, _NEGATIVE))
+
 _INSTRUCTIONS = """
 ## Operating instructions
 - You are the orchestrator. Answer general conversation and simple questions
@@ -92,8 +108,9 @@ def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: s
     if pending is None:
         return None
 
+    affirmative, negative = _vocab(ctx.channel)
     norm = _norm(user_text)
-    if norm in _AFFIRMATIVE or any(norm.startswith(a + " ") for a in _AFFIRMATIVE):
+    if norm in affirmative or any(norm.startswith(a + " ") for a in affirmative):
         args = json.loads(pending.arguments)
         result = registry.execute(pending.tool, args, ctx)
         pending.status = "done"
@@ -101,7 +118,7 @@ def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: s
         _audit(db, ctx, pending.tool, args, result, "confirmed")
         return f"Done — {pending.summary}.\n\n{result}"
 
-    if norm in _NEGATIVE or any(norm.startswith(n + " ") for n in _NEGATIVE):
+    if norm in negative or any(norm.startswith(n + " ") for n in negative):
         pending.status = "cancelled"
         db.commit()
         return f"Cancelled: {pending.summary}."
@@ -121,7 +138,15 @@ def _enqueue_reflect(db: Session, ctx: Context, convo_id: int) -> None:
 
 def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, subject: str = "") -> str:
     """Process one inbound message and return JARVIS's reply text."""
-    registry = build_registry(include_delegate=True, db=db)  # top-level: honors flags + live agent roster
+    # Voice: restrict the top-level registry. NOTE `delegate` MUST stay in the
+    # allowlist — the top-level registry is a pure delegator and it is voice's
+    # only route to any tool at all. The allowlist's real job here is dropping
+    # place_stock_order.
+    allow = None
+    if channel == "voice":
+        from app.channels.voice_pipeline import VOICE_TOOLS_PHASE1
+        allow = VOICE_TOOLS_PHASE1
+    registry = build_registry(include_delegate=True, db=db, allow=allow)  # top-level: honors flags + live agent roster
     convo = get_or_create_conversation(db, channel, thread_key, subject)
     ctx = Context(db=db, channel=channel, actor=actor, thread_key=thread_key)
 

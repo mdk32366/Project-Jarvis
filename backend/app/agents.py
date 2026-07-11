@@ -63,6 +63,14 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "estimate, not an exact bill.",
         ["fleet_health", "fleet_spend"],
     ),
+    "netstatus": Agent(
+        "netstatus",
+        "Reports local network status: Proxmox nodes and Uptime Kuma monitors (read-only).",
+        "You are JARVIS's network monitor. Use get_node_status for Proxmox hosts and "
+        "get_service_health for Kuma reachability. Be precise about what is down. "
+        "If a node name is unrecognized, ask which was meant — never guess.",
+        ["get_node_status", "get_service_health"],
+    ),
     "scheduling": Agent(
         "scheduling",
         "Checks the user's calendar and helps with scheduling (calendar integration pending).",
@@ -160,6 +168,22 @@ def _delegate(args: dict, ctx: Context) -> str:
     agent_name = str(args.get("agent", "")).strip()
     task = str(args.get("task", "")).strip()
     agents = build_agents(ctx.db)
+
+    # Channel-scoped restriction (TDD 3.3). Voice auth is caller ID, which is
+    # spoofable. build_agents() reads the roster LIVE from the DB, so an agent
+    # edited via /api/agents to include a write tool would otherwise become
+    # reachable from a phone call. Re-validate at call time; fail closed.
+    if ctx.channel == "voice":
+        from app.channels.voice_pipeline import VOICE_AGENTS_PHASE1, VOICE_TOOLS_PHASE1
+
+        if agent_name not in VOICE_AGENTS_PHASE1:
+            return f"The {agent_name} specialist isn't available over voice."
+        _a = agents.get(agent_name)
+        if _a and not set(_a.tools).issubset(VOICE_TOOLS_PHASE1):
+            log.warning("voice: agent %r has non-allowlisted tools %s — refusing",
+                        agent_name, sorted(set(_a.tools) - VOICE_TOOLS_PHASE1))
+            return f"The {agent_name} specialist isn't available over voice."
+
     if agent_name not in agents:
         return f"Unknown agent '{agent_name}'. Available: {', '.join(agents)}."
     if not task:

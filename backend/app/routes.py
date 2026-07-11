@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import text, select
 from sqlalchemy.orm import Session
@@ -62,6 +62,157 @@ async def sms_inbound(request: Request, db: Session = Depends(get_db)):
     reply = handle_inbound(db, from_number, body)
     # Non-whitelisted (reply is None) => empty TwiML, no message sent back.
     return Response(content=to_twiml(reply or ""), media_type="application/xml")
+
+
+# ── Voice channel (Twilio webhooks) ──────────────────────────────────────────
+async def _validated_params(request: Request) -> dict:
+    """Twilio signature check. Same pattern as sms_inbound, per-route URL."""
+    from app.providers.sms import get_sms_provider
+
+    form = await request.form()
+    params = {k: str(v) for k, v in form.items()}
+    signature = request.headers.get("X-Twilio-Signature", "")
+
+    # Per-route URL: base + this request's path & query, else fall back to the
+    # observed URL. Behind Fly's proxy, str(request.url) may show http:// — set
+    # VOICE_PUBLIC_URL_BASE in prod so the signature base string matches what
+    # Twilio signed.
+    base = getattr(settings, "voice_public_url_base", None)
+    url = f"{base}{request.url.path}" if base else str(request.url)
+    if base and request.url.query:
+        url = f"{url}?{request.url.query}"
+
+    provider = get_sms_provider()
+    if not provider.validate_signature(url, params, signature):
+        log.warning("Rejected voice webhook: bad signature (%s)", request.url.path)
+        raise HTTPException(status_code=403, detail="Invalid signature")
+    return params
+
+
+def _xml(body: str) -> Response:
+    return Response(content=body, media_type="application/xml")
+
+
+@router.post("/voice/inbound", tags=["jarvis"], include_in_schema=False)
+async def voice_inbound(request: Request, db: Session = Depends(get_db)):
+    """Call connected. Whitelist, then greet and listen."""
+    from app.channels import voice_pipeline as vp
+
+    params = await _validated_params(request)
+    from_number = params.get("From", "")
+    call_sid = params.get("CallSid", "")
+
+    if not vp.is_allowed(db, from_number):
+        # Deliberately uninformative: don't confirm to a stranger that they've
+        # found a system worth probing.
+        log.info("Rejecting voice call from non-whitelisted number: %s", from_number)
+        return _xml(vp.twiml_hangup(vp.NOT_AUTHORIZED))
+
+    log.info("Voice call started: %s from %s", call_sid, from_number)
+    return _xml(vp.twiml_gather(vp.GREETING, turn=0))
+
+
+@router.post("/voice/gather", tags=["jarvis"], include_in_schema=False)
+async def voice_gather(
+    request: Request,
+    background: BackgroundTasks,
+    turn: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Speech transcript arrives. Kick off orchestration, return TwiML at once."""
+    from app.channels import voice_pipeline as vp
+
+    params = await _validated_params(request)
+    from_number = params.get("From", "")
+    call_sid = params.get("CallSid", "")
+
+    if not vp.is_allowed(db, from_number):
+        return _xml(vp.twiml_hangup(vp.NOT_AUTHORIZED))
+
+    if turn >= vp.MAX_TURNS:
+        vp.email_transcript(db, call_sid, from_number)
+        return _xml(vp.twiml_hangup("We've been at this a while. I'll email you. Goodbye."))
+
+    speech = (params.get("SpeechResult") or "").strip()
+    if not speech:
+        # Nothing heard — re-prompt without burning a turn.
+        return _xml(vp.twiml_gather("I didn't catch that. Say again?", turn=turn))
+
+    if speech.lower().rstrip(".!") in {"goodbye", "hang up", "that's all", "nothing else"}:
+        vp.email_transcript(db, call_sid, from_number)
+        return _xml(vp.twiml_hangup("Very good. Goodbye."))
+
+    log.info("Voice turn %s/%s: %r", call_sid, turn, speech)
+    vp.open_turn(db, call_sid, turn, speech)
+    # Runs after this response is sent. THIS is why we don't call orchestrate()
+    # inline — it can take far longer than Twilio will wait.
+    background.add_task(vp.run_turn, db, call_sid, turn, from_number, speech)
+
+    return _xml(vp.twiml_working(call_sid, turn, poll=0))
+
+
+@router.post("/voice/poll", tags=["jarvis"], include_in_schema=False)
+async def voice_poll(
+    request: Request,
+    turn: int = 0,
+    poll: int = 0,
+    db: Session = Depends(get_db),
+):
+    """Is the turn done yet? Speak it, or bounce again, or bail to email."""
+    from app.channels import voice_pipeline as vp
+
+    params = await _validated_params(request)
+    from_number = params.get("From", "")
+    call_sid = params.get("CallSid", "")
+
+    if not vp.is_allowed(db, from_number):
+        return _xml(vp.twiml_hangup(vp.NOT_AUTHORIZED))
+
+    row = vp.get_turn(db, call_sid, turn)
+
+    if row is None:
+        log.error("poll: no turn row for %s/%s", call_sid, turn)
+        return _xml(vp.twiml_gather("Something went wrong. Try again?", turn=turn + 1))
+
+    if row.status == "done":
+        return _xml(vp.twiml_gather(row.reply or "Done.", turn=turn + 1))
+
+    if row.status == "error":
+        return _xml(
+            vp.twiml_gather("I hit an error on that one. Try something else?", turn=turn + 1)
+        )
+
+    # Still pending.
+    if poll >= vp.MAX_POLLS:
+        # A caller stranded in a redirect loop is worse than one told to check
+        # their inbox. The background task keeps running and the transcript job
+        # will carry the answer.
+        log.warning("poll budget exhausted for %s/%s", call_sid, turn)
+        vp.email_transcript(db, call_sid, from_number)
+        return _xml(vp.twiml_gather(vp.TIMEOUT_FALLBACK, turn=turn + 1))
+
+    return _xml(vp.twiml_working(call_sid, turn, poll=poll))
+
+
+@router.post("/voice/status", tags=["jarvis"], include_in_schema=False)
+async def voice_status(request: Request, db: Session = Depends(get_db)):
+    """Twilio status callback — fires on call completion. Emails the transcript.
+
+    Configure as the number's Status Callback URL with event 'completed'.
+    """
+    from app.channels import voice_pipeline as vp
+
+    params = await _validated_params(request)
+    call_sid = params.get("CallSid", "")
+    from_number = params.get("From", "")
+    call_status = params.get("CallStatus", "")
+
+    if call_status == "completed":
+        log.info("Voice call ended: %s", call_sid)
+        vp.email_transcript(db, call_sid, from_number)
+
+    return _xml(vp.twiml_empty())
+
 
 @router.get("/memory/persona", response_model=list[PersonaOut], tags=["memory"])
 def list_persona(_: User = Depends(get_current_user), db: Session = Depends(get_db)):

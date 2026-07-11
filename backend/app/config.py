@@ -51,6 +51,14 @@ class Settings(BaseSettings):
     sms_email_copy: bool = True
     owner_email: str = ""
 
+    # ── Voice channel (Phase 1) ──────────────────────────────────────────────
+    voice_enabled: bool = False
+    voice_tts_voice: str = "Polly.Matthew-Neural"
+    # Public base URL Twilio posts to, e.g. https://jarvis-mdk.fly.dev
+    # Behind Fly's proxy str(request.url) can report http://, which will NOT
+    # match the base string Twilio signed. Set this in prod.
+    voice_public_url_base: str = ""
+
     # ── Action safety ────────────────────────────────────────────────────────
     confirm_threshold_usd: float = 50.0
     # Master switch for real-money trading. Kept OFF until the dashboard has

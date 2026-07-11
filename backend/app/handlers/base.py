@@ -74,6 +74,10 @@ class Registry:
     def summarize(self, name: str, args: dict) -> str:
         return self._tools[name].summarize(args)
 
+    def restrict(self, allow: set[str]) -> None:
+        """Keep only allow-listed tools. Fail closed."""
+        self._tools = {k: v for k, v in self._tools.items() if k in allow}
+
     def execute(self, name: str, args: dict, ctx: Context) -> str:
         if name not in self._tools:
             return f"Unknown tool: {name}"
@@ -83,7 +87,7 @@ class Registry:
             return f"Error in {name}: {e}"
 
 
-def build_registry(include_delegate: bool = False, db=None) -> Registry:
+def build_registry(include_delegate: bool = False, db=None, allow: set[str] | None = None) -> Registry:
     """Assemble the registry from all handler modules.
 
     ``include_delegate`` adds the multi-agent ``delegate`` tool. It is enabled
@@ -100,14 +104,17 @@ def build_registry(include_delegate: bool = False, db=None) -> Registry:
 
         agents.register_delegate(reg, db)
         finance.register_trading(reg)
+        if allow is not None:
+            reg.restrict(allow)
         return reg
 
     # Sub-agent registry: the domain tools specialists draw from (no delegate,
     # no gated trading -> no recursion, no ungoverned money actions).
-    from app.handlers import finance, general, infra, scheduling
+    from app.handlers import finance, general, infra, netstatus, scheduling
 
     finance.register(reg)
     general.register(reg)
     scheduling.register(reg)
     infra.register(reg)
+    netstatus.register(reg)
     return reg

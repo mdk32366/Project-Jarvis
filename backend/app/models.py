@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -114,5 +114,33 @@ class AgentConfig(Base):
     system_prompt: Mapped[str] = mapped_column(Text, default="")
     tools: Mapped[str] = mapped_column(Text, default="[]")   # JSON array of tool names
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class VoiceTurn(Base):
+    """One spoken turn of a phone call (TDD 6.2).
+
+    The orchestrator can exceed Twilio's ~15s webhook timeout, so /voice/gather
+    returns TwiML immediately and orchestrates in a BackgroundTask; /voice/poll
+    collects the result from here.
+
+    A DB table rather than in-process state: today min_machines_running=1 so
+    consecutive webhooks hit the same api machine, but that is a config value
+    that will change for unrelated reasons, and a Fly restart mid-call has the
+    same effect. In-memory state fails intermittently and presents as "voice
+    randomly hangs up."
+    """
+
+    __tablename__ = "voice_turns"
+    __table_args__ = (UniqueConstraint("call_sid", "turn", name="uq_voice_turn"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    call_sid: Mapped[str] = mapped_column(String(64), index=True)
+    turn: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending|done|error
+    user_text: Mapped[str] = mapped_column(Text, default="")
+    reply: Mapped[str] = mapped_column(Text, default="")
+    error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
