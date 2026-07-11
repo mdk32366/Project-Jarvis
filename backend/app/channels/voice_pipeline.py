@@ -102,8 +102,8 @@ POLL_INTERVAL_SECONDS = 2
 MAX_POLLS = 8  # ~16s of orchestration before we bail to email
 MAX_TURNS = 40  # hard stop on call length
 
-GREETING = "JARVIS here. What do you need?"
-FILLER = "Working on it."
+GREETING = "What's shakin'?"
+FILLER = "Copy that."
 TIMEOUT_FALLBACK = (
     "That's taking longer than I can hold the line for. "
     "I'll email you the answer. Anything else?"
