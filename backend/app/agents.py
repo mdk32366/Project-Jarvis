@@ -81,7 +81,8 @@ DEFAULT_AGENTS: dict[str, Agent] = {
          "capture_idea", "list_ideas",
          "whoami", "lookup_contact", "save_contact", "list_contacts",
          "sync_google_contacts", "google_status",
-         "call_me_back", "pending_callbacks", "cancel_callback"],
+         "call_me_back", "pending_callbacks", "cancel_callback",
+         "watch_for", "list_watches", "cancel_watch"],
     ),
     "travel": Agent(
         "travel",
@@ -95,6 +96,16 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "asking.",
         ["list_trips", "search_flights", "whoami"],
     ),
+    "navigator": Agent(
+        "navigator",
+        "TRAFFIC and driving times (live), when to leave to arrive on time, and finding "
+        "places nearby (restaurants, shops) with ratings and hours. Cannot book a table.",
+        "You are JARVIS's navigator. Use get_traffic for live driving times and leave-by "
+        "times, and find_place to look up businesses. Call whoami for the user's home and "
+        "work addresses and named places rather than asking. You cannot make a reservation "
+        "\u2014 no restaurant API allows it. Say so plainly and offer to open a task.",
+        ["get_traffic", "find_place", "whoami"],
+    ),
     "netstatus": Agent(
         "netstatus",
         "Local network status: Proxmox nodes and Uptime Kuma monitors — is a machine up or "
@@ -102,7 +113,7 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "You are JARVIS's network monitor. Use get_node_status for Proxmox hosts and "
         "get_service_health for Kuma reachability. Be precise about what is down. "
         "If a node name is unrecognized, ask which was meant — never guess.",
-        ["get_node_status", "get_service_health"],
+        ["get_node_status", "get_service_health", "tailscale_status"],
     ),
     "scheduling": Agent(
         "scheduling",

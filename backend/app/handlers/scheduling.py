@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from app.config import settings
 from app.handlers.base import Context, Registry
+from app.timefmt import daytime, weekday_clock
 
 log = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ def _fmt_event(ev: dict) -> str:
     if "T" in when:  # timed event
         try:
             dt = datetime.fromisoformat(when.replace("Z", "+00:00")).astimezone(_tz())
-            when = dt.strftime("%a %-I:%M %p")
+            when = weekday_clock(dt)
         except Exception:
             pass
     else:  # all-day
@@ -256,7 +257,7 @@ def _create_event(args: dict, ctx: Context) -> str:
                     f"changes to events', or connect Google via OAuth.")
         return f"Could not create the event: {e}"
 
-    when = start.astimezone(tz).strftime("%a %b %-d at %-I:%M %p")
+    when = daytime(start.astimezone(tz))
     return f"Created: {title} — {when} ({minutes} min). {ev.get('htmlLink', '')}"
 
 

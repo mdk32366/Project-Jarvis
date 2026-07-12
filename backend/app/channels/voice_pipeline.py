@@ -107,6 +107,15 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "call_me_back",
     "pending_callbacks",
     "cancel_callback",
+    # navigator: the daily-use one. "What time do I need to leave?"
+    "get_traffic",
+    "find_place",
+    # tailnet
+    "tailscale_status",
+    # watches: she acts while you're not thinking about her
+    "watch_for",
+    "list_watches",
+    "cancel_watch",
 }
 
 # Which specialists voice may reach. `_delegate` also re-validates each agent's
@@ -118,6 +127,7 @@ VOICE_AGENTS_PHASE1: set[str] = {
     "scheduling",  # calendar read
     "secretary",   # tasks, ideas, email DRAFTS
     "travel",      # booked trips + flight research
+    "navigator",   # traffic, leave-by times, places
 }
 
 # ── Confirmation vocabulary (TDD §8.2) ───────────────────────────────────────

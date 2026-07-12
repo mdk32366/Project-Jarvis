@@ -121,7 +121,8 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
     # Sub-agent registry: the domain tools specialists draw from (no delegate,
     # no gated trading -> no recursion, no ungoverned money actions).
     from app.handlers import (callback, contacts, finance, general, ideas, infra,
-                              netstatus, scheduling, secretary, tasks, travel)
+                              maps, netstatus, scheduling, secretary, tailscale, tasks,
+                              travel, watches)
 
     finance.register(reg)
     general.register(reg)
@@ -134,4 +135,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
     travel.register(reg)
     contacts.register(reg)
     callback.register(reg)
+    maps.register(reg)
+    tailscale.register(reg)
+    watches.register(reg)
     return reg

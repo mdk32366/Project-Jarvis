@@ -120,6 +120,20 @@ class Settings(BaseSettings):
     # Morning brief as a CALL instead of an email. Uses briefing_hour/minute.
     briefing_by_phone: bool = False
 
+    # ── Maps (traffic + places) ──────────────────────────────────────────────
+    # Same Google Cloud project. Enable: Directions API, Places API.
+    google_maps_api_key: str = ""
+
+    # ── Tailscale ────────────────────────────────────────────────────────────
+    tailscale_api_key: str = ""
+    tailscale_tailnet: str = ""        # e.g. "you@gmail.com" or "your-org.github"
+
+    # ── Watches ──────────────────────────────────────────────────────────────
+    # Floor on how often a recurring watch may ring, however often the condition
+    # is true. A watch that calls every five minutes is worse than no watch — the
+    # user will disable the whole feature.
+    watch_min_interval_minutes: int = 60
+
     # ── Google OAuth (acts AS the owner) ─────────────────────────────────────
     # REQUIRED for Contacts and Tasks. A service account cannot reach a consumer
     # Google account's contacts or task list at all — no scope, no setting, and
@@ -139,8 +153,21 @@ class Settings(BaseSettings):
     owner_name: str = ""
     owner_phone: str = ""
     owner_home_airport: str = ""          # e.g. SEA — so "find me a flight to SFO" just works
-    owner_home_address: str = ""
+    owner_home_address: str = ""          # origin for "how's traffic to work"
+    owner_work_address: str = ""          # the default destination
     owner_frequent_flyer: str = ""        # e.g. "Alaska MP 12345678, Delta SM 987654"
+
+    # Vehicles, vessels, and anything else with a number you'd otherwise have to
+    # go look up. The rule for this whole block: if it never changes and you've
+    # ever had to hunt for it, it belongs here.
+    owner_vehicle: str = ""               # "2021 Ford F-150, plate ABC1234"
+    owner_boat: str = ""                  # "Serenity, hull WN1234AB, Skyline Marina, Anacortes"
+    owner_notes: str = ""                 # free-form: anything else JARVIS should just KNOW
+
+    # Named places, so you can say "how long to work" instead of reciting an
+    # address. Format: "name=address; name=address"
+    #   "work=10777 Willows Rd NE, Redmond WA; boat=Skyline Marina, Anacortes WA"
+    owner_places: str = ""
 
     # ── Ideas repo (separate private GitHub repo) ────────────────────────────
     # PAT with `repo` scope. Ideas are captured to the DB first and committed

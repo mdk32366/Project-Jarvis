@@ -27,9 +27,24 @@ def run_once() -> int:
     try:
         n = process_available(db)
         _place_due_calls(db)
+        _check_watches(db)
         return n
     finally:
         db.close()
+
+
+def _check_watches(db) -> None:
+    """Run any due watches. This is what lets JARVIS act while nobody's asking.
+
+    Never raises: a broken watch must not stop the job queue.
+    """
+    try:
+        from app.handlers.watches import check_watch, due_watches
+
+        for w in due_watches(db):
+            check_watch(db, w)
+    except Exception as e:  # noqa: BLE001
+        log.error("watch loop error: %s", e)
 
 
 def _place_due_calls(db) -> None:

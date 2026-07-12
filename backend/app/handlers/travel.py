@@ -27,6 +27,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.handlers.base import Context, Registry
 from app.models import Trip
+from app.timefmt import clock, daytime
 
 log = logging.getLogger(__name__)
 
@@ -123,7 +124,7 @@ def _list_trips(args: dict, ctx: Context) -> str:
                 "sent to its inbox — forward one and it'll be captured.")
     lines = []
     for t in rows:
-        when = t.depart_at.strftime("%a %b %-d, %-I:%M %p") if t.depart_at else "date not parsed"
+        when = daytime(t.depart_at) if t.depart_at else "date not parsed"
         route = f"{t.origin}->{t.destination}" if t.origin and t.destination else "route unknown"
         lines.append(
             f"- {t.carrier or '?'} {t.flight_no or ''} {route}, {when}"
@@ -168,7 +169,7 @@ def _fmt_slice(sl: dict) -> str:
 
     def _t(iso: str) -> str:
         try:
-            return datetime.fromisoformat(iso).strftime("%-I:%M %p")
+            return clock(datetime.fromisoformat(iso))
         except (TypeError, ValueError):
             return "?"
 

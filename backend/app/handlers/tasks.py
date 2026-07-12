@@ -35,6 +35,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.handlers.base import Context, Registry
 from app.models import Task
+from app.timefmt import day, month_day
 
 log = logging.getLogger(__name__)
 
@@ -90,8 +91,8 @@ def _fmt_due(dt: datetime | None) -> str:
     if local.date() == (now + timedelta(days=1)).date():
         return "due tomorrow"
     if local < now:
-        return f"OVERDUE ({local.strftime('%b %-d')})"
-    return f"due {local.strftime('%a %b %-d')}"
+        return f"OVERDUE ({month_day(local)})"
+    return f"due {day(local)}"
 
 
 def _push_async(ctx: Context, kind: str, task_id: int) -> None:

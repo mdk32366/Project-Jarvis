@@ -270,3 +270,32 @@ class OutboundCall(Base):
     not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     placed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class Watch(Base):
+    """A condition JARVIS monitors and calls the owner about.
+
+    The inversion that turns a tool into an assistant: until now she only ever
+    moved when called. A watch means she acts while you're not thinking about her.
+    """
+
+    __tablename__ = "watches"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    tool: Mapped[str] = mapped_column(String(64))
+    tool_args: Mapped[str] = mapped_column(Text, default="{}")
+    # Plain English. An LLM judges the tool's prose output against it — far more
+    # robust than trying to regex "under $200" out of free text.
+    condition: Mapped[str] = mapped_column(Text)
+    # What she SAYS when she rings. Written before the call, as always.
+    opening: Mapped[str] = mapped_column(Text)
+    every_minutes: Mapped[int] = mapped_column(Integer, default=15)
+    # False = tell them once and stop. A watch that nags is one the user disables.
+    recurring: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    fire_count: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str] = mapped_column(String(16), default="")
+    last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

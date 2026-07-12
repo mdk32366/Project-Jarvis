@@ -45,8 +45,18 @@ def _whoami(args: dict, ctx: Context) -> str:
         bits.append(f"Home airport: {settings.owner_home_airport}")
     if settings.owner_home_address:
         bits.append(f"Home address: {settings.owner_home_address}")
+    if settings.owner_work_address:
+        bits.append(f"Work address: {settings.owner_work_address}")
     if settings.owner_frequent_flyer:
         bits.append(f"Frequent flyer: {settings.owner_frequent_flyer}")
+    if settings.owner_vehicle:
+        bits.append(f"Vehicle: {settings.owner_vehicle}")
+    if settings.owner_boat:
+        bits.append(f"Boat: {settings.owner_boat}")
+    if settings.owner_places:
+        bits.append(f"Named places: {settings.owner_places}")
+    if settings.owner_notes:
+        bits.append(f"Notes: {settings.owner_notes}")
     if settings.calendar_timezone:
         bits.append(f"Timezone: {settings.calendar_timezone}")
 
@@ -137,10 +147,10 @@ def register(reg: Registry) -> None:
         {
             "name": "whoami",
             "description": (
-                "Get the OWNER's own details — their email address, phone, home airport, "
-                "frequent-flyer numbers, home address, timezone. Use this instead of asking "
-                "them for their own email address. Call it whenever you need to email them, "
-                "or when a home airport or timezone would help."
+                "Everything JARVIS knows about the OWNER: email, phone, home and work "
+                "addresses, home airport, frequent-flyer numbers, vehicle and plate, boat and "
+                "hull number, named places, timezone. Call this INSTEAD of asking them for "
+                "their own details. They should never have to tell you their own address twice."
             ),
             "input_schema": {"type": "object", "properties": {}},
         },

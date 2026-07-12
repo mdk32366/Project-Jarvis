@@ -32,6 +32,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.handlers.base import Context, Registry
 from app.models import OutboundCall
+from app.timefmt import clock
 
 log = logging.getLogger(__name__)
 
@@ -93,7 +94,7 @@ def _call_me_back(args: dict, ctx: Context) -> str:
                 "ALLOWED_NUMBERS. I'll have to email you instead.")
 
     if when:
-        return f"I'll call you back around {when.astimezone(_tz()).strftime('%-I:%M %p')}."
+        return f"I'll call you back around {clock(when.astimezone(_tz()))}."
     if in_quiet_hours():
         # Callbacks are exempt from quiet hours — the user asked. But say so, so
         # a 2am ring isn't a surprise.
@@ -115,7 +116,7 @@ def _pending_callbacks(args: dict, ctx: Context) -> str:
         return "No calls pending."
     lines = []
     for r in rows:
-        when = (r.not_before.astimezone(_tz()).strftime("%-I:%M %p")
+        when = (clock(r.not_before.astimezone(_tz()))
                 if r.not_before else "as soon as possible")
         lines.append(f"#{r.id} ({r.kind}, {when}): {r.opening[:70]}")
     return f"{len(rows)} pending:\n" + "\n".join(lines)
