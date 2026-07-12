@@ -98,13 +98,16 @@ DEFAULT_AGENTS: dict[str, Agent] = {
     ),
     "navigator": Agent(
         "navigator",
-        "TRAFFIC and driving times (live), when to leave to arrive on time, and finding "
-        "places nearby (restaurants, shops) with ratings and hours. Cannot book a table.",
+        "TRAFFIC and live driving times, when to leave to arrive on time, WHERE THE USER "
+        "IS RIGHT NOW (their phone reports it), and finding places near them (restaurants, "
+        "shops) with ratings and hours. Cannot book a table.",
         "You are JARVIS's navigator. Use get_traffic for live driving times and leave-by "
-        "times, and find_place to look up businesses. Call whoami for the user's home and "
-        "work addresses and named places rather than asking. You cannot make a reservation "
+        "times, and find_place to look up businesses. Both default to WHERE THE USER "
+        "CURRENTLY IS (from their phone) \u2014 so 'how long to work' and 'anywhere good for "
+        "lunch nearby' just work. Use where_am_i if they ask where they are. Call whoami for "
+        "home/work addresses and named places rather than asking. You cannot make a reservation "
         "\u2014 no restaurant API allows it. Say so plainly and offer to open a task.",
-        ["get_traffic", "find_place", "whoami"],
+        ["get_traffic", "find_place", "where_am_i", "whoami"],
     ),
     "netstatus": Agent(
         "netstatus",

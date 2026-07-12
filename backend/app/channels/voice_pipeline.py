@@ -110,6 +110,7 @@ VOICE_TOOLS_PHASE1: set[str] = {
     # navigator: the daily-use one. "What time do I need to leave?"
     "get_traffic",
     "find_place",
+    "where_am_i",
     # tailnet
     "tailscale_status",
     # watches: she acts while you're not thinking about her

@@ -336,3 +336,137 @@ def test_clock_formats_the_way_a_person_says_a_time():
     assert clock(datetime(2026, 7, 14, 13, 30)) == "1:30 PM"
     assert day(dt) == "Tue Jul 14"          # not "Tue Jul 04"
     assert daytime(dt) == "Tue Jul 14 at 7:15 AM"
+
+
+# ── Location: the phone reports where it is ──────────────────────────────────
+@pytest.fixture
+def loc_token(monkeypatch):
+    monkeypatch.setattr(settings, "location_token", "s3cret")
+
+
+def test_location_ingest_requires_the_token(client, loc_token):
+    """Tasker can't sign like Twilio, so possession of the secret IS the auth —
+    which makes this endpoint strictly STRONGER than voice's spoofable caller ID."""
+    r = client.post("/api/location", json={"lat": 48.24, "lon": -122.37})
+    assert r.status_code == 403
+
+    r = client.post("/api/location", json={"lat": 48.24, "lon": -122.37},
+                    headers={"X-Jarvis-Token": "wrong"})
+    assert r.status_code == 403
+
+    r = client.post("/api/location", json={"lat": 48.24, "lon": -122.37},
+                    headers={"X-Jarvis-Token": "s3cret"})
+    assert r.status_code == 200
+
+
+def test_location_ingest_rejects_nonsense(client, loc_token):
+    h = {"X-Jarvis-Token": "s3cret"}
+    assert client.post("/api/location", json={"lat": 999, "lon": 0}, headers=h).status_code == 400
+    assert client.post("/api/location", json={"lon": 0}, headers=h).status_code == 400
+
+
+def test_a_stale_fix_is_treated_as_unknown_not_trusted(db, monkeypatch):
+    """THE design point. A three-hour-old position will confidently route you from
+    a coffee shop you left at breakfast. Falling back to home is honest; guessing
+    is not."""
+    from app.handlers.location import current_coords, record_ping
+    from app.models import LocationPing
+
+    monkeypatch.setattr(settings, "location_max_age_minutes", 30)
+
+    record_ping(db, lat=48.24, lon=-122.37)
+    assert current_coords(db) == "48.24,-122.37"          # fresh: trusted
+
+    p = db.query(LocationPing).one()
+    p.created_at = datetime.now(ZoneInfo("UTC")) - timedelta(hours=3)
+    db.commit()
+
+    assert current_coords(db) is None, "a stale fix must not be trusted"
+
+
+def test_traffic_defaults_to_where_you_actually_are(ctx, db, maps_key, monkeypatch):
+    """'How long to work?' asked from the marina must not answer from Stanwood."""
+    import httpx
+    from app.handlers.location import record_ping
+    from app.handlers.maps import _get_traffic
+
+    record_ping(db, lat=48.5126, lon=-122.6127, label="Skyline Marina")
+
+    captured = {}
+
+    class C:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url, params=None, **kw):
+            captured.update(params or {})
+            return _directions(1000, 1000)
+
+    monkeypatch.setattr(httpx, "Client", C)
+    _get_traffic({"destination": "work"}, ctx)
+
+    assert captured["origin"] == "48.5126,-122.6127"      # NOT "Stanwood, WA"
+
+
+def test_traffic_falls_back_to_home_when_the_fix_is_stale(ctx, db, maps_key, monkeypatch):
+    import httpx
+    from app.handlers.location import record_ping
+    from app.handlers.maps import _get_traffic
+    from app.models import LocationPing
+
+    monkeypatch.setattr(settings, "location_max_age_minutes", 30)
+    record_ping(db, lat=48.5126, lon=-122.6127)
+    p = db.query(LocationPing).one()
+    p.created_at = datetime.now(ZoneInfo("UTC")) - timedelta(hours=5)
+    db.commit()
+
+    captured = {}
+
+    class C:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url, params=None, **kw):
+            captured.update(params or {})
+            return _directions(1000, 1000)
+
+    monkeypatch.setattr(httpx, "Client", C)
+    _get_traffic({"destination": "work"}, ctx)
+
+    assert captured["origin"] == "Stanwood, WA"           # honest fallback
+
+
+def test_here_resolves_to_live_coordinates(ctx, db, maps_key):
+    from app.handlers.location import record_ping
+    from app.handlers.maps import _resolve
+
+    record_ping(db, lat=48.5126, lon=-122.6127)
+
+    assert _resolve("here", db) == "48.5126,-122.6127"
+    assert _resolve("my location", db) == "48.5126,-122.6127"
+    assert _resolve("work", db) == "Pfizer, Bothell WA"    # named places still win
+
+
+def test_where_am_i_says_how_old_the_fix_is(ctx, db):
+    """A location is only useful if you know how stale it is."""
+    from app.handlers.location import _where_am_i, record_ping
+
+    assert "don't have a location" in _where_am_i({}, ctx)
+
+    record_ping(db, lat=48.5126, lon=-122.6127, accuracy_m=12, label="Skyline Marina")
+    out = _where_am_i({}, ctx)
+    assert "just now" in out
+    assert "Skyline Marina" in out
+    assert "12 metres" in out
+
+
+def test_old_pings_are_pruned(db, monkeypatch):
+    """We only ever care about the latest fix. Don't grow the table forever."""
+    from app.handlers.location import record_ping
+    from app.models import LocationPing
+
+    monkeypatch.setattr(settings, "location_keep_pings", 5)
+    for i in range(12):
+        record_ping(db, lat=48.0 + i / 100, lon=-122.0)
+
+    assert db.query(LocationPing).count() == 5

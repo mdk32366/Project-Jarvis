@@ -64,7 +64,7 @@ def _places() -> dict[str, str]:
     return out
 
 
-def _resolve(where: str) -> str:
+def _resolve(where: str, db=None) -> str:
     """Named place -> address. Anything else passes through to Google as-is,
     which copes fine with 'Skyline Marina Anacortes'.
 
@@ -75,6 +75,23 @@ def _resolve(where: str) -> str:
     if not where:
         return ""
     key = where.strip().lower()
+
+    # "here" / "my location" -> live coordinates from the phone. This is the whole
+    # point of location reporting: "how long to work FROM HERE" is the question you
+    # actually ask, and it's useless if "here" means "home".
+    #
+    # current_coords() returns None on a STALE fix rather than a wrong one. A
+    # three-hour-old position routes you from somewhere you left at breakfast, with
+    # total confidence. Falling back to home is honest; guessing is not.
+    if key in ("here", "my location", "where i am", "current location", "my position"):
+        if db is not None:
+            from app.handlers.location import current_coords
+
+            coords = current_coords(db)
+            if coords:
+                return coords
+        return settings.owner_home_address        # honest fallback
+
     places = _places()
     if key in places:
         return places[key]
@@ -99,12 +116,20 @@ def _get_traffic(args: dict, ctx: Context) -> str:
     if not settings.google_maps_api_key:
         return NOT_CONFIGURED
 
-    dest = _resolve(args.get("destination") or "")
+    dest = _resolve(args.get("destination") or "", ctx.db)
     if not dest:
         known = ", ".join(_places()) or "none saved"
         return f"Where to? Known places: {known}."
 
-    origin = _resolve(args.get("origin") or "") or settings.owner_home_address
+    # Default the origin to WHERE THEY ACTUALLY ARE, not to home. "How long to
+    # work?" asked from the marina should not answer from Stanwood.
+    raw_origin = (args.get("origin") or "").strip()
+    if raw_origin:
+        origin = _resolve(raw_origin, ctx.db)
+    else:
+        from app.handlers.location import current_coords
+
+        origin = current_coords(ctx.db) or settings.owner_home_address
     if not origin:
         return "I don't know where you're starting from. Set OWNER_HOME_ADDRESS."
 
@@ -220,7 +245,14 @@ def _find_place(args: dict, ctx: Context) -> str:
     if not query:
         return "What are you looking for?"
 
-    near = _resolve(args.get("near") or "") or settings.owner_home_address
+    # "anywhere good for lunch nearby?" should mean NEARBY, not near home.
+    raw_near = (args.get("near") or "").strip()
+    if raw_near:
+        near = _resolve(raw_near, ctx.db)
+    else:
+        from app.handlers.location import current_coords
+
+        near = current_coords(ctx.db) or settings.owner_home_address
     params = {
         "query": f"{query} near {near}" if near else query,
         "key": settings.google_maps_api_key,

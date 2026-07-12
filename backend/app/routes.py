@@ -278,6 +278,54 @@ async def voice_status(request: Request, db: Session = Depends(get_db)):
     return _xml(vp.twiml_empty())
 
 
+# ── Location ingest (the phone reports where it is) ──────────────────────────
+# The phone PUSHES; JARVIS receives. Nothing here lets a voice on a phone line
+# reach into the device — that asymmetry is why this is safe.
+#
+# AUTH: a shared secret in X-Jarvis-Token. Tasker isn't Twilio, so it can't sign
+# requests. Possession of the secret IS the authentication, which makes this
+# endpoint strictly STRONGER than the voice channel's spoofable caller ID.
+@router.post("/location", tags=["jarvis"], include_in_schema=False)
+async def location_ingest(request: Request, db: Session = Depends(get_db)):
+    from app.handlers.location import record_ping
+
+    if not settings.location_token:
+        raise HTTPException(status_code=503, detail="Location reporting is not configured")
+
+    token = request.headers.get("X-Jarvis-Token", "")
+    # Constant-time compare: a plain == leaks the secret one byte at a time to
+    # anyone willing to measure. Cheap to do right.
+    import hmac
+
+    if not hmac.compare_digest(token, settings.location_token):
+        log.warning("location ping rejected: bad token")
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — Tasker may send form-encoded
+        form = await request.form()
+        body = {k: v for k, v in form.items()}
+
+    try:
+        lat = float(body.get("lat"))
+        lon = float(body.get("lon"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="lat and lon are required")
+
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise HTTPException(status_code=400, detail="lat/lon out of range")
+
+    p = record_ping(
+        db, lat=lat, lon=lon,
+        accuracy_m=float(body.get("accuracy") or 0),
+        source=str(body.get("source") or "phone"),
+        label=str(body.get("label") or ""),
+    )
+    log.info("location ping: %.4f,%.4f (%s)", lat, lon, p.label or "no label")
+    return {"ok": True, "id": p.id}
+
+
 @router.get("/memory/persona", response_model=list[PersonaOut], tags=["memory"])
 def list_persona(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.execute(select(PersonaProfile)).scalars().all()

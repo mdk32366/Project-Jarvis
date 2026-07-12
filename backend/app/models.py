@@ -299,3 +299,21 @@ class Watch(Base):
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_fired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LocationPing(Base):
+    """A position report FROM the phone.
+
+    The phone pushes; JARVIS receives. Nothing here lets a voice on a phone line
+    reach into the device — that asymmetry is the reason this is safe to build.
+    """
+
+    __tablename__ = "location_pings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lat: Mapped[float] = mapped_column(Float)
+    lon: Mapped[float] = mapped_column(Float)
+    accuracy_m: Mapped[float] = mapped_column(Float, default=0.0)
+    source: Mapped[str] = mapped_column(String(32), default="phone")
+    label: Mapped[str] = mapped_column(String(120), default="")   # e.g. "leaving home"
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

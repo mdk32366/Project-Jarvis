@@ -120,6 +120,16 @@ class Settings(BaseSettings):
     # Morning brief as a CALL instead of an email. Uses briefing_hour/minute.
     briefing_by_phone: bool = False
 
+    # ── Location (the phone reports where it is) ─────────────────────────────
+    # Shared secret in the X-Jarvis-Token header. Tasker can't do Twilio signature
+    # validation, so possession of this secret IS the authentication — which makes
+    # it strictly stronger than the voice channel's spoofable caller ID.
+    location_token: str = ""
+    # A fix older than this is treated as UNKNOWN, not trusted. A three-hour-old
+    # position will confidently route you from a coffee shop you left at breakfast.
+    location_max_age_minutes: int = 30
+    location_keep_pings: int = 200
+
     # ── Maps (traffic + places) ──────────────────────────────────────────────
     # Same Google Cloud project. Enable: Directions API, Places API.
     google_maps_api_key: str = ""
