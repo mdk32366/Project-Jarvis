@@ -301,24 +301,60 @@ async def location_ingest(request: Request, db: Session = Depends(get_db)):
         log.warning("location ping rejected: bad token")
         raise HTTPException(status_code=403, detail="Invalid token")
 
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001 — Tasker may send form-encoded
-        form = await request.form()
-        body = {k: v for k, v in form.items()}
+    # PARSE ONCE, FROM THE RAW BYTES.
+    #
+    # The obvious version -- try request.json(), fall back to request.form() --
+    # is a trap: .json() CONSUMES the body stream. When it fails, .form() finds
+    # an empty stream and raises, and that exception is unhandled. 500.
+    #
+    # Read the bytes once and try each shape against them. Tasker sends whatever
+    # it feels like depending on version and how the Body field was filled in, so
+    # accept JSON, form-encoded, and query params, and stop being precious about it.
+    import json as _json
+    from urllib.parse import parse_qs
+
+    raw = (await request.body()).decode("utf-8", errors="replace").strip()
+    body: dict = {}
+
+    if raw:
+        try:
+            parsed = _json.loads(raw)
+            if isinstance(parsed, dict):
+                body = parsed
+        except ValueError:
+            # form-encoded: lat=48.5&lon=-122.6
+            body = {k: v[0] for k, v in parse_qs(raw).items() if v}
+
+    # ...and query params, because Tasker's "Query Parameters" field is the least
+    # fiddly of the three and people will reasonably use it.
+    for k, v in request.query_params.items():
+        body.setdefault(k, v)
 
     try:
-        lat = float(body.get("lat"))
-        lon = float(body.get("lon"))
-    except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="lat and lon are required")
+        lat = float(body["lat"])
+        lon = float(body["lon"])
+    except (KeyError, TypeError, ValueError):
+        log.warning("location ping had no usable lat/lon; raw body was: %r", raw[:200])
+        raise HTTPException(
+            status_code=400,
+            detail=("lat and lon are required. Send JSON "
+                    '{"lat":48.5,"lon":-122.6}, form-encoded lat=48.5&lon=-122.6, '
+                    "or query params."),
+        )
 
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise HTTPException(status_code=400, detail="lat/lon out of range")
 
+    # Tasker will happily send accuracy as "" or as an unresolved "%gl_accuracy".
+    # A bad accuracy value must never lose a good position.
+    try:
+        accuracy = float(body.get("accuracy") or 0)
+    except (TypeError, ValueError):
+        accuracy = 0.0
+
     p = record_ping(
         db, lat=lat, lon=lon,
-        accuracy_m=float(body.get("accuracy") or 0),
+        accuracy_m=accuracy,
         source=str(body.get("source") or "phone"),
         label=str(body.get("label") or ""),
     )

@@ -470,3 +470,46 @@ def test_old_pings_are_pruned(db, monkeypatch):
         record_ping(db, lat=48.0 + i / 100, lon=-122.0)
 
     assert db.query(LocationPing).count() == 5
+
+
+def test_location_accepts_json_form_and_query(client, loc_token):
+    """REGRESSION: the naive version -- try .json(), fall back to .form() -- is a
+    TRAP. .json() CONSUMES the body stream, so when it fails, .form() finds an
+    empty stream and raises. That exception is unhandled: 500.
+
+    Tasker sends whatever it likes depending on version and how the Body field was
+    filled in. Read the raw bytes ONCE and try each shape against them.
+    """
+    h = {"X-Jarvis-Token": "s3cret"}
+
+    # JSON
+    r = client.post("/api/location", content='{"lat":48.5126,"lon":-122.6127}',
+                    headers={**h, "Content-Type": "application/json"})
+    assert r.status_code == 200
+
+    # form-encoded, no content-type at all (Tasker often omits it)
+    r = client.post("/api/location", content="lat=48.5126&lon=-122.6127&label=tasker",
+                    headers=h)
+    assert r.status_code == 200, r.text
+
+    # query params
+    r = client.post("/api/location?lat=48.5126&lon=-122.6127", headers=h)
+    assert r.status_code == 200, r.text
+
+
+def test_location_survives_a_junk_accuracy(client, loc_token):
+    """Tasker sends accuracy as "" or an unresolved "%gl_accuracy". A bad accuracy
+    must never lose a good position."""
+    h = {"X-Jarvis-Token": "s3cret"}
+    r = client.post("/api/location",
+                    content='{"lat":48.5,"lon":-122.6,"accuracy":"%gl_accuracy"}',
+                    headers={**h, "Content-Type": "application/json"})
+    assert r.status_code == 200
+
+
+def test_location_never_500s_on_a_garbage_body(client, loc_token):
+    """A 400 tells the user what to fix. A 500 tells them nothing and looks broken."""
+    h = {"X-Jarvis-Token": "s3cret"}
+    for junk in ("", "not json at all", "{{{", "<xml/>"):
+        r = client.post("/api/location", content=junk, headers=h)
+        assert r.status_code == 400, f"{junk!r} gave {r.status_code}"
