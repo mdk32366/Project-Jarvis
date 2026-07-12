@@ -166,3 +166,56 @@ def _mint() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_mint())
+
+
+# ── Error interpretation ────────────────────────────────────────────────────
+def explain(err: Exception) -> str | None:
+    """Turn an opaque Google 403 into something actionable, or None if we can't.
+
+    These errors are USEFUL — Google tells you exactly what's wrong and gives you
+    the link to fix it — but they arrive wrapped in an HttpError repr that nobody
+    reads, buried in a job row nobody looks at. So JARVIS silently did nothing and
+    the user had to go spelunking in Postgres to find out why.
+
+    Real examples, both hit on the first live run:
+      * "People API has not been used in project N before or it is disabled."
+      * "Service accounts cannot invite attendees without Domain-Wide Delegation."
+
+    Neither is a bug, and neither will fix itself on retry.
+    """
+    msg = str(err)
+
+    if "SERVICE_DISABLED" in msg or "has not been used in project" in msg:
+        api = ("People API" if "people.googleapis" in msg
+               else "Google Tasks API" if "tasks.googleapis" in msg
+               else "Google Calendar API" if "calendar" in msg
+               else "a Google API")
+        return (f"The {api} isn't enabled in your Google Cloud project. Enable it in the "
+                f"console, wait a minute, and try again — nothing else is wrong.")
+
+    if "forbiddenForServiceAccounts" in msg or "Domain-Wide Delegation" in msg:
+        return ("A service account can't invite attendees on a personal Google account — "
+                "Google forbids it, and re-sharing the calendar won't help. Connect Google "
+                "via OAuth, or create the event without attendees.")
+
+    if "invalid_grant" in msg or "Token has been expired or revoked" in msg:
+        return ("The Google connection has expired or been revoked. Reconnect by running "
+                "`python -m app.google_oauth` and updating the secrets.")
+
+    if "insufficientPermissions" in msg or "ACCESS_TOKEN_SCOPE_INSUFFICIENT" in msg:
+        return ("The Google connection is missing a required scope. Reconnect by running "
+                "`python -m app.google_oauth` — the consent screen will ask for it.")
+
+    return None
+
+
+def is_permanent(err: Exception) -> bool:
+    """Will retrying ever help? A disabled API or a revoked token will not fix
+    itself, so burning three attempts on it just delays the honest answer."""
+    msg = str(err)
+    return any(k in msg for k in (
+        "SERVICE_DISABLED", "has not been used in project",
+        "forbiddenForServiceAccounts", "Domain-Wide Delegation",
+        "invalid_grant", "Token has been expired or revoked",
+        "insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+    ))

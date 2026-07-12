@@ -45,7 +45,32 @@ def _load_sa_info(raw: str) -> dict | None:
 
 
 def _service():
-    """Return a Google Calendar API client, or None if not configured."""
+    """Return a Google Calendar API client. Prefers OAuth over the service account.
+
+    WHY THE PREFERENCE MATTERS. A service account CANNOT invite attendees on a
+    consumer Google account. Google refuses outright:
+
+        403 forbiddenForServiceAccounts
+        "Service accounts cannot invite attendees without Domain-Wide
+         Delegation of Authority."
+
+    Domain-Wide Delegation is a Workspace feature. It does not exist for
+    @gmail.com. So no amount of re-sharing the calendar fixes this — sharing
+    grants the SA the right to WRITE, and it still cannot INVITE.
+
+    OAuth has no such limit, because it acts as the owner, and a person is
+    obviously allowed to invite people to their own meeting.
+
+    So: OAuth if we have it, service account otherwise. Both are kept — the SA
+    still works fine for reads and for events with no attendees, and a user who
+    hasn't done the OAuth consent keeps everything they had.
+    """
+    from app import google_oauth
+
+    svc = google_oauth.calendar_service()
+    if svc is not None:
+        return svc
+
     info = _load_sa_info(settings.google_service_account_json)
     if info is None:
         return None
@@ -217,10 +242,19 @@ def _create_event(args: dict, ctx: Context) -> str:
             sendUpdates="all" if attendees else "none",
         ).execute()
     except Exception as e:  # noqa: BLE001
-        # A 403 here almost always means the SA has Reader, not writer.
-        return (f"Could not create the event: {e}\n"
-                f"If this is a permissions error, re-share the calendar with the "
-                f"service account as 'Make changes to events'.")
+        msg = str(e)
+        # This one misdirects badly: it looks like a sharing problem and isn't.
+        # A service account can never invite attendees on a consumer account, no
+        # matter how the calendar is shared.
+        if "forbiddenForServiceAccounts" in msg or "Domain-Wide Delegation" in msg:
+            return ("I can create the event but I can't invite attendees — that needs "
+                    "Google OAuth, which isn't connected. Either connect Google, or say "
+                    "the word and I'll create it with no attendees.")
+        if "insufficientPermissions" in msg or "403" in msg:
+            return (f"Google refused: {e}\n"
+                    f"Check the calendar is shared with the service account as 'Make "
+                    f"changes to events', or connect Google via OAuth.")
+        return f"Could not create the event: {e}"
 
     when = start.astimezone(tz).strftime("%a %b %-d at %-I:%M %p")
     return f"Created: {title} — {when} ({minutes} min). {ev.get('htmlLink', '')}"

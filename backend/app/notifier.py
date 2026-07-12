@@ -29,7 +29,11 @@ def send_email(
         msg["In-Reply-To"] = in_reply_to
         msg["References"] = references or in_reply_to
 
-    with smtplib.SMTP(settings.smtp_host, settings.smtp_port) as server:
+    # TIMEOUT IS NOT OPTIONAL. smtplib defaults to blocking forever, and the job
+    # worker is single-threaded — one unresponsive mail server and the whole queue
+    # stops draining, silently and indefinitely. (Found when a real SMTP call in a
+    # test hung the suite; the production failure mode is identical but worse.)
+    with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=30) as server:
         server.starttls()
         server.login(settings.gmail_address, settings.gmail_app_password)
         server.send_message(msg)

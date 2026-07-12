@@ -516,3 +516,97 @@ def test_google_contacts_sync_upserts_rather_than_duplicating(db, monkeypatch):
     nick = db.query(Contact).filter_by(name="Nick").one()
     assert nick.email == "learned-on-a-call@x.com"   # NOT clobbered by a blank
     assert nick.phone == "+15551110000"              # but the phone was added
+
+
+# ── Google errors: explained, not buried ─────────────────────────────────────
+# The strings below are the REAL ones from the first live run, copied out of the
+# production jobs table. All three failed silently; the user found them by
+# hand-querying Postgres.
+
+_DISABLED_PEOPLE = (
+    'HttpError 403 when requesting https://people.googleapis.com/v1/people/me/connections '
+    'returned "People API has not been used in project 1054772636129 before or it is '
+    'disabled." reason: SERVICE_DISABLED'
+)
+_DISABLED_TASKS = (
+    'HttpError 403 when requesting https://tasks.googleapis.com/tasks/v1/lists/@default/tasks '
+    'returned "Google Tasks API has not been used in project 1054772636129 before or it is '
+    'disabled." reason: SERVICE_DISABLED'
+)
+_SA_CANT_INVITE = (
+    'HttpError 403 ... "Service accounts cannot invite attendees without '
+    "Domain-Wide Delegation of Authority.\" ... 'reason': 'forbiddenForServiceAccounts'"
+)
+
+
+def test_disabled_api_is_explained_in_english():
+    from app.google_oauth import explain
+
+    hint = explain(Exception(_DISABLED_PEOPLE))
+    assert hint and "People API" in hint and "isn't enabled" in hint
+
+    hint = explain(Exception(_DISABLED_TASKS))
+    assert hint and "Tasks API" in hint
+
+
+def test_service_account_attendee_limit_is_explained_without_misdirecting():
+    """The old message told the user to re-share the calendar. That is WRONG and
+    it cost real debugging time: a service account can never invite attendees on
+    a consumer account, however the calendar is shared."""
+    from app.google_oauth import explain
+
+    hint = explain(Exception(_SA_CANT_INVITE))
+    assert hint
+    assert "re-sharing the calendar won't help" in hint
+    assert "OAuth" in hint
+
+
+def test_permanent_failures_are_not_retried():
+    """A disabled API will not fix itself. Burning three attempts on it just
+    delays the honest answer."""
+    from app.google_oauth import is_permanent
+
+    assert is_permanent(Exception(_DISABLED_PEOPLE)) is True
+    assert is_permanent(Exception(_SA_CANT_INVITE)) is True
+    assert is_permanent(Exception("invalid_grant")) is True
+    assert is_permanent(Exception("connection reset by peer")) is False   # DO retry
+
+
+def test_a_dead_job_emails_the_owner(db, monkeypatch):
+    """THE lesson from the first live run. sync_contacts failed three times with
+    a perfectly clear Google error, died, and JARVIS said NOTHING. The user found
+    out by querying Postgres by hand.
+
+    A silent background failure is barely better than no feature: the user
+    believes it worked.
+    """
+    from app.config import settings
+    from app import jobs as J
+    from app.models import Job
+
+    monkeypatch.setattr(settings, "owner_email", "owner@example.com")
+
+    # _HANDLERS is a module-level dict. Registering into it permanently would
+    # poison every later test in the session — monkeypatch so it's undone.
+    def _boom(db_, payload):
+        raise RuntimeError(_DISABLED_PEOPLE)
+
+    monkeypatch.setitem(J._HANDLERS, "exploding_job", _boom)
+
+    # The notification IS an email_copy job. Left real, it opens an SMTP socket
+    # and blocks — which is also worth knowing about production: a hung mail
+    # server stalls the worker.
+    sent = []
+    monkeypatch.setitem(J._HANDLERS, "email_copy",
+                        lambda db_, p_: sent.append(p_) or "sent")
+
+    J.enqueue(db, "exploding_job", {})
+    J.process_available(db)
+
+    dead = db.query(Job).filter_by(kind="exploding_job").one()
+    assert dead.status == "error"
+    assert dead.attempts == 1, "permanent failure should not have been retried"
+
+    assert sent, "the job died SILENTLY — the user would never know"
+    assert "People API" in sent[0]["body"]        # and it says HOW TO FIX IT
+    assert "isn't enabled" in sent[0]["body"]

@@ -25,6 +25,11 @@ log = logging.getLogger(__name__)
 # kind -> handler(db, payload: dict) -> str(result)
 _HANDLERS: Dict[str, Callable[[Session, dict], str]] = {}
 
+# Jobs whose failure must NOT trigger a failure-notification — the notification
+# is itself an email_copy job, so notifying about a failed email would recurse
+# forever, spawning jobs faster than the worker can drain them.
+_NEVER_NOTIFY = {"email_copy", "reflect"}
+
 
 def job_handler(kind: str):
     def deco(fn: Callable[[Session, dict], str]):
@@ -93,12 +98,66 @@ def run_job(db: Session, job: Job) -> None:
         db.rollback()
         job = db.get(Job, job.id)
         job.error = str(e)[:4000]
-        if job.attempts >= job.max_attempts:
+
+        # Some failures will NEVER succeed on retry — a disabled Google API, a
+        # revoked token. Burning three attempts on those just delays the honest
+        # answer and buries it deeper in the log.
+        from app.google_oauth import is_permanent
+
+        permanent = is_permanent(e)
+        if permanent or job.attempts >= job.max_attempts:
             job.status = "error"
+            _notify_job_failure(db, job, e)
         else:
             job.status = "queued"  # retry on a later poll
         db.commit()
-        log.error("job %s (%s) failed on attempt %d: %s", job.id, job.kind, job.attempts, e)
+        log.error("job %s (%s) failed on attempt %d%s: %s",
+                  job.id, job.kind, job.attempts,
+                  " (permanent)" if permanent else "", e)
+
+
+def _notify_job_failure(db: Session, job: Job, err: Exception) -> None:
+    """Tell the user a background job died.
+
+    THIS IS THE REAL LESSON from the first live run. `sync_contacts` and
+    `push_task` failed with a perfectly clear Google error — "the People API
+    isn't enabled in your project" — three times each, and then died. JARVIS said
+    nothing. The user only discovered it by hand-querying Postgres.
+
+    A silent background failure is barely better than no feature at all: the user
+    believes the thing worked. So when a job dies, say so — and say WHAT TO DO,
+    because Google's errors are actually actionable if you actually read them.
+    """
+    from app.google_oauth import explain
+
+    if not settings.owner_email_resolved:
+        return
+
+    # DO NOT notify about a failed notification. _notify_job_failure enqueues an
+    # email_copy job; if THAT fails, notifying again enqueues another, which fails,
+    # which notifies... an unbounded loop that generates jobs faster than the
+    # worker drains them. Caught by the test suite hanging; it would have been far
+    # nastier in production, where the "failing" job is a real SMTP outage.
+    if job.kind in _NEVER_NOTIFY:
+        log.warning("job %s (%s) failed; not notifying (would recurse)", job.id, job.kind)
+        return
+
+    hint = explain(err)
+    try:
+        body = [f"A background task failed and won't be retried.", "",
+                f"Task: {job.kind}"]
+        if hint:
+            body += ["", "What's wrong:", hint]
+        body += ["", "Details:", str(err)[:1500]]
+        enqueue(
+            db, "email_copy",
+            {"to": settings.owner_email_resolved,
+             "subject": f"JARVIS: {job.kind} failed",
+             "body": "\n".join(body)},
+            channel="system", actor="system",
+        )
+    except Exception as e2:  # noqa: BLE001 — never let the notifier break the worker
+        log.warning("could not notify about failed job %s: %s", job.id, e2)
 
 
 def process_available(db: Session, limit: int = 100) -> int:

@@ -231,6 +231,23 @@ def sync_google_contacts(db, limit: int = 2000) -> str:
     page = None
     fetched = 0
 
+    try:
+        return _do_sync(db, svc, limit)
+    except Exception as e:  # noqa: BLE001
+        from app.google_oauth import explain
+
+        hint = explain(e)
+        if hint:
+            log.error("contact sync blocked: %s", hint)
+            raise RuntimeError(hint) from e
+        raise
+
+
+def _do_sync(db, svc, limit: int) -> str:
+    added = updated = skipped = 0
+    page = None
+    fetched = 0
+
     while fetched < limit:
         resp = (
             svc.people()

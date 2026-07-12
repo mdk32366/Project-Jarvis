@@ -279,7 +279,17 @@ def push_task_to_google(db, task_id: int) -> str:
         # it stores date only. Not worth fighting.
         body["due"] = task.due.astimezone(_tz()).isoformat()
 
-    created = svc.tasks().insert(tasklist="@default", body=body).execute()
+    try:
+        created = svc.tasks().insert(tasklist="@default", body=body).execute()
+    except Exception as e:  # noqa: BLE001
+        from app.google_oauth import explain
+
+        hint = explain(e)
+        if hint:
+            log.error("task push blocked: %s", hint)
+            raise RuntimeError(hint) from e
+        raise
+
     task.google_id = created.get("id", "")
     db.commit()
     log.info("pushed task #%s to Google Tasks", task_id)
