@@ -64,6 +64,10 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "recall_facts",
     "forget_fact",
     "audit_memory",
+    # researcher: she can find out instead of guessing — and can say when she's
+    # guessing, which is arguably worth more.
+    "web_search",
+    "fetch_page",
     # finance — READ ONLY. place_stock_order is NOT here and is not reachable:
     # it lives on the top-level registry behind the gate, and the finance agent's
     # roster does not include it.

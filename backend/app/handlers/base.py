@@ -122,7 +122,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
     # no gated trading -> no recursion, no ungoverned money actions).
     from app.handlers import (audit, callback, contacts, finance, general, ideas,
                               infra, location, maps, netstatus, scheduling, secretary,
-                              tailscale, tasks, travel, watches)
+                              tailscale, tasks, travel, watches, websearch)
 
     finance.register(reg)
     general.register(reg)
@@ -138,6 +138,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
     maps.register(reg)
     location.register(reg)
     audit.register(reg)
+    websearch.register(reg)
     tailscale.register(reg)
     watches.register(reg)
     return reg

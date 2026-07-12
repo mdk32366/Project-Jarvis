@@ -42,6 +42,16 @@ _EXTRACT_SYSTEM_BASE = (
     "conversation seems to imply otherwise, the conversation is about a trip.\n"
     "When in doubt, save nothing. A wrong durable fact is far worse than a missing "
     "one, because it will be trusted later and nobody will know where it came from."
+    "\n\n"
+    "NEVER SAVE WHAT WAS READ ON THE WEB. If the conversation contains search "
+    "results, article text, or anything retrieved from the internet, that is not a "
+    "fact ABOUT THE USER. It is something they LOOKED AT.\n"
+    "The distinction is not pedantic. 'The user asked about the Fed rate' is a fact "
+    "about him; 'the Fed rate is 4.5%' is not \u2014 it is a fact about the world, it "
+    "will go stale, and saving it as something JARVIS 'knows about him' poisons the "
+    "memory with unbounded internet content that nobody can audit.\n"
+    "Save only what the USER SAID about themselves, their people, their projects, "
+    "and their preferences."
 )
 
 

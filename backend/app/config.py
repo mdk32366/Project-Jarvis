@@ -130,6 +130,11 @@ class Settings(BaseSettings):
     location_max_age_minutes: int = 30
     location_keep_pings: int = 200
 
+    # ── Web search (Tavily) ──────────────────────────────────────────────────
+    # Purpose-built for LLMs: search + extract + synthesize in one call, returning
+    # an ANSWER rather than ten blue links. Ten links read aloud is useless.
+    tavily_api_key: str = ""
+
     # ── Maps (traffic + places) ──────────────────────────────────────────────
     # Same Google Cloud project. Enable: Directions API, Places API.
     google_maps_api_key: str = ""
