@@ -362,6 +362,18 @@ async def location_ingest(request: Request, db: Session = Depends(get_db)):
     return {"ok": True, "id": p.id}
 
 
+@router.get("/memory/audit", tags=["memory"])
+def memory_audit(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Everything JARVIS believes about the owner, as plain text.
+
+    The same content she emails on request — but readable in the browser, because
+    an audit you have to ask for out loud is one you'll never actually do.
+    """
+    from app.handlers.audit import build_audit
+
+    return Response(content=build_audit(db), media_type="text/plain")
+
+
 @router.get("/memory/persona", response_model=list[PersonaOut], tags=["memory"])
 def list_persona(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
     return db.execute(select(PersonaProfile)).scalars().all()

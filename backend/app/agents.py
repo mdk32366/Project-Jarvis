@@ -49,10 +49,14 @@ DEFAULT_AGENTS: dict[str, Agent] = {
     ),
     "archivist": Agent(
         "archivist",
-        "Saves durable facts about the user to long-term memory.",
-        "You are JARVIS's archivist. When given information worth keeping, use the remember_fact "
-        "tool to persist it, then confirm what you saved.",
-        ["remember_fact"],
+        "Long-term memory: saves durable facts, lists and EMAILS AN AUDIT of everything "
+        "JARVIS believes about the user, and FORGETS beliefs that turn out to be wrong.",
+        "You are JARVIS's archivist. Save durable facts with remember_fact. Use recall_facts "
+        "to report what is believed, and forget_fact whenever the user corrects something \u2014 "
+        "a learned fact is INFERRED from conversation and is sometimes simply wrong. Facts in "
+        "the AUTHORITATIVE block are configured by the user directly: never save anything that "
+        "contradicts them.",
+        ["remember_fact", "recall_facts", "forget_fact", "audit_memory", "whoami"],
     ),
     "infra": Agent(
         "infra",

@@ -58,8 +58,12 @@ VOICE_TOOLS_PHASE1: set[str] = {
     # infra (real Fly data)
     "fleet_health",
     "fleet_spend",
-    # archivist
+    # archivist — she must be able to FORGET, not just remember. A wrong belief
+    # that can't be corrected is worse than no memory at all.
     "remember_fact",
+    "recall_facts",
+    "forget_fact",
+    "audit_memory",
     # finance — READ ONLY. place_stock_order is NOT here and is not reachable:
     # it lives on the top-level registry behind the gate, and the finance agent's
     # roster does not include it.

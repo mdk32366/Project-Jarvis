@@ -147,10 +147,13 @@ def register(reg: Registry) -> None:
         {
             "name": "whoami",
             "description": (
-                "Everything JARVIS knows about the OWNER: email, phone, home and work "
-                "addresses, home airport, frequent-flyer numbers, vehicle and plate, boat and "
-                "hull number, named places, timezone. Call this INSTEAD of asking them for "
-                "their own details. They should never have to tell you their own address twice."
+                "The owner's own hard facts: email, phone, home and work addresses, the CITY "
+                "THEY LIVE IN, home airport, frequent-flyer numbers, vehicle and plate, boat "
+                "and hull number, named places, timezone.\n"
+                "Call this to ANSWER a question about them ('what city do I live in?', "
+                "'what's my hull number?') AND before asking them for a detail you could just "
+                "look up. This is CONFIGURED ground truth \u2014 it beats anything you think you "
+                "remember."
             ),
             "input_schema": {"type": "object", "properties": {}},
         },

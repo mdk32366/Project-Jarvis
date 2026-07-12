@@ -41,12 +41,67 @@ def build_system_preamble(db: Session, query: str = "") -> str:
         parts.append("\n## Standing preferences (how they like things done — follow these):")
         parts.extend(f"- {p.key}: {p.value}" for p in prefs)
 
+    # GROUND TRUTH, stated up front — not hidden behind a tool she has to choose
+    # to call.
+    #
+    # This was a real failure. The `whoami` tool held the owner's address, but the
+    # model never called it when ASKED "what city do I live in" — the tool reads
+    # like something you use before asking a question, not something you use to
+    # answer one. So she fell back on a memory the reflector had learned from a
+    # conversation about driving to the boat, and confidently reported that his
+    # home base was Anacortes.
+    #
+    # Two lessons, and the second is the important one:
+    #   1. Facts this small and this stable should be KNOWLEDGE, not a lookup.
+    #   2. A CONFIGURED fact must OUTRANK an INFERRED one. The reflector guesses
+    #      from conversation; settings are stated by the user. When they conflict,
+    #      the guess is wrong — and it must be said explicitly, because the model
+    #      has no way to know which source it's reading.
+    identity = _owner_identity()
+    if identity:
+        parts.append("\n## Ground truth about your principal (AUTHORITATIVE):")
+        parts.extend(f"- {line}" for line in identity)
+        parts.append(
+            "These facts are configured by them directly. If anything you have "
+            "'learned' below contradicts them, the learned version is WRONG — "
+            "trust this block and say so if it comes up."
+        )
+
     facts = _relevant_facts(db, query)
     if facts:
-        parts.append("\n## Things you've learned about them:")
+        parts.append("\n## Things you've learned about them (inferred — may be wrong):")
         parts.extend(f"- {m.content}" for m in facts)
 
     return "\n".join(parts)
+
+
+def _owner_identity() -> list[str]:
+    """The owner's stable facts, for the system preamble.
+
+    Small, never changes, and asked about constantly. It has no business being a
+    tool call.
+    """
+    from app.config import settings
+
+    out: list[str] = []
+    fields = [
+        ("Name", settings.owner_name),
+        ("Email", settings.owner_email_resolved),
+        ("Phone", settings.owner_phone),
+        ("HOME address (where they LIVE)", settings.owner_home_address),
+        ("Work address", settings.owner_work_address),
+        ("Home airport", settings.owner_home_airport),
+        ("Frequent flyer", settings.owner_frequent_flyer),
+        ("Vehicle", settings.owner_vehicle),
+        ("Boat", settings.owner_boat),
+        ("Named places", settings.owner_places),
+        ("Timezone", settings.calendar_timezone),
+        ("Notes", settings.owner_notes),
+    ]
+    for label, value in fields:
+        if value:
+            out.append(f"{label}: {value}")
+    return out
 
 
 def _relevant_facts(db: Session, query: str, limit: int = 10):

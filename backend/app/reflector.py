@@ -23,7 +23,7 @@ from app.models import Memory
 
 log = logging.getLogger(__name__)
 
-_EXTRACT_SYSTEM = (
+_EXTRACT_SYSTEM_BASE = (
     "You extract durable, long-term facts about the user from a conversation. "
     "Return ONLY a JSON array of objects: "
     '[{"content": "<self-contained fact>", "category": "people|projects|preferences|context|general", '
@@ -31,7 +31,33 @@ _EXTRACT_SYSTEM = (
     "Include only stable facts worth remembering later (preferences, people, "
     "projects, standing context). Exclude one-off requests, questions, small talk, "
     "and anything transient. If nothing is worth saving, return []."
+    "\n\n"
+    "DO NOT INFER FACTS THAT ARE ALREADY KNOWN. Anything in the AUTHORITATIVE "
+    "block below is configured by the user directly and is not up for inference. "
+    "Never write a fact that contradicts it, and never restate it.\n"
+    "This is not hypothetical: a conversation about driving to a boat in Anacortes "
+    "once produced the 'fact' that the user LIVED there. He does not — his address "
+    "is configured, and the guess overrode it. A place someone is TRAVELLING TO is "
+    "not where they LIVE. A place they MENTION is not where they WORK. If a "
+    "conversation seems to imply otherwise, the conversation is about a trip.\n"
+    "When in doubt, save nothing. A wrong durable fact is far worse than a missing "
+    "one, because it will be trusted later and nobody will know where it came from."
 )
+
+
+def _extract_system() -> str:
+    """The extraction prompt, with the owner's ground truth attached so the
+    reflector can't 'learn' something that contradicts it."""
+    from app.memory import _owner_identity
+
+    identity = _owner_identity()
+    if not identity:
+        return _EXTRACT_SYSTEM_BASE
+    return (
+        _EXTRACT_SYSTEM_BASE
+        + "\n\n## AUTHORITATIVE (already known — never contradict, never restate):\n"
+        + "\n".join(f"- {line}" for line in identity)
+    )
 
 
 def _parse_facts(raw: str) -> List[dict]:
@@ -56,7 +82,7 @@ def _parse_facts(raw: str) -> List[dict]:
 def extract_facts(conversation_text: str) -> List[dict]:
     """Call the LLM (Haiku router model) to pull candidate facts."""
     resp = create_message(
-        system=_EXTRACT_SYSTEM,
+        system=_extract_system(),
         messages=[{"role": "user", "content": conversation_text}],
         model=settings.jarvis_router_model,
     )

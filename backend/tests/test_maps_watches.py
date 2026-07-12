@@ -513,3 +513,160 @@ def test_location_never_500s_on_a_garbage_body(client, loc_token):
     for junk in ("", "not json at all", "{{{", "<xml/>"):
         r = client.post("/api/location", content=junk, headers=h)
         assert r.status_code == 400, f"{junk!r} gave {r.status_code}"
+
+
+# ── Ground truth beats guesswork ─────────────────────────────────────────────
+def test_the_owners_address_is_in_the_preamble_not_hidden_behind_a_tool(db, monkeypatch):
+    """THE bug. `whoami` held his address, but the model never CALLED it when
+    ASKED "what city do I live in" — the tool read like something you use before
+    asking a question, not to answer one.
+
+    So she fell back on a memory the reflector had learned from a conversation
+    about driving to the boat, and confidently reported his home base as Anacortes.
+
+    Facts this small and this stable should be KNOWLEDGE, not a lookup.
+    """
+    from app.memory import build_system_preamble
+
+    monkeypatch.setattr(settings, "owner_home_address", "Stanwood, WA")
+    monkeypatch.setattr(settings, "owner_name", "Matthew Kelly")
+
+    pre = build_system_preamble(db, query="what city do I live in")
+
+    assert "Stanwood, WA" in pre
+    assert "AUTHORITATIVE" in pre
+
+
+def test_configured_facts_are_declared_to_outrank_learned_ones(db, monkeypatch):
+    """A CONFIGURED fact must beat an INFERRED one — and it must be SAID, because
+    the model has no way to know which source it's reading."""
+    from app.memory import build_system_preamble, remember
+
+    monkeypatch.setattr(settings, "owner_home_address", "Stanwood, WA")
+    remember(db, content="Matt's home base is Anacortes", category="context")
+
+    pre = build_system_preamble(db, query="where does he live")
+
+    assert "Stanwood, WA" in pre
+    assert "the learned version is WRONG" in pre
+    # and the learned block is labelled as the guess it is
+    assert "inferred — may be wrong" in pre
+
+
+def test_the_reflector_is_told_not_to_contradict_ground_truth(monkeypatch):
+    """Stop it re-learning 'lives in Anacortes' every time he drives there."""
+    from app.reflector import _extract_system
+
+    monkeypatch.setattr(settings, "owner_home_address", "Stanwood, WA")
+
+    sys = _extract_system()
+    assert "AUTHORITATIVE" in sys
+    assert "Stanwood, WA" in sys
+    assert "never contradict" in sys.lower()
+    # the actual failure, named, so nobody re-introduces it
+    assert "TRAVELLING TO is not where they LIVE" in sys
+
+
+def test_she_can_forget_a_fact_she_got_wrong(ctx, db):
+    """She could remember but NOT forget — so a wrong belief was permanent.
+    That is how "he lives in Anacortes" survived being contradicted."""
+    from app.handlers.general import _forget_fact, _recall_facts
+    from app.memory import remember
+    from app.models import Memory
+
+    remember(db, content="Matt's home base is Anacortes", category="context")
+
+    assert "Anacortes" in _recall_facts({}, ctx)
+
+    out = _forget_fact({"about": "anacortes"}, ctx)
+    assert "Forgotten" in out
+    assert db.query(Memory).count() == 0
+
+
+def test_forget_asks_when_several_facts_match(ctx, db):
+    from app.handlers.general import _forget_fact
+    from app.memory import remember
+
+    remember(db, content="Matt keeps his boat in Anacortes", category="context")
+    remember(db, content="Matt's home base is Anacortes", category="context")
+
+    out = _forget_fact({"about": "anacortes"}, ctx)
+    assert "which one" in out.lower()      # never guess which belief to delete
+
+
+def test_whoami_is_described_as_answering_questions_about_the_user():
+    """The old description read as 'use this INSTEAD of asking them' — which the
+    model took to mean 'before asking a question', not 'to answer one'."""
+    from app.handlers.base import build_registry
+
+    reg = build_registry()
+    desc = next(t for t in reg.anthropic_tools() if t["name"] == "whoami")["description"]
+
+    assert "ANSWER a question about them" in desc
+    assert "CITY THEY LIVE IN" in desc
+
+
+# ── Memory audit ─────────────────────────────────────────────────────────────
+def test_audit_separates_what_you_told_her_from_what_she_guessed(db, monkeypatch):
+    """THE most important column is `source`.
+
+    A thing you SAID and a thing she GUESSED are not the same kind of claim.
+    Collapsing them would hide exactly the errors the audit exists to surface —
+    you'd have no idea which lines deserve scrutiny.
+    """
+    from app.handlers.audit import build_audit
+    from app.memory import remember
+
+    monkeypatch.setattr(settings, "owner_home_address", "Stanwood, WA")
+
+    remember(db, content="Prefers direct answers", category="preferences", source="manual")
+    remember(db, content="Matt's home base is Anacortes", category="context",
+             source="conversation")
+
+    text = build_audit(db)
+
+    assert "CONFIGURED" in text and "Stanwood, WA" in text
+    assert "You told her these" in text and "Prefers direct answers" in text
+    assert "INFERRED from conversation" in text and "Anacortes" in text
+    assert "CHECK THESE" in text          # the inferred block is flagged, not buried
+
+
+def test_audit_tells_you_how_to_fix_a_wrong_belief(db):
+    """An audit that shows you an error but not how to correct it is half a tool."""
+    from app.handlers.audit import build_audit
+
+    text = build_audit(db)
+    assert "Forget that" in text
+
+
+def test_audit_does_not_dump_466_contacts_into_an_email(db):
+    from app.handlers.audit import build_audit
+    from app.models import Contact
+
+    for i in range(50):
+        db.add(Contact(name=f"Person {i:03d}", email=f"p{i}@x.com"))
+    db.commit()
+
+    text = build_audit(db)
+    assert "50 contacts on file" in text
+    assert "and 30 more" in text          # sample, not a data dump
+
+
+def test_audit_emails_the_owner(ctx, db, monkeypatch):
+    from app.handlers.audit import _audit_memory
+    from app.models import Job
+
+    monkeypatch.setattr(settings, "owner_email", "owner@example.com")
+    out = _audit_memory({}, ctx)
+
+    assert "emailed" in out.lower()
+    job = db.query(Job).filter_by(kind="email_copy").one()
+    assert "owner@example.com" in job.payload
+    assert "BELIEVES ABOUT YOU" in job.payload
+
+
+def test_audit_is_readable_in_the_browser_too(client, auth_headers):
+    """An audit you can only get by asking out loud is one you'll never do."""
+    r = client.get("/api/memory/audit", headers=auth_headers)
+    assert r.status_code == 200
+    assert "WHAT JARVIS BELIEVES ABOUT YOU" in r.text
