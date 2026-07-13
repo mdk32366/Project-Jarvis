@@ -172,6 +172,13 @@ class Settings(BaseSettings):
     owner_work_address: str = ""          # the default destination
     owner_frequent_flyer: str = ""        # e.g. "Alaska MP 12345678, Delta SM 987654"
 
+    # Passenger details Duffel requires that whoami doesn't otherwise carry.
+    # Configured once so nobody recites a date of birth on a phone call
+    # (flight-booking TDD §4.3).
+    owner_dob: str = ""            # YYYY-MM-DD
+    owner_gender: str = ""         # "m" | "f" — Duffel's passenger schema
+    owner_passport: str = ""       # only needed for international itineraries
+
     # Vehicles, vessels, and anything else with a number you'd otherwise have to
     # go look up. The rule for this whole block: if it never changes and you've
     # ever had to hunt for it, it belongs here.
@@ -193,9 +200,30 @@ class Settings(BaseSettings):
 
     # ── Travel ───────────────────────────────────────────────────────────────
     # Trips are learned from confirmation emails — no airline credentials, no
-    # scraping. These keys are for flight SEARCH only (research, not booking).
+    # scraping. duffel_api_key is TEST MODE search+booking; never make the live
+    # key the only path (flight-booking TDD §3). Keep both working always.
     duffel_api_key: str = ""
     amadeus_api_key: str = ""
+
+    # ── Flight booking (SPENDS REAL MONEY — flight-booking TDD) ──────────────
+    # Off until deliberately enabled. When False, book_flight is a hard-refused
+    # stub, same pattern as enable_trading.
+    booking_enabled: bool = False
+    # Separate from duffel_api_key (test mode). Only used when BOTH this is set
+    # AND booking_enabled is True.
+    duffel_live_api_key: str = ""
+    # THE CARD LIMIT, not a tighter policy cap (TDD §2.2c — decided, do not
+    # re-litigate). A sanity check: a booking above this means something is
+    # broken (currency mix-up, decimal error, manipulated offer) and is
+    # REFUSED outright, not read back for confirmation. Set at your dedicated
+    # card's actual limit.
+    max_booking_usd: float = 3000.0
+    # Second factor — REQUIRED for booking (TDD §2.3, decided). TOTP only: no
+    # carrier dependency, no A2P blocker, immune to SIM swap. One QR scan sets
+    # this up; base32 secret.
+    totp_secret: str = ""
+    booking_code_ttl_seconds: int = 300     # a code window that never expires is a password
+    booking_code_max_attempts: int = 3      # then CANCEL — not "try again"
 
     # ── Infra / hosted-app monitoring (Phase 2) ──────────────────────────────
     # Fly API token (read-only or deploy token) for fleet health + credit balance.

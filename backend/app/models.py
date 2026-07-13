@@ -86,6 +86,13 @@ class PendingConfirmation(Base):
     summary: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(16), default="pending")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Second factor (book_flight only; unused/NULL for every other gated tool).
+    # See flight-booking TDD §2.3: after 'confirm' clears the readback, status
+    # goes pending -> awaiting_code, and execution waits on a TOTP code instead
+    # of running immediately. code_deadline is a hard 5-min TTL; code_attempts
+    # caps at 3 and then CANCELS the row rather than allowing retries.
+    code_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    code_attempts: Mapped[int] = mapped_column(Integer, default=0)
 
 class Job(Base):
     """Durable background job. Survives restarts; claimed and run by the worker."""
@@ -216,6 +223,35 @@ class Trip(Base):
     flight_no: Mapped[str] = mapped_column(String(16), default="")
     seat: Mapped[str] = mapped_column(String(16), default="")
     raw: Mapped[str] = mapped_column(Text, default="")           # source email, for re-parsing
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FlightOffer(Base):
+    """A Duffel offer JARVIS retrieved herself, via search_flights.
+
+    THE LOAD-BEARING TABLE (flight-booking TDD §2.2a). book_flight accepts an
+    offer_id ONLY if a row exists here. A flight described in free text, or
+    'found' on a web page, has no row and is refused — the web-search surface
+    is structurally disconnected from the spending surface, enforced in code,
+    not by convention.
+
+    Short-lived by design: Duffel offers themselves expire in ~30 minutes, so a
+    stale row is harmless — Duffel will reject the offer_id anyway (fails
+    closed) and book_flight surfaces that in English rather than a raw 422.
+    """
+    __tablename__ = "flight_offers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    thread_key: Mapped[str] = mapped_column(String(255), index=True)
+    offer_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    total_amount: Mapped[str] = mapped_column(String(32), default="")
+    total_currency: Mapped[str] = mapped_column(String(8), default="")
+    carrier: Mapped[str] = mapped_column(String(64), default="")
+    route: Mapped[str] = mapped_column(String(32), default="")        # "SEA-SFO"
+    depart_at: Mapped[str] = mapped_column(String(64), default="")    # ISO, as Duffel sent it
+    summary: Mapped[str] = mapped_column(Text, default="")            # spoken-friendly line, for the readback
+    raw: Mapped[str] = mapped_column(Text, default="")                # full offer JSON, needed to book
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

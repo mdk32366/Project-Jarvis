@@ -99,9 +99,15 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "cancel_task",
     "capture_idea",
     "list_ideas",
-    # travel — read only; JARVIS cannot book.
+    # travel — read plus booking.
     "list_trips",
     "search_flights",
+    # book_flight: GATED + SECOND FACTOR (flight-booking TDD §2.4 — decided).
+    # Voice CAN book, unlike place_stock_order, specifically because the TOTP
+    # code is the one control that beats caller-ID spoofing: a spoofed caller
+    # cannot produce it. Without the second factor this would stay excluded,
+    # same as place_stock_order.
+    "book_flight",
     # identity + address book. `whoami` is why she stops asking the owner for
     # their own email address after emailing them a transcript every single call.
     "whoami",

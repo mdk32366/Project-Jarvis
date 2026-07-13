@@ -31,6 +31,16 @@ class _ToolSpec:
     notional: Optional[Callable[[dict], Optional[float]]]
     # Human-readable summary for the confirmation prompt.
     summarize: Callable[[dict], str]
+    # Optional pre-gate check for a GATED tool. Runs BEFORE the confirmation
+    # gate is raised. Returning a string means "refuse outright, do not gate,
+    # do not execute the real fn" — used for checks that should never reach a
+    # user as "confirm or cancel" (an offer_id we never retrieved, booking
+    # disabled, an absurd fare). Returning None means "proceed to the normal
+    # gated flow". Only book_flight uses this today; every other gated tool
+    # leaves it unset and behaves exactly as before. Takes Context (unlike
+    # notional/summarize) because book_flight's check needs thread-scoped DB
+    # access to look up the retained offer.
+    pregate: Optional[Callable[[dict, Context], Optional[str]]] = None
 
 
 class Registry:
@@ -45,6 +55,7 @@ class Registry:
         gated: bool = False,
         notional: Optional[Callable[[dict], Optional[float]]] = None,
         summarize: Optional[Callable[[dict], str]] = None,
+        pregate: Optional[Callable[[dict, Context], Optional[str]]] = None,
     ) -> None:
         name = schema["name"]
         self._tools[name] = _ToolSpec(
@@ -53,6 +64,7 @@ class Registry:
             gated=gated,
             notional=notional,
             summarize=summarize or (lambda i: f"{name}({i})"),
+            pregate=pregate,
         )
 
     def anthropic_tools(self) -> list[dict]:
@@ -77,6 +89,13 @@ class Registry:
 
     def summarize(self, name: str, args: dict) -> str:
         return self._tools[name].summarize(args)
+
+    def pregate(self, name: str, args: dict, ctx: Context) -> Optional[str]:
+        """None -> proceed to the normal gated flow. A string -> refuse
+        outright with that message; the gate is never raised and the real fn
+        never runs."""
+        fn = self._tools[name].pregate
+        return fn(args, ctx) if fn else None
 
     def restrict(self, allow: set[str]) -> None:
         """Keep only allow-listed tools. Fail closed."""
@@ -104,7 +123,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # (delegate) and governs the one irreversible action (trading) behind the
         # confirmation gate. All read-only/domain tools live in specialist agents.
         from app import agents
-        from app.handlers import finance, scheduling, secretary
+        from app.handlers import finance, scheduling, secretary, travel
 
         agents.register_delegate(reg, db)
         finance.register_trading(reg)
@@ -114,6 +133,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # So anything irreversible lives up here, alongside trading.
         secretary.register_gated(reg)     # send_email
         scheduling.register_gated(reg)    # create_event
+        travel.register_gated(reg)        # book_flight (+ TOTP second factor)
         if allow is not None:
             reg.restrict(allow)
         return reg

@@ -22,3 +22,6 @@ twilio==9.4.1
 google-api-python-client==2.149.0
 google-auth==2.35.0
 google-auth-oauthlib==1.2.1
+
+# ── Flight booking second factor ─────────────────────────────────────────────
+pyotp==2.10.0

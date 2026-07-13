@@ -100,13 +100,15 @@ DEFAULT_AGENTS: dict[str, Agent] = {
     "travel": Agent(
         "travel",
         "Flight SEARCH (real fares, times, carriers — one-way, round trip, and open-jaw); "
-        "the user's booked trips, learned from airline confirmation emails. Cannot book.",
+        "the user's booked trips, learned from airline confirmation emails. This agent "
+        "cannot itself book — booking is a gated, orchestrator-level action (like sending "
+        "email), reached only after this agent's search results and the user's go-ahead.",
         "You are JARVIS's travel assistant. Use list_trips for booked travel — JARVIS learns "
         "trips from confirmation emails sent to its inbox, so it holds no airline credentials "
-        "and cannot access airline accounts. Use search_flights to research options. You "
-        "cannot book; if the user wants to book, say so plainly and offer to open a task. "
-        "Call whoami for the user's home airport and frequent-flyer numbers rather than "
-        "asking.",
+        "and cannot access airline accounts. Use search_flights to research options; it "
+        "returns each offer's offer_id. You cannot book yourself — return the offer_id(s) to "
+        "the orchestrator, which books behind the confirmation gate and a TOTP code. Call "
+        "whoami for the user's home airport and frequent-flyer numbers rather than asking.",
         ["list_trips", "search_flights", "whoami"],
     ),
     "navigator": Agent(

@@ -14,16 +14,26 @@ Explicit multi-agent delegation remains future work.
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import totp
 from app.config import settings
 from app.handlers.base import Context, Registry, build_registry
 from app.jobs import enqueue
 from app.llm import create_message
 from app.memory import add_message, build_system_preamble, get_or_create_conversation, load_history
 from app.models import ActionAudit, PendingConfirmation
+
+# Gated tools that require a SECOND factor (a TOTP code) after the normal
+# "confirm" clears, before they execute — flight-booking TDD §2.3. The gate
+# proves the caller said the word; the code proves they hold the enrolled
+# device, which is what actually survives a spoofed caller ID. Currently just
+# book_flight, but kept as a set rather than a single name check in case a
+# future irreversible-and-spends-money tool needs the same treatment.
+_SECOND_FACTOR_TOOLS = {"book_flight"}
 
 log = logging.getLogger(__name__)
 
@@ -62,10 +72,18 @@ _INSTRUCTIONS = """
     * `send_email`   — sending mail as the user
     * `create_event` — writing to their real calendar (and emailing attendees)
     * `place_stock_order` — trading
+    * `book_flight`  — buying a plane ticket. SPENDS REAL MONEY.
   The `secretary` agent can DRAFT an email (draft_email) but cannot send one.
   When the user approves a draft, YOU call `send_email` yourself with the full
   to/subject/body. Do NOT delegate the send, and do NOT tell the user you are
   unable to send — you can.
+  The `travel` agent can SEARCH flights (search_flights) but cannot book. When
+  the user wants to book one of the offers it found, YOU call `book_flight`
+  yourself with that offer_id — never one you invented or one described to you
+  outside a search_flights result. Booking requires the user's "confirm" AND
+  then a TOTP code read from their authenticator app before anything is
+  charged; after "confirm" ask for the code — do not call book_flight again
+  yourself, the code is verified by the confirmation system, not a tool call.
 - When a tool result says PENDING_CONFIRMATION, tell the user what you intend to
   do and ask them to reply to confirm. Do not retry the tool yourself.
 - Be concise; lead with the answer. Match the user's tone and the standing
@@ -137,7 +155,7 @@ def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: s
         db.execute(
             select(PendingConfirmation)
             .where(PendingConfirmation.thread_key == ctx.thread_key)
-            .where(PendingConfirmation.status == "pending")
+            .where(PendingConfirmation.status.in_(("pending", "awaiting_code")))
             .order_by(PendingConfirmation.created_at.desc())
         )
         .scalars()
@@ -146,9 +164,14 @@ def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: s
     if pending is None:
         return None
 
+    if pending.status == "awaiting_code":
+        return _resolve_awaiting_code(db, registry, ctx, pending, user_text)
+
     affirmative, negative = _vocab(ctx.channel)
     norm = _norm(user_text)
     if norm in affirmative or any(norm.startswith(a + " ") for a in affirmative):
+        if pending.tool in _SECOND_FACTOR_TOOLS:
+            return _start_second_factor(db, ctx, pending)
         args = json.loads(pending.arguments)
         result = registry.execute(pending.tool, args, ctx)
         pending.status = "done"
@@ -162,6 +185,81 @@ def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: s
         return f"Cancelled: {pending.summary}."
 
     return None  # ambiguous — fall through to normal handling
+
+
+def _start_second_factor(db: Session, ctx: Context, pending: PendingConfirmation) -> str:
+    """The readback cleared with an explicit 'confirm'. Do NOT execute yet —
+    flip to awaiting_code and ask for the TOTP code (flight-booking TDD §2.3).
+
+    Nothing is texted: this is TOTP, so the code already lives on the user's
+    enrolled authenticator app. Asking them to read it back is what proves
+    possession of the device — a spoofed caller ID cannot produce it.
+    """
+    if not totp.totp_configured():
+        # Fail closed: no second factor configured means booking cannot be
+        # authorized at all, not that the check is skipped. TDD §8: "do not
+        # skip the second factor because the gate exists."
+        pending.status = "cancelled"
+        db.commit()
+        log.error("book_flight confirmed but TOTP_SECRET is not configured — refusing")
+        return (
+            "I can't complete this — the booking second factor (TOTP) isn't "
+            "configured on this instance, so I won't book without it. Nothing "
+            "was charged."
+        )
+    pending.status = "awaiting_code"
+    pending.code_deadline = datetime.now(timezone.utc) + timedelta(seconds=settings.booking_code_ttl_seconds)
+    pending.code_attempts = 0
+    db.commit()
+    return (
+        f"Readback confirmed: {pending.summary}. Read me the code from your "
+        f"authenticator app to finish booking."
+    )
+
+
+def _resolve_awaiting_code(
+    db: Session, registry: Registry, ctx: Context, pending: PendingConfirmation, user_text: str
+) -> str:
+    """Verify a TOTP code against an awaiting_code row. Three attempts, then
+    CANCEL — not "try again" (TDD §2.3: unlimited retries turn a 6-digit code
+    into a brute-force oracle). A code window that never expires is a
+    password, hence the hard deadline check before anything else."""
+    now = datetime.now(timezone.utc)
+    deadline = pending.code_deadline
+    if deadline is not None and deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)  # sqlite loses tzinfo on round-trip
+    if deadline is not None and now > deadline:
+        pending.status = "cancelled"
+        db.commit()
+        return f"That confirmation expired before a code was entered. Cancelled: {pending.summary}."
+
+    # Let an explicit cancel escape the code prompt too.
+    _, negative = _vocab(ctx.channel)
+    norm = _norm(user_text)
+    if norm in negative or any(norm.startswith(n + " ") for n in negative):
+        pending.status = "cancelled"
+        db.commit()
+        return f"Cancelled: {pending.summary}."
+
+    if totp.verify(user_text):
+        args = json.loads(pending.arguments)
+        result = registry.execute(pending.tool, args, ctx)
+        pending.status = "done"
+        db.commit()
+        _audit(db, ctx, pending.tool, args, result, "confirmed")
+        return f"Confirmed — {pending.summary}.\n\n{result}"
+
+    pending.code_attempts = (pending.code_attempts or 0) + 1
+    if pending.code_attempts >= settings.booking_code_max_attempts:
+        pending.status = "cancelled"
+        db.commit()
+        log.warning("book_flight: code failed %d times — cancelling (thread %s)",
+                    pending.code_attempts, ctx.thread_key)
+        return f"That code didn't match, and that was the last attempt. Cancelled: {pending.summary}."
+
+    db.commit()
+    remaining = settings.booking_code_max_attempts - pending.code_attempts
+    return f"That code didn't match. {remaining} attempt(s) left — try again."
 
 
 def _enqueue_reflect(db: Session, ctx: Context, convo_id: int) -> None:
@@ -218,7 +316,15 @@ def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, 
         messages.append({"role": "assistant", "content": resp.content})
         results = []
         for tu in tool_uses:
-            if _needs_confirmation(registry, tu.name, tu.input):
+            pregate_refusal = registry.pregate(tu.name, tu.input, ctx) if registry.has(tu.name) else None
+            if pregate_refusal is not None:
+                # Refuse outright — never raise a PendingConfirmation for a
+                # request that's already invalid (unknown offer_id, booking
+                # disabled, an absurd fare). "Confirm or cancel" implies
+                # there's something legitimate to confirm; there isn't.
+                content = pregate_refusal
+                _audit(db, ctx, tu.name, tu.input, content, "refused")
+            elif _needs_confirmation(registry, tu.name, tu.input):
                 summary = registry.summarize(tu.name, tu.input)
                 db.add(
                     PendingConfirmation(
