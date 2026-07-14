@@ -401,3 +401,118 @@ def test_missing_passenger_details_refuses_cleanly(db, monkeypatch):
     reply2 = run(db, channel="sms", thread_key=THREAD, user_text=_code(), actor="+1555")
     assert "passenger details" in reply2.lower() or "incomplete" in reply2.lower()
     assert db.query(Trip).count() == 0
+
+
+# ── TOTP ordering fix — pregate runs before the code prompt ──────────────────
+
+def test_confirm_with_no_backing_offer_is_refused_before_totp_prompt(db, monkeypatch):
+    """Regression: a PendingConfirmation for book_flight whose FlightOffer row
+    doesn't exist must be cancelled at 'confirm' time — before any TOTP code
+    is asked for.  The original bug: _start_second_factor flipped to
+    'awaiting_code' unconditionally, turning a phantom offer into a live TOTP
+    prompt.  The fix moves pregate into _start_second_factor so the offer is
+    re-validated before the status flip.
+    """
+    import json
+    from app.models import PendingConfirmation as PC
+
+    _enable_booking(monkeypatch)
+    # Deliberately NO _seed_offer call — there is no FlightOffer row backing this.
+    db.add(PC(
+        thread_key=THREAD,
+        channel="sms",
+        tool="book_flight",
+        arguments=json.dumps({"offer_id": "off_ghost_offer"}),
+        summary="$317.00 — SEA-SFO, Alaska Airlines (phantom)",
+        status="pending",
+    ))
+    db.commit()
+
+    reply = run(db, channel="sms", thread_key=THREAD, user_text="confirm", actor="+1555")
+
+    pend = db.query(PC).first()
+    assert pend.status == "cancelled", (
+        f"Expected status='cancelled', got {pend.status!r} — "
+        "the fix should refuse before asking for a TOTP code"
+    )
+    assert "authenticator" not in reply.lower(), (
+        "A TOTP prompt was generated for a phantom offer — ordering bug still present"
+    )
+    assert db.query(Trip).count() == 0
+
+
+def test_confirm_with_offer_evicted_after_gate_is_raised_is_refused(db, monkeypatch):
+    """Offer existed when the gate was raised, but was deleted before 'confirm'.
+    Covers the race: search_flights → book_flight (PendingConfirmation created)
+    → FlightOffer row evicted/expired → user says 'confirm'.
+    Same fix path as the phantom-offer test but with a real prior seeding step.
+    """
+    import json
+    from app.models import PendingConfirmation as PC
+
+    _enable_booking(monkeypatch)
+    offer = _seed_offer(db)
+
+    # Simulate the gate having already been raised with the real offer_id.
+    db.add(PC(
+        thread_key=THREAD,
+        channel="sms",
+        tool="book_flight",
+        arguments=json.dumps({"offer_id": offer.offer_id}),
+        summary="$317.00 — SEA-SFO, Alaska Airlines",
+        status="pending",
+    ))
+    db.commit()
+
+    # Now evict the offer (the race condition).
+    db.delete(offer)
+    db.commit()
+
+    reply = run(db, channel="sms", thread_key=THREAD, user_text="confirm", actor="+1555")
+
+    pend = db.query(PC).first()
+    assert pend.status == "cancelled", (
+        f"Expected 'cancelled' after offer eviction, got {pend.status!r}"
+    )
+    assert "authenticator" not in reply.lower()
+    assert db.query(Trip).count() == 0
+
+
+def test_voice_phantom_offer_confirm_is_refused_before_totp_prompt(db, monkeypatch):
+    """Voice-channel variant of the phantom-offer regression.
+
+    Confirms the fix works through the voice-restricted registry path
+    (build_registry(..., allow=VOICE_TOOLS_PHASE1)) specifically. Calling
+    run() with channel="voice" causes the orchestrator to build the allowlist-
+    restricted registry internally — this is the exact object passed into
+    _start_second_factor, and the one that was untested by the SMS variant.
+    Voice confirmation vocabulary requires an explicit token ("confirm", not
+    "yes"), matching VOICE_AFFIRMATIVE.
+    """
+    import json
+    from app.models import PendingConfirmation as PC
+
+    VOICE_THREAD = "voice:CA_ghost_test"
+    _enable_booking(monkeypatch)
+    # No _seed_offer — phantom offer_id only.
+    db.add(PC(
+        thread_key=VOICE_THREAD,
+        channel="voice",
+        tool="book_flight",
+        arguments=json.dumps({"offer_id": "off_ghost_voice"}),
+        summary="$317.00 — SEA-SFO, Alaska Airlines (phantom, voice)",
+        status="pending",
+    ))
+    db.commit()
+
+    reply = run(db, channel="voice", thread_key=VOICE_THREAD, user_text="confirm", actor="+1555")
+
+    pend = db.query(PC).first()
+    assert pend.status == "cancelled", (
+        f"Voice phantom-offer confirm should cancel immediately, got {pend.status!r} — "
+        "the voice-restricted registry may not have wired pregate correctly"
+    )
+    assert "authenticator" not in reply.lower(), (
+        "Voice phantom-offer confirm generated a TOTP prompt — ordering fix not effective on voice path"
+    )
+    assert db.query(Trip).count() == 0

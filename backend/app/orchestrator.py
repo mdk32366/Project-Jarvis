@@ -171,7 +171,7 @@ def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: s
     norm = _norm(user_text)
     if norm in affirmative or any(norm.startswith(a + " ") for a in affirmative):
         if pending.tool in _SECOND_FACTOR_TOOLS:
-            return _start_second_factor(db, ctx, pending)
+            return _start_second_factor(db, registry, ctx, pending)
         args = json.loads(pending.arguments)
         result = registry.execute(pending.tool, args, ctx)
         pending.status = "done"
@@ -187,13 +187,21 @@ def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: s
     return None  # ambiguous — fall through to normal handling
 
 
-def _start_second_factor(db: Session, ctx: Context, pending: PendingConfirmation) -> str:
+def _start_second_factor(db: Session, registry: Registry, ctx: Context, pending: PendingConfirmation) -> str:
     """The readback cleared with an explicit 'confirm'. Do NOT execute yet —
-    flip to awaiting_code and ask for the TOTP code (flight-booking TDD §2.3).
+    verify the offer is still valid, then flip to awaiting_code and ask for
+    the TOTP code (flight-booking TDD §2.3).
 
     Nothing is texted: this is TOTP, so the code already lives on the user's
     enrolled authenticator app. Asking them to read it back is what proves
     possession of the device — a spoofed caller ID cannot produce it.
+
+    ORDERING FIX: pregate runs HERE, not only at execution time. If the offer
+    was evicted, expired, or never existed (e.g. a PendingConfirmation whose
+    FlightOffer row is gone by the time the user says "confirm"), we refuse
+    outright and cancel — never ask for a TOTP code that would be useless.
+    The execution-time pregate in _book_flight still runs as defence-in-depth,
+    not as a replacement for this check.
     """
     if not totp.totp_configured():
         # Fail closed: no second factor configured means booking cannot be
@@ -207,6 +215,23 @@ def _start_second_factor(db: Session, ctx: Context, pending: PendingConfirmation
             "configured on this instance, so I won't book without it. Nothing "
             "was charged."
         )
+
+    # Re-run the pregate check before asking for the TOTP code.
+    # Catches: offer expired between the model's book_flight call and the
+    # user's "confirm"; offer never existed (phantom PendingConfirmation);
+    # booking disabled after the confirmation was queued.
+    args = json.loads(pending.arguments)
+    pregate_refusal = registry.pregate(pending.tool, args, ctx)
+    if pregate_refusal is not None:
+        pending.status = "cancelled"
+        db.commit()
+        log.warning(
+            "book_flight second-factor pre-check failed after 'confirm' — cancelling "
+            "(thread %s, offer %s): %s",
+            ctx.thread_key, args.get("offer_id", "?"), pregate_refusal,
+        )
+        return f"{pregate_refusal} Nothing was charged."
+
     pending.status = "awaiting_code"
     pending.code_deadline = datetime.now(timezone.utc) + timedelta(seconds=settings.booking_code_ttl_seconds)
     pending.code_attempts = 0
