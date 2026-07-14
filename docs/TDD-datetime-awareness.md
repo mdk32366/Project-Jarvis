@@ -7,7 +7,9 @@
 
 ---
 
-## 0. Triggering incident
+## 0. Triggering incidents
+
+**Incident 1 — wake-up call crash (date unknown)**
 
 A scheduled wake-up call didn't fire at 4am. When it eventually ran (late,
 cause unknown — possibly related, possibly not), JARVIS started reading the
@@ -23,6 +25,28 @@ schedule"), so a missing clock primitive is a plausible contributor, but
 "she hung up on me" needs its own root-cause pass on the scheduled-call
 handler's exception path. **Open a separate bug ticket for the crash itself
 — don't let this TDD absorb it.**
+
+**Incident 2 — wrong-year flight search (2026-07-13, confirmed in logs)**
+
+Voice call, `CA546c6aef0401ab8fc7a9408141dd789f`. User said:
+
+> "Headed to SFO, August 4th, coming back August 9th from Sacramento."
+
+JARVIS delegated to travel and searched for **2025-08-04** — past date, no
+flights. The user corrected: *"No, I need it for 2026 and I'll always be
+referring to flights in the future. Never the past."* JARVIS searched again.
+Same result. This happened across four consecutive delegate calls and a
+second call-back session before the user gave up.
+
+Root cause: no `get_current_datetime` call, so no grounding for "August 4th"
+to a year. With no year, `dateutil.parser.parse` defaults to the current
+parse-time year. But the LLM's own internal reasoning was anchored to its
+training data (sometime before 2026), so "August 4th" was resolved against
+the wrong year. The absence of a system clock meant there was nothing to
+catch it.
+
+This is the regression test driver. `test_wrong_year_produces_a_clarifying_question_not_a_past_search`
+must cover this case explicitly.
 
 ---
 
@@ -184,6 +208,43 @@ agents as a fast-follow) that contain parseable dates.
    expiry rejection (TDD-flight-booking §4.1) — this sanity check does not
    duplicate that, it's for *content*, not transactional state.
 
+### 4.4 Relative-date resolver
+
+`resolve_relative_date(text: str, reference_dt: datetime) -> datetime | None`
+
+**KEY INVARIANT:** when the expression carries no explicit year, the resolver
+MUST produce the NEAREST FUTURE occurrence — **never a past date**.
+`"August 4th"` with reference `2026-07-13` → `2026-08-04`.
+`"August 4th"` with reference `2026-09-01` → `2027-08-04`.
+
+This is the direct regression fix for incident 2 (§0): four consecutive
+delegate calls searched for 2025 flights while the user said "August 4th."
+A resolver that enforces the future-bias invariant would have surfaced
+`2026-08-04` from the first call.
+
+**Handled patterns:**
+- `"today"` / `"tomorrow"` / `"yesterday"` — day arithmetic against `reference_dt`
+- `"in N days/weeks/months"` — arithmetic delta
+- `"next [weekday]"` — e.g. `"next Tuesday"` → always ≥ 1 day in the future
+- `"[Month] [day]"` — e.g. `"August 4th"` → current year if future, else next year
+- `"[Month] [day], [year]"` — explicit year honoured exactly (user stated it)
+- `"this weekend"` → upcoming Saturday
+
+Falls back to `dateutil.parser.parse` for ISO-ish strings and formats not
+covered above; applies the future-bias invariant there too when no year is
+present.
+
+Returns `None` if the expression is not recognisable. Callers must handle
+`None` explicitly — do not silently treat it as "now."
+
+**Does NOT use an LLM call** (§7).
+
+**The `user_tz_source` field on `get_current_datetime` output tells callers
+whether to trust the user's timezone for scheduling purposes.** A `"default"`
+source means JARVIS is guessing Pacific; an `"active_trip"` or
+`"location_report"` source means she has real signal. Scheduled wake-up
+times must never be anchored to a default guess if a stronger signal exists.
+
 ---
 
 ## 5. Tests that must exist
@@ -203,6 +264,8 @@ agents as a fast-follow) that contain parseable dates.
 | `test_flight_offer_expiry_is_not_double_handled_by_this_pipeline` | Confirms no interference with the existing Duffel-native expiry path. |
 | `test_datetime_call_has_no_external_network_dependency` | Mocked/sandboxed network still returns a correct result — it's local clock + tz database only. |
 | `test_datetime_call_is_available_in_every_subagent_roster` | Unlike gated tools, this one should NOT be top-level-only — assert presence everywhere. |
+| `test_wrong_year_produces_a_clarifying_question_not_a_past_search` | `resolve_relative_date("August 4th", ref=2026-07-13)` → `2026-08-04`, never `2025-08-04`. The future-bias invariant. Regression for incident 2. |
+| `test_flight_search_with_ungrounded_date_resolves_to_future_year` | When `resolve_relative_date` is called with today in July 2026 and an unqualified month/day that is still in the future this year, returns this year. When the day has already passed this year, returns next year. |
 
 ---
 

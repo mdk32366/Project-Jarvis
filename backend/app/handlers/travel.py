@@ -204,6 +204,51 @@ def _fmt_slice(sl: dict) -> str:
     return f"{orig} to {dest}, departs {dep}, arrives {arr}, {hops}, {carrier}"
 
 
+def _resolve_flight_date(raw: str, ctx: Context) -> str:
+    """Validate and future-bias a date argument before it reaches Duffel.
+
+    Accepts ISO YYYY-MM-DD (the expected case) or a natural-language expression
+    ('August 4th', 'next Tuesday') as a fallback for when the LLM passes a
+    relative date directly instead of converting it first.
+
+    Past dates are refused outright — flight search for a past date is always
+    a mistake, and is the exact failure mode from the 2026-07-13 production
+    incident (TDD #11 §0 incident 2) where JARVIS searched for 2025 flights
+    four consecutive times while the user said 'August 4th.'
+
+    Returns an ISO date string on success, or an error string beginning with
+    '[' on failure — _search_flights detects '[' and returns it directly.
+    """
+    from datetime import date as _date
+    from app.handlers.datetime_tools import resolve_relative_date
+
+    now = datetime.now(timezone.utc)
+    today = now.date()
+
+    # 1. Try ISO YYYY-MM-DD first (the normal case).
+    try:
+        parsed = _date.fromisoformat(raw)
+    except (ValueError, TypeError):
+        # 2. Relative-expression fallback: handles 'August 4th', 'next Tuesday', etc.
+        resolved = resolve_relative_date(raw, now)
+        if resolved is None:
+            return (
+                f"[date not recognised: {raw!r} — pass an ISO date (YYYY-MM-DD), "
+                f"or call get_current_datetime first to determine the correct year]"
+            )
+        parsed = resolved.date()
+
+    # 3. Future-bias guard: a past date never returns usable flights.
+    if parsed < today:
+        return (
+            f"[{raw!r} resolves to {parsed.isoformat()}, which is in the past — "
+            f"call get_current_datetime to confirm the current date and year, "
+            f"then search again with the correct date]"
+        )
+
+    return parsed.isoformat()
+
+
 def _search_flights(args: dict, ctx: Context) -> str:
     """Search real flights via Duffel.
 
@@ -228,6 +273,15 @@ def _search_flights(args: dict, ctx: Context) -> str:
     ret = (args.get("return_date") or "").strip()
     if not (origin and dest and date):
         return "Need an origin, a destination, and a date."
+
+    # §4.4: validate and future-bias both dates before they reach Duffel.
+    date = _resolve_flight_date(date, ctx)
+    if date.startswith("["):
+        return date
+    if ret:
+        ret = _resolve_flight_date(ret, ctx)
+        if ret.startswith("["):
+            return ret
 
     slices = [{"origin": origin, "destination": dest, "departure_date": date}]
     if ret:

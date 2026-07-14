@@ -25,3 +25,8 @@ google-auth-oauthlib==1.2.1
 
 # ── Flight booking second factor ─────────────────────────────────────────────
 pyotp==2.10.0
+
+# ── Datetime awareness (TDD #11) ─────────────────────────────────────────────
+# Transitively present via google-api-python-client, but explicit here because
+# resolve_relative_date and flag_stale_dates depend on it directly.
+python-dateutil>=2.8.2

@@ -123,7 +123,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # (delegate) and governs the one irreversible action (trading) behind the
         # confirmation gate. All read-only/domain tools live in specialist agents.
         from app import agents
-        from app.handlers import finance, scheduling, secretary, travel
+        from app.handlers import datetime_tools, finance, scheduling, secretary, travel
 
         agents.register_delegate(reg, db)
         finance.register_trading(reg)
@@ -134,15 +134,19 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         secretary.register_gated(reg)     # send_email
         scheduling.register_gated(reg)    # create_event
         travel.register_gated(reg)        # book_flight (+ TOTP second factor)
+        # get_current_datetime is ungated and universal — registered at top level
+        # AND in the sub-agent branch (TDD §4.1: both branches).
+        datetime_tools.register(reg)
         if allow is not None:
             reg.restrict(allow)
         return reg
 
     # Sub-agent registry: the domain tools specialists draw from (no delegate,
     # no gated trading -> no recursion, no ungoverned money actions).
-    from app.handlers import (audit, callback, contacts, finance, general, ideas,
-                              infra, location, maps, netstatus, scheduling, secretary,
-                              tailscale, tasks, travel, watches, websearch)
+    from app.handlers import (audit, callback, contacts, datetime_tools, finance,
+                              general, ideas, infra, location, maps, netstatus,
+                              scheduling, secretary, tailscale, tasks, travel,
+                              watches, websearch)
 
     finance.register(reg)
     general.register(reg)
@@ -161,4 +165,9 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
     websearch.register(reg)
     tailscale.register(reg)
     watches.register(reg)
+    # get_current_datetime: ungated, universal, no side effects.
+    # Registered in BOTH branches (TDD §4.1). Sub-agents can always call it;
+    # run_agent() also auto-injects it into every agent's effective tool list
+    # so it's available even if an agent's DB roster omits it (TDD §4.2).
+    datetime_tools.register(reg)
     return reg

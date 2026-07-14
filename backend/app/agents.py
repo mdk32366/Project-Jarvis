@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -250,9 +251,31 @@ def seed_agents(db) -> int:
 
 def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_ITERS) -> str:
     """Run a single sub-agent's tool loop for one task and return its final text."""
+    from app.handlers.datetime_tools import DATE_BEARING_TOOLS, _get_current_datetime
+
     reg = build_registry()  # no delegate -> no recursion
-    tools = reg.anthropic_tools_subset(agent.tools)
-    messages = [{"role": "user", "content": task}]
+
+    # §4.1/§4.2: get_current_datetime is universally available — structural, not
+    # roster-dependent. An admin cannot remove it by editing an agent in the DB;
+    # it's injected here unconditionally. Checked against `effective_tools` below
+    # so the gate in the tool_use handler allows it regardless of the stored roster.
+    effective_tools = (
+        agent.tools
+        if "get_current_datetime" in agent.tools
+        else ["get_current_datetime"] + agent.tools
+    )
+    tools = reg.anthropic_tools_subset(effective_tools)
+
+    # §4.2: date-bearing agents (those whose roster includes web_search, calendar,
+    # flight tools, etc.) receive datetime context prepended to the task BEFORE the
+    # LLM loop. Structural, not prompt-only: the agent sees real "now" before any
+    # external content, so it cannot anchor relative dates to training data.
+    initial_task = task
+    if any(t in DATE_BEARING_TOOLS for t in agent.tools):
+        dt_ctx = _get_current_datetime({}, ctx)
+        initial_task = f"[Current date/time: {dt_ctx}]\n\n{task}"
+
+    messages = [{"role": "user", "content": initial_task}]
     final_text = ""
 
     for _ in range(max_iters):
@@ -266,7 +289,7 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
         messages.append({"role": "assistant", "content": resp.content})
         results = []
         for tu in tool_uses:
-            if tu.name not in agent.tools:
+            if tu.name not in effective_tools:
                 content = f"Tool '{tu.name}' is not available to the {agent.name} agent."
             elif not reg.has(tu.name) or reg.is_gated(tu.name):
                 # STRUCTURAL SAFETY: the confirmation gate lives in
@@ -290,6 +313,17 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
             _audit_subagent(ctx, agent.name, tu.name, tu.input, content)
             results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(content)})
         messages.append({"role": "user", "content": results})
+
+    # §4.3: post-processing sanity check for date-bearing agents.
+    # Annotates stale dates in the output before it reaches the orchestrator.
+    # Runs only for agents whose roster includes web_search, calendar_lookup, etc.
+    # — i.e. agents that fetch external content that can contain stale dates.
+    if final_text and any(t in DATE_BEARING_TOOLS for t in agent.tools):
+        from app.handlers.datetime_tools import flag_stale_dates
+        ref_dt = datetime.now(timezone.utc)
+        final_text, stale_flags = flag_stale_dates(final_text, ref_dt)
+        if stale_flags:
+            log.info("agent %r: %d stale date(s) flagged in output", agent.name, len(stale_flags))
 
     return final_text or "(no result)"
 

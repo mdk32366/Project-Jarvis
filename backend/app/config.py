@@ -235,6 +235,13 @@ class Settings(BaseSettings):
     # drops below this. Apps not listed default to 1 (at least one must be up).
     fleet_expected: str = ""
 
+    # ── Datetime awareness (TDD #11) ─────────────────────────────────────────
+    # JARVIS's own timezone is always America/Los_Angeles, enforced in code —
+    # not overridden by env. user_tz_default is the fallback when no stronger
+    # signal (active trip, location report, stated) is available.
+    jarvis_tz: str = "America/Los_Angeles"
+    user_tz_default: str = "America/Los_Angeles"
+
     # ── Job queue / worker (Phase 1) ─────────────────────────────────────────
     worker_poll_seconds: int = 5
     job_max_attempts: int = 3
