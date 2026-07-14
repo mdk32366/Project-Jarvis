@@ -144,9 +144,9 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
     # Sub-agent registry: the domain tools specialists draw from (no delegate,
     # no gated trading -> no recursion, no ungoverned money actions).
     from app.handlers import (audit, callback, contacts, datetime_tools, finance,
-                              general, ideas, infra, location, maps, netstatus,
-                              scheduling, secretary, tailscale, tasks, travel,
-                              watches, websearch)
+                              general, googledocs, ideas, infra, location, maps,
+                              netstatus, scheduling, secretary, tailscale, tasks,
+                              travel, watches, websearch)
 
     finance.register(reg)
     general.register(reg)
@@ -165,6 +165,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
     websearch.register(reg)
     tailscale.register(reg)
     watches.register(reg)
+    googledocs.register(reg)
     # get_current_datetime: ungated, universal, no side effects.
     # Registered in BOTH branches (TDD §4.1). Sub-agents can always call it;
     # run_agent() also auto-injects it into every agent's effective tool list

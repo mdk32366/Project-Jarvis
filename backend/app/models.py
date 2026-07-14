@@ -353,3 +353,27 @@ class LocationPing(Base):
     source: Mapped[str] = mapped_column(String(32), default="phone")
     label: Mapped[str] = mapped_column(String(120), default="")   # e.g. "leaving home"
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GoogleDocument(Base):
+    """A Google Doc or Sheet JARVIS herself created (TDD #13).
+
+    THE LOAD-BEARING TABLE (TDD #13 §5.3). append_to_google_doc accepts a
+    doc_id ONLY if a row exists here. An arbitrary Drive file ID handed to
+    JARVIS in conversation has no row and is refused — same principle as
+    FlightOffer/offer_id in flight booking.
+
+    Not thread-scoped (unlike FlightOffer): a document created in a prior
+    conversation should remain appendable. The doc_id uniqueness constraint
+    is the enforcement boundary.
+    """
+
+    __tablename__ = "google_documents"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    doc_id: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16), default="doc")   # "doc" | "sheet"
+    title: Mapped[str] = mapped_column(String(512), default="")
+    url: Mapped[str] = mapped_column(String(512), default="")
+    thread_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

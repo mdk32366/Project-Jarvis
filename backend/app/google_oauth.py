@@ -42,10 +42,19 @@ log = logging.getLogger(__name__)
 
 # Request everything we might want up front — re-consenting later is friction,
 # and an unused scope costs nothing.
+#
+# NOTE: adding new scopes here does NOT update a token that was minted without
+# them. The next time Matt runs `python -m app.google_oauth` the consent screen
+# will include the new scopes and the refreshed token will cover all of them.
+# Until then, Docs/Sheets calls will fail with ACCESS_TOKEN_SCOPE_INSUFFICIENT;
+# explain() converts that to a legible re-auth prompt (see below).
 SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/calendar",
+    # TDD #13: Google Docs & Sheets creation
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 _TOKEN_URI = "https://oauth2.googleapis.com/token"
@@ -103,6 +112,23 @@ def calendar_service():
     """Available, but Calendar currently goes through the service account
     (scheduling.py), which already works. Here for a future migration."""
     return _service("calendar", "v3")
+
+
+def docs_service():
+    """Google Docs — create and edit documents. Requires the documents scope.
+
+    Returns None if OAuth is not configured. The caller must handle None and
+    return a legible 'reconnect Google' message rather than letting it crash.
+    """
+    return _service("docs", "v1")
+
+
+def sheets_service():
+    """Google Sheets — create and edit spreadsheets. Requires the spreadsheets scope.
+
+    Returns None if OAuth is not configured. Same contract as docs_service().
+    """
+    return _service("sheets", "v4")
 
 
 NOT_CONNECTED = (
@@ -188,6 +214,8 @@ def explain(err: Exception) -> str | None:
     if "SERVICE_DISABLED" in msg or "has not been used in project" in msg:
         api = ("People API" if "people.googleapis" in msg
                else "Google Tasks API" if "tasks.googleapis" in msg
+               else "Google Docs API" if "docs.googleapis" in msg
+               else "Google Sheets API" if "sheets.googleapis" in msg
                else "Google Calendar API" if "calendar" in msg
                else "a Google API")
         return (f"The {api} isn't enabled in your Google Cloud project. Enable it in the "

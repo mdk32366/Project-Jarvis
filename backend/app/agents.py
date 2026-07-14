@@ -96,7 +96,8 @@ DEFAULT_AGENTS: dict[str, Agent] = {
          "whoami", "lookup_contact", "save_contact", "list_contacts",
          "sync_google_contacts", "google_status",
          "call_me_back", "pending_callbacks", "cancel_callback",
-         "watch_for", "list_watches", "cancel_watch"],
+         "watch_for", "list_watches", "cancel_watch",
+         "create_google_doc", "create_google_sheet", "append_to_google_doc"],
     ),
     "travel": Agent(
         "travel",
@@ -110,7 +111,8 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "returns each offer's offer_id. You cannot book yourself — return the offer_id(s) to "
         "the orchestrator, which books behind the confirmation gate and a TOTP code. Call "
         "whoami for the user's home airport and frequent-flyer numbers rather than asking.",
-        ["list_trips", "search_flights", "whoami"],
+        ["list_trips", "search_flights", "whoami",
+         "create_google_doc", "create_google_sheet"],
     ),
     "navigator": Agent(
         "navigator",

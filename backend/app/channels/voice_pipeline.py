@@ -101,9 +101,14 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "cancel_task",
     "capture_idea",
     "list_ideas",
-    # travel — read plus booking.
+    # travel — read, booking, and document creation.
     "list_trips",
     "search_flights",
+    # Google Docs/Sheets: ungated (TDD #13 §4). Voice can create a trip itinerary
+    # or summary doc on request. append_to_google_doc ownership-scoped same as offer_id.
+    "create_google_doc",
+    "create_google_sheet",
+    "append_to_google_doc",
     # book_flight: GATED + SECOND FACTOR (flight-booking TDD §2.4 — decided).
     # Voice CAN book, unlike place_stock_order, specifically because the TOTP
     # code is the one control that beats caller-ID spoofing: a spoofed caller
