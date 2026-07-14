@@ -236,10 +236,10 @@ class Settings(BaseSettings):
     fleet_expected: str = ""
 
     # ── Datetime awareness (TDD #11) ─────────────────────────────────────────
-    # JARVIS's own timezone is always America/Los_Angeles, enforced in code —
-    # not overridden by env. user_tz_default is the fallback when no stronger
-    # signal (active trip, location report, stated) is available.
-    jarvis_tz: str = "America/Los_Angeles"
+    # user_tz_default is the fallback when no stronger signal (active trip,
+    # location report, stated) is available. JARVIS's own operating timezone
+    # is calendar_timezone — that's the single source of truth; see
+    # datetime_tools.py §4.1 and the property below.
     user_tz_default: str = "America/Los_Angeles"
 
     # ── Job queue / worker (Phase 1) ─────────────────────────────────────────
@@ -288,6 +288,18 @@ class Settings(BaseSettings):
     @property
     def owner_email_resolved(self) -> str:
         return self.owner_email or (self.allowed_sender_list[0] if self.allowed_sender_list else "")
+
+    @property
+    def jarvis_tz(self) -> str:
+        """JARVIS's own operating timezone — delegates to calendar_timezone.
+
+        Not an independent setting. calendar_timezone is the single source of
+        truth used by the APScheduler briefing cron, quiet-hours logic, rate-
+        limit windows, and get_current_datetime. This property exists so any
+        caller that references settings.jarvis_tz by name gets the same value
+        rather than a silently divergent second setting.
+        """
+        return self.calendar_timezone
 
     @property
     def is_production(self) -> bool:

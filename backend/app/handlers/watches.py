@@ -200,6 +200,11 @@ def _fired(condition: str, observation: str) -> bool:
     from app.llm import create_message
 
     try:
+        # Deliberate: Haiku, not the full conversational model. The judge is a
+        # narrow binary classifier (does this prose observation satisfy this
+        # condition string?) — same pattern as the reflector. No tool calls,
+        # no multi-step reasoning; Haiku handles this class reliably and cheaply.
+        from app.config import settings
         resp = create_message(
             system=(
                 "You decide whether a monitoring condition has been met. Answer with "
@@ -212,6 +217,7 @@ def _fired(condition: str, observation: str) -> bool:
             messages=[{"role": "user", "content":
                        f"Condition: {condition}\\n\\nObservation: {observation}\\n\\nMet?"}],
             tools=[],
+            model=settings.jarvis_router_model,
         )
         text = "".join(b.text for b in resp.content if b.type == "text").strip().upper()
         return text.startswith("YES")

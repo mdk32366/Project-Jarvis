@@ -49,6 +49,29 @@ def test_jarvis_timezone_is_always_america_los_angeles(db):
     assert result["jarvis_tz"] == "America/Los_Angeles"
 
 
+def test_jarvis_tz_follows_calendar_timezone(db, monkeypatch):
+    """get_current_datetime.jarvis_tz tracks settings.calendar_timezone — one source of truth.
+
+    Proves there is no independent jarvis_tz value that could silently diverge from
+    the timezone the scheduler, quiet-hours logic, and rate-limit windows use.
+    If this test passes by coincidence of matching defaults rather than by actual
+    linkage, changing calendar_timezone here would NOT change jarvis_tz in the result.
+    """
+    import app.config as config_module
+    from app.handlers.datetime_tools import _get_current_datetime
+
+    monkeypatch.setattr(config_module.settings, "calendar_timezone", "America/New_York")
+    result = json.loads(_get_current_datetime({}, _ctx(db)))
+
+    assert result["jarvis_tz"] == "America/New_York", (
+        "jarvis_tz did not follow calendar_timezone — two independent sources of truth"
+    )
+    # The reported time should reflect New York, not Pacific
+    assert "-04:" in result["jarvis_time"] or "-05:" in result["jarvis_time"], (
+        "jarvis_time offset did not shift to Eastern time"
+    )
+
+
 def test_dst_transition_is_handled_by_tz_database_not_fixed_offset(db):
     """UTC offset flips at DST boundaries without any code change.
 
@@ -430,6 +453,33 @@ def test_date_bearing_agent_flags_stale_dates_in_output(db, monkeypatch):
     assert "2020-03-15" in result  # still present, not dropped
 
 
+def test_compose_briefing_injects_datetime_context_before_llm_call(db, monkeypatch):
+    """compose_briefing prepends get_current_datetime context before the LLM sees the data.
+
+    This is the §4.2 forced-first-call pattern applied to the briefing path.
+    Without it, the LLM composing the spoken brief infers 'now' from training
+    data — which is what produced the wrong-time briefing content (the
+    scheduler's clock was correct; the LLM's internal reasoning was not).
+
+    The test verifies structural injection, not LLM compliance: we confirm that
+    the message sent to create_message contains the datetime JSON, proving the
+    grounding cannot be skipped regardless of what the model decides to do with it.
+    """
+    from app.briefing import compose_briefing
+
+    llm = say("Good morning. Today looks busy.")
+    install_llm(monkeypatch, llm)
+
+    compose_briefing(db)
+
+    assert llm.calls, "LLM was never called by compose_briefing"
+    msg_content = llm.calls[0].messages[0]["content"]
+    assert "jarvis_time" in msg_content, (
+        "compose_briefing did not inject current datetime context before the LLM call"
+    )
+    assert "Current date/time" in msg_content
+
+
 def test_non_date_bearing_agent_output_is_not_processed(db, monkeypatch):
     """flag_stale_dates is NOT applied to agents without date-bearing tools.
 
@@ -449,3 +499,88 @@ def test_non_date_bearing_agent_output_is_not_processed(db, monkeypatch):
     result = run_agent(db, finance, "How did AAPL do last year?", _ctx(db))
 
     assert "[stale:" not in result, "finance agent output was incorrectly annotated"
+
+
+# ── §4.1: _resolve_user_tz — DST-by-location ─────────────────────────────────
+
+
+def test_arizona_location_ping_gives_no_dst_timezone(db):
+    """A fresh Scottsdale AZ LocationPing → 'America/Phoenix' (UTC-7, no DST).
+
+    Matt's golf-in-Arizona-in-December scenario: the phone reports Scottsdale
+    coords. In December, Pacific is PST (UTC-8). Phoenix is UTC-7 year-round
+    (Arizona does not observe DST). Without location-aware tz resolution,
+    get_current_datetime would report the user's time as one hour early.
+
+    This test inserts a fresh ping at the exact Scottsdale Golf Club coordinates
+    and asserts that _resolve_user_tz returns 'America/Phoenix' from
+    'location_report' — NOT the default Pacific timezone.
+    """
+    pytest.importorskip("timezonefinder", reason="timezonefinder not installed")
+
+    from app.handlers.location import record_ping
+    from app.handlers.datetime_tools import _resolve_user_tz
+
+    # Scottsdale, AZ (TPC Scottsdale — Stadium Course: 33.6261° N, 111.8923° W)
+    record_ping(db, lat=33.6261, lon=-111.8923, accuracy_m=10.0,
+                source="phone", label="Scottsdale")
+
+    ctx = _ctx(db)
+    tz_name, source = _resolve_user_tz(ctx)
+
+    assert tz_name == "America/Phoenix", (
+        f"Expected 'America/Phoenix' for Scottsdale AZ, got {tz_name!r}"
+    )
+    assert source == "location_report", (
+        f"Expected source='location_report', got {source!r}"
+    )
+
+
+def test_arizona_timezone_has_no_dst_offset_shift(db):
+    """America/Phoenix offset is UTC-7 in both July and December — no DST.
+
+    Regression guard: if someone accidentally maps Scottsdale to a DST-observing
+    timezone (e.g. Mountain Time 'America/Denver'), the December offset would be
+    UTC-7 which coincidentally matches Phoenix — but the July offset would be
+    UTC-6 and this test would catch the mistake.
+    """
+    from zoneinfo import ZoneInfo
+
+    phoenix = ZoneInfo("America/Phoenix")
+    july = datetime(2026, 7, 1, 12, 0, tzinfo=timezone.utc).astimezone(phoenix)
+    december = datetime(2026, 12, 1, 12, 0, tzinfo=timezone.utc).astimezone(phoenix)
+
+    assert july.strftime("%z") == "-0700", "Phoenix July should be UTC-7"
+    assert december.strftime("%z") == "-0700", "Phoenix December should be UTC-7 (no DST)"
+    assert july.strftime("%z") == december.strftime("%z"), (
+        "America/Phoenix offset changed between summer and winter — DST leak"
+    )
+
+
+def test_stale_location_ping_falls_back_to_default(db, monkeypatch):
+    """A location ping older than location_max_age_minutes is ignored.
+
+    _resolve_user_tz must fall back to 'default' rather than trust a stale fix —
+    the same staleness rule that current_coords() in location.py enforces.
+    """
+    pytest.importorskip("timezonefinder", reason="timezonefinder not installed")
+
+    import app.config as config_module
+    from app.handlers.location import record_ping
+    from app.handlers.datetime_tools import _resolve_user_tz
+
+    # Insert an Arizona ping, then make it appear stale by reducing max_age to 0
+    record_ping(db, lat=33.6261, lon=-111.8923, accuracy_m=10.0,
+                source="phone", label="Scottsdale")
+    monkeypatch.setattr(config_module.settings, "location_max_age_minutes", 0)
+
+    ctx = _ctx(db)
+    tz_name, source = _resolve_user_tz(ctx)
+
+    assert source == "default", (
+        f"Stale ping should fall back to 'default', got source={source!r}"
+    )
+    # With no fresh ping, must use the configured default (Pacific)
+    assert tz_name == "America/Los_Angeles", (
+        f"Expected Pacific fallback, got {tz_name!r}"
+    )

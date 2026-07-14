@@ -91,8 +91,19 @@ one short phrase; do not invent anything. End with a brief, useful nudge if warr
 def compose_briefing(db: Session) -> str:
     data = gather_context(db)
     try:
+        # §4.2 forced-first-call pattern: ground the LLM in real current time
+        # before it reasons about "today", "this week", or anything date-relative.
+        # Without this, the model infers "now" from its training data — which is
+        # what produced the wrong-time briefing content (the scheduler's own clock
+        # was correct; the LLM composing the spoken text was not).
+        from app.handlers.datetime_tools import _get_current_datetime
+        from app.handlers.base import Context
+        _ctx = Context(db=db, channel="briefing", actor="system", thread_key="briefing")
+        dt_ctx = _get_current_datetime({}, _ctx)
+        grounded_data = f"[Current date/time: {dt_ctx}]\n\n{data}"
+
         system = build_system_preamble(db) + "\n" + _BRIEF_INSTRUCTIONS
-        resp = create_message(system=system, messages=[{"role": "user", "content": data}])
+        resp = create_message(system=system, messages=[{"role": "user", "content": grounded_data}])
         parts = [b.text for b in resp.content if getattr(b, "type", None) == "text"]
         text = "\n".join(parts).strip()
         if text:

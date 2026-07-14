@@ -1,8 +1,14 @@
 """Current date/time awareness — TDD #11.
 
 §4.1  get_current_datetime — pure local read of system clock; no network,
-      no cache. Returns both JARVIS's Pacific time and the user's best-known
-      local time, always explicitly labelled.
+      no cache. Returns both JARVIS's own operating time and the user's
+      best-known local time, always explicitly labelled.
+
+      JARVIS's own timezone is settings.calendar_timezone — the single
+      source of truth shared with the scheduler, quiet-hours logic, and all
+      other timezone-aware code. Do NOT introduce a separate jarvis_tz
+      setting; that's how you get silent drift between the clock JARVIS
+      speaks and the clock the scheduler fires on.
 
 §4.4  resolve_relative_date — resolves "August 4th", "next Tuesday",
       "tomorrow" to absolute datetimes.
@@ -27,9 +33,6 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from app.handlers.base import Context, Registry
-
-_JARVIS_TZ = "America/Los_Angeles"
-_JARVIS_ZI = ZoneInfo(_JARVIS_TZ)
 
 # Tools whose presence in an agent's roster marks it as "date-bearing" (§4.2).
 # These agents get get_current_datetime auto-injected as context before the LLM
@@ -56,25 +59,59 @@ def _resolve_user_tz(ctx: Context) -> tuple[str, str]:
     yet. The wiring is here so the precedence is testable and the right call
     site is obvious when they're added.
     """
-    # 1. stated — would come from parsing the current conversation. Future.
-    # 2. active_trip — would come from an active Trip's destination_tz. Future.
-    # 3. location_report — LocationPing currently carries no tz field. Future.
+    # 1. stated — DEFERRED (not a TDD #11 gap).
+    #    "I'm in Phoenix right now" requires extracting a tz assertion from the
+    #    live conversation, mapping the city/state to an IANA name, deciding its
+    #    TTL (session? stored?), and a place ctx can reach. None of that
+    #    scaffolding exists. Belongs in a conversation-intent TDD, not here.
 
-    # 4. default
+    # 2. active_trip — DEFERRED (not a TDD #11 gap).
+    #    Requires Trip.destination_tz (field does not exist), logic to decide
+    #    which trip is currently "active" (in-flight vs. at destination vs.
+    #    returning), and a join from here into the trips table. Belongs in a
+    #    travel TDD alongside the Trip model extension.
+
+    # 3. location_report — use the most recent LocationPing if fresh enough.
+    #    We have lat/lon; convert to IANA timezone name via timezonefinder.
+    #    This is what makes "Matt is in Scottsdale in December" produce
+    #    "America/Phoenix" (UTC-7, no DST) instead of "America/Los_Angeles"
+    #    (UTC-8 in December, wrong by one hour).
+    if ctx.db is not None:
+        try:
+            from app.config import settings
+            from app.handlers.location import latest, age_minutes
+            from app.models import LocationPing  # noqa: F401 — ensures import is valid
+            ping = latest(ctx.db)
+            if ping is not None and age_minutes(ping) <= settings.location_max_age_minutes:
+                from timezonefinder import TimezoneFinder
+                tf = TimezoneFinder()
+                tz_name = tf.timezone_at(lat=ping.lat, lng=ping.lon)
+                if tz_name:
+                    return tz_name, "location_report"
+        except Exception:
+            pass  # library missing or DB error — fall through to default
+
+    # 4. default — falls back to user_tz_default (same source of truth as
+    #    the scheduler and quiet-hours logic).
     from app.config import settings
-    default_tz = getattr(settings, "user_tz_default", _JARVIS_TZ)
+    default_tz = getattr(settings, "user_tz_default", None) or settings.calendar_timezone
     return default_tz, "default"
 
 
 def _get_current_datetime(args: dict, ctx: Context) -> str:
     """Return the current real-world date and time as a JSON string.
 
-    Both JARVIS's own time (America/Los_Angeles, always) and the user's
-    best-known local time are returned, always explicitly labelled.
-    No external calls. No cache. Every invocation reflects actual "now."
+    Both JARVIS's own time (settings.calendar_timezone — single source of
+    truth) and the user's best-known local time are returned, always
+    explicitly labelled. No external calls. No cache. Every invocation
+    reflects actual "now."
     """
+    from app.config import settings
+    jarvis_tz_name = settings.calendar_timezone  # single source of truth
+    jarvis_zi = ZoneInfo(jarvis_tz_name)
+
     now_utc = datetime.now(timezone.utc)
-    now_jarvis = now_utc.astimezone(_JARVIS_ZI)
+    now_jarvis = now_utc.astimezone(jarvis_zi)
 
     # strftime gives ±HHMM; reformat as ±HH:MM
     raw_offset = now_jarvis.strftime("%z")       # e.g. "-0700"
@@ -88,12 +125,12 @@ def _get_current_datetime(args: dict, ctx: Context) -> str:
     except Exception:
         # Bad tz name — fall back to JARVIS's own time silently
         user_time_str = now_jarvis.isoformat(timespec="seconds")
-        user_tz_name = _JARVIS_TZ
+        user_tz_name = jarvis_tz_name
         user_tz_source = "default"
 
     return json.dumps({
         "jarvis_time": now_jarvis.isoformat(timespec="seconds"),
-        "jarvis_tz": _JARVIS_TZ,
+        "jarvis_tz": jarvis_tz_name,
         "jarvis_utc_offset": utc_offset,
         "user_time": user_time_str,
         "user_tz": user_tz_name,
