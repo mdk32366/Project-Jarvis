@@ -80,10 +80,11 @@ DEFAULT_AGENTS: dict[str, Agent] = {
     ),
     "secretary": Agent(
         "secretary",
-        "Email drafting; tasks; captured ideas; the address book (look up and save people's "
-        "email addresses); the OWNER'S OWN details (email, phone, home airport, frequent "
-        "flyer numbers); syncing GOOGLE CONTACTS; checking GOOGLE connection status; and "
-        "scheduling JARVIS to CALL THE USER BACK.",
+        "Email drafting; tasks; captured ideas; creating GOOGLE DOCS and GOOGLE SHEETS "
+        "(and appending text to an existing doc); the address book (look up and save "
+        "people's email addresses); the OWNER'S OWN details (email, phone, home airport, "
+        "frequent flyer numbers); syncing GOOGLE CONTACTS; checking GOOGLE connection "
+        "status; and scheduling JARVIS to CALL THE USER BACK.",
         "You are JARVIS's secretary. Draft emails with draft_email and return the FULL "
         "draft (to, subject, body) as your result — the orchestrator sends it, behind a "
         "confirmation gate. Never say email cannot be sent; say the draft is ready to send. "

@@ -196,7 +196,8 @@ def test_every_agent_description_mentions_its_headline_capability():
     from app.agents import DEFAULT_AGENTS
 
     must_mention = {
-        "secretary": ["GOOGLE CONTACTS", "CALL THE USER BACK", "address book"],
+        "secretary": ["GOOGLE CONTACTS", "CALL THE USER BACK", "address book",
+                      "GOOGLE DOCS", "GOOGLE SHEETS"],
         "travel":    ["SEARCH"],
         "infra":     ["Fly.io"],
         "netstatus": ["Proxmox"],
