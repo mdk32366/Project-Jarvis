@@ -113,7 +113,9 @@ class Settings(BaseSettings):
     # She does not ring at 3am. Briefings and alerts respect this; a callback the
     # user explicitly ASKED for does not — they asked.
     quiet_hours_start: int = 21        # 9pm
+    quiet_hours_start_minute: int = 0
     quiet_hours_end: int = 7           # 7am
+    quiet_hours_end_minute: int = 0
     # Backstop against a bug that dials in a loop. The person on the other end
     # cannot easily make that stop.
     max_outbound_calls_per_hour: int = 6

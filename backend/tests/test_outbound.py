@@ -29,6 +29,14 @@ def owner(monkeypatch):
     monkeypatch.setattr(settings, "voice_public_url_base", "https://jarvis-mdk.fly.dev")
 
 
+def _quiet(monkeypatch, start_h, start_m, end_h, end_m):
+    """Set the quiet-hours window (hour + minute precision) for a test."""
+    monkeypatch.setattr(settings, "quiet_hours_start", start_h)
+    monkeypatch.setattr(settings, "quiet_hours_start_minute", start_m)
+    monkeypatch.setattr(settings, "quiet_hours_end", end_h)
+    monkeypatch.setattr(settings, "quiet_hours_end_minute", end_m)
+
+
 # ── SAFETY: she may only ever ring the owner ─────────────────────────────────
 def test_refuses_to_schedule_a_call_to_a_stranger(db, monkeypatch):
     """A bug that cold-calls someone is unacceptable. Enforced at SCHEDULE time."""
@@ -78,7 +86,10 @@ def test_does_not_ring_at_3am(db, owner, monkeypatch):
 
     assert ov.in_quiet_hours(three_am) is True
 
-    ov.schedule_call(db, opening="your brief", kind="briefing")
+    # An ALERT is not owner-scheduled, so quiet hours hold it until morning.
+    # Briefings and callbacks are exempt (the owner set/asked for those) — see
+    # the exemption tests below.
+    ov.schedule_call(db, opening="heads up", kind="alert")
     assert ov.due_calls(db, now=three_am) == []      # held until morning
 
 
@@ -93,6 +104,90 @@ def test_a_callback_the_user_ASKED_for_is_exempt_from_quiet_hours(db, owner, mon
     ov.schedule_call(db, opening="got your answer", kind="callback")
 
     assert len(ov.due_calls(db, now=eleven_pm)) == 1
+
+
+# ── Quiet hours: minute-granularity window (e.g. 21:00–03:30) ────────────────
+def test_quiet_minute_precision_inside_before_end(monkeypatch):
+    _quiet(monkeypatch, 21, 0, 3, 30)
+    tz = ZoneInfo(settings.calendar_timezone)
+    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=3, minute=15)) is True
+
+
+def test_quiet_minute_precision_just_after_end(monkeypatch):
+    _quiet(monkeypatch, 21, 0, 3, 30)
+    tz = ZoneInfo(settings.calendar_timezone)
+    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=3, minute=45)) is False
+
+
+def test_quiet_wraps_midnight_evening_is_inside(monkeypatch):
+    _quiet(monkeypatch, 21, 0, 3, 30)
+    tz = ZoneInfo(settings.calendar_timezone)
+    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=22, minute=0)) is True
+
+
+def test_quiet_midday_is_outside(monkeypatch):
+    _quiet(monkeypatch, 21, 0, 3, 30)
+    tz = ZoneInfo(settings.calendar_timezone)
+    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=12, minute=0)) is False
+
+
+def test_quiet_non_wrapping_window(monkeypatch):
+    """A same-day window (start < end) still works with minute precision."""
+    _quiet(monkeypatch, 13, 0, 14, 0)
+    tz = ZoneInfo(settings.calendar_timezone)
+    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=13, minute=30)) is True
+
+
+def test_quiet_defaults_preserve_legacy_behavior(monkeypatch):
+    """Minute fields default to 0, so a 21:00–07:00 window behaves exactly as it
+    did before this change."""
+    monkeypatch.setattr(settings, "quiet_hours_start", 21)
+    monkeypatch.setattr(settings, "quiet_hours_end", 7)
+    tz = ZoneInfo(settings.calendar_timezone)
+    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=3, minute=0)) is True
+    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=12, minute=0)) is False
+
+
+# ── Quiet hours: the briefing is exempt (owner set its time) ─────────────────
+def test_due_calls_briefing_after_quiet_end_is_returned(db, owner, monkeypatch):
+    _quiet(monkeypatch, 21, 0, 3, 30)
+    tz = ZoneInfo(settings.calendar_timezone)
+    four_am = datetime.now(tz).replace(hour=4, minute=0)
+
+    ov.schedule_call(db, opening="your brief", kind="briefing")
+    assert len(ov.due_calls(db, now=four_am)) == 1
+
+
+def test_due_calls_briefing_inside_quiet_is_exempt(db, owner, monkeypatch):
+    """The exemption's whole point: a briefing fires even INSIDE quiet hours,
+    because the owner deliberately set the briefing time."""
+    _quiet(monkeypatch, 21, 0, 3, 30)
+    tz = ZoneInfo(settings.calendar_timezone)
+    two_am = datetime.now(tz).replace(hour=2, minute=0)
+
+    assert ov.in_quiet_hours(two_am) is True
+    ov.schedule_call(db, opening="your brief", kind="briefing")
+    assert len(ov.due_calls(db, now=two_am)) == 1
+
+
+def test_due_calls_callback_inside_quiet_is_returned(db, owner, monkeypatch):
+    """Unchanged: a callback the user asked for is exempt from quiet hours."""
+    _quiet(monkeypatch, 21, 0, 3, 30)
+    tz = ZoneInfo(settings.calendar_timezone)
+    two_am = datetime.now(tz).replace(hour=2, minute=0)
+
+    ov.schedule_call(db, opening="got your answer", kind="callback")
+    assert len(ov.due_calls(db, now=two_am)) == 1
+
+
+def test_due_calls_alert_inside_quiet_is_suppressed(db, owner, monkeypatch):
+    """Unchanged: an alert is NOT owner-scheduled, so quiet hours still hold it."""
+    _quiet(monkeypatch, 21, 0, 3, 30)
+    tz = ZoneInfo(settings.calendar_timezone)
+    two_am = datetime.now(tz).replace(hour=2, minute=0)
+
+    ov.schedule_call(db, opening="heads up", kind="alert")
+    assert ov.due_calls(db, now=two_am) == []
 
 
 def test_scheduled_for_later_is_not_placed_early(db, owner):

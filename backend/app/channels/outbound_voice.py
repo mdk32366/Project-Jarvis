@@ -59,14 +59,17 @@ def _tz() -> ZoneInfo:
 
 
 def in_quiet_hours(now: datetime | None = None) -> bool:
-    """Don't ring at 3am. Applies to briefings and alerts.
+    """Don't ring at 3am. Applies to alerts and other non-exempt calls.
 
-    A `callback` the user explicitly asked for is exempt — if they said "call me
-    back," honouring that at 11pm is correct, and second-guessing it is not.
+    Two kinds are exempt because the owner asked for them at this time: a
+    `callback` the user explicitly requested (if they said "call me back,"
+    honouring that at 11pm is correct), and a scheduled `briefing` (the owner
+    set the briefing time deliberately). Exemption for those is enforced in
+    `due_calls`, not here.
     """
     now = (now or datetime.now(_tz())).astimezone(_tz()).time()
-    start = time(settings.quiet_hours_start, 0)
-    end = time(settings.quiet_hours_end, 0)
+    start = time(settings.quiet_hours_start, settings.quiet_hours_start_minute)
+    end = time(settings.quiet_hours_end, settings.quiet_hours_end_minute)
     if start < end:
         return start <= now < end
     return now >= start or now < end          # window wraps midnight
@@ -146,8 +149,9 @@ def due_calls(db: Session, now: datetime | None = None) -> list[OutboundCall]:
                 nb = nb.replace(tzinfo=_tz())
             if nb > now:
                 continue
-        # A callback the user asked for is exempt from quiet hours — they asked.
-        if r.kind != "callback" and in_quiet_hours(now):
+        # A callback or a scheduled briefing the owner set the time for is exempt
+        # from quiet hours — in both cases the owner asked for it at this time.
+        if r.kind not in ("callback", "briefing") and in_quiet_hours(now):
             continue
         out.append(r)
     return out
