@@ -16,3 +16,7 @@ backend/static/
 
 # OS
 .DS_Store
+
+# Local tooling / archives (not tracked)
+.claude/
+repo.zip
