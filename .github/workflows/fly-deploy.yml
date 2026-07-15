@@ -2,6 +2,9 @@ name: CI / Deploy
 on:
   push:
     branches: [main]
+    paths-ignore:           # docs-only pushes to main skip CI+deploy (no app change)
+      - 'docs/**'
+      - '**.md'
   pull_request:
     branches: [main]        # run tests on PRs into main (never deploys)
   workflow_dispatch:        # manual re-run of the suite from the Actions UI
