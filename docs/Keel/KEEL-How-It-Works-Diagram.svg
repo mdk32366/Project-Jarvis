@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1000" viewBox="0 0 1400 1000" font-family="Calibri, Arial, sans-serif">
+  <rect width="1400" height="1000" fill="#FBFAF7"/>
+
+  <!-- Title -->
+  <text x="60" y="70" font-size="42" font-weight="bold" fill="#1F3A5F">How KEEL Works</text>
+  <text x="62" y="104" font-size="20" font-style="italic" fill="#7A2E2E" font-weight="bold">"Lay the keel first — the spine that keeps you upright when the weather turns."</text>
+  <line x1="60" y1="120" x2="1340" y2="120" stroke="#8A6D3B" stroke-width="2"/>
+
+  <!-- ============ TOP BAND: THE TWO AIS ============ -->
+  <text x="60" y="165" font-size="15" font-weight="bold" fill="#8A6D3B" letter-spacing="2">TWO AIS — TWO DIFFERENT WINDOWS</text>
+
+  <!-- Planner card -->
+  <rect x="60" y="180" width="560" height="150" rx="6" fill="#F4F1EA" stroke="#8A6D3B" stroke-width="1"/>
+  <text x="85" y="212" font-size="19" font-weight="bold" fill="#1F3A5F">THE PLANNER</text>
+  <text x="85" y="236" font-size="14" font-style="italic" fill="#6B7280">Your AI chat (Claude / Grok) in a browser Project</text>
+  <text x="85" y="266" font-size="14.5" fill="#3A4A5A">In a sealed room — sees only what you hand it.</text>
+  <text x="85" y="290" font-size="14.5" fill="#3A4A5A">The right tool for <tspan font-weight="bold" fill="#1F3A5F">THINKING</tspan>: plans, design,</text>
+  <text x="85" y="310" font-size="14.5" fill="#3A4A5A">architecture, catching the mistake before it happens.</text>
+
+  <!-- Builder card -->
+  <rect x="780" y="180" width="560" height="150" rx="6" fill="#1F3A5F"/>
+  <text x="805" y="212" font-size="19" font-weight="bold" fill="#E8C77D">THE BUILDER</text>
+  <text x="805" y="236" font-size="14" font-style="italic" fill="#CADCFC">Claude Code / Grok build tool, on your laptop</text>
+  <text x="805" y="266" font-size="14.5" fill="#E8EEF6">Works as YOU — sees everything, can ship.</text>
+  <text x="805" y="290" font-size="14.5" fill="#E8EEF6">The right tool for <tspan font-weight="bold" fill="#FFFFFF">DOING</tspan>: writing code,</text>
+  <text x="805" y="310" font-size="14.5" fill="#E8EEF6">running tests, deploying to the live system.</text>
+
+  <!-- hand-off arrow between them -->
+  <line x1="620" y1="255" x2="780" y2="255" stroke="#3A4A5A" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="700" y="245" font-size="13" fill="#3A4A5A" text-anchor="middle" font-style="italic">hand off</text>
+  <text x="700" y="278" font-size="12" fill="#6B7280" text-anchor="middle">the plan</text>
+
+  <!-- ============ MIDDLE: THE FLOW / THE KEEL ============ -->
+  <text x="60" y="385" font-size="15" font-weight="bold" fill="#8A6D3B" letter-spacing="2">THE KEEL — WHAT EVERY CHANGE FLOWS THROUGH</text>
+
+  <!-- flow boxes -->
+  <!-- 1 You + Builder make a change -->
+  <rect x="60" y="405" width="230" height="110" rx="6" fill="#FFFFFF" stroke="#1F3A5F" stroke-width="1.5"/>
+  <circle cx="90" cy="435" r="15" fill="#1F3A5F"/>
+  <text x="90" y="441" font-size="16" font-weight="bold" fill="#FFFFFF" text-anchor="middle">1</text>
+  <text x="118" y="432" font-size="16" font-weight="bold" fill="#1F3A5F">You make a change</text>
+  <text x="80" y="466" font-size="13" fill="#3A4A5A">In your local workshop, with</text>
+  <text x="80" y="485" font-size="13" fill="#3A4A5A">the Builder. Save it (commit)</text>
+  <text x="80" y="504" font-size="13" fill="#3A4A5A">to your one true copy.</text>
+
+  <!-- 2 Tests run -->
+  <rect x="330" y="405" width="230" height="110" rx="6" fill="#FFFFFF" stroke="#1F3A5F" stroke-width="1.5"/>
+  <circle cx="360" cy="435" r="15" fill="#1F3A5F"/>
+  <text x="360" y="441" font-size="16" font-weight="bold" fill="#FFFFFF" text-anchor="middle">2</text>
+  <text x="388" y="432" font-size="16" font-weight="bold" fill="#1F3A5F">Tests run</text>
+  <text x="350" y="466" font-size="13" fill="#3A4A5A">Automatic checks run by</text>
+  <text x="350" y="485" font-size="13" fill="#3A4A5A">themselves — no internet, no</text>
+  <text x="350" y="504" font-size="13" fill="#3A4A5A">passwords needed.</text>
+
+  <!-- 3 THE GATE (diamond) -->
+  <polygon points="700,400 790,460 700,520 610,460" fill="#F4F1EA" stroke="#8A6D3B" stroke-width="2"/>
+  <text x="700" y="452" font-size="15" font-weight="bold" fill="#1F3A5F" text-anchor="middle">THE GATE</text>
+  <text x="700" y="474" font-size="12" fill="#3A4A5A" text-anchor="middle">tests pass?</text>
+
+  <!-- arrows 1->2->gate -->
+  <line x1="290" y1="460" x2="330" y2="460" stroke="#3A4A5A" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="560" y1="460" x2="610" y2="460" stroke="#3A4A5A" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- PASS path -> production -->
+  <line x1="790" y1="460" x2="900" y2="460" stroke="#3F7A4F" stroke-width="3" marker-end="url(#arrowG)"/>
+  <text x="845" y="450" font-size="13" font-weight="bold" fill="#3F7A4F" text-anchor="middle">PASS</text>
+  <rect x="900" y="415" width="230" height="90" rx="6" fill="#3F7A4F"/>
+  <text x="1015" y="452" font-size="17" font-weight="bold" fill="#FFFFFF" text-anchor="middle">SHIPS to</text>
+  <text x="1015" y="478" font-size="17" font-weight="bold" fill="#FFFFFF" text-anchor="middle">production</text>
+
+  <!-- FAIL path -> blocked -->
+  <line x1="700" y1="520" x2="700" y2="575" stroke="#7A2E2E" stroke-width="3" marker-end="url(#arrowR)"/>
+  <text x="720" y="552" font-size="13" font-weight="bold" fill="#7A2E2E">FAIL</text>
+  <rect x="585" y="578" width="230" height="70" rx="6" fill="#F6EEEE" stroke="#7A2E2E" stroke-width="1.5"/>
+  <text x="700" y="608" font-size="16" font-weight="bold" fill="#7A2E2E" text-anchor="middle">BLOCKED</text>
+  <text x="700" y="632" font-size="13" fill="#7A2E2E" text-anchor="middle">broken code cannot reach production</text>
+
+  <!-- secrets note under flow -->
+  <text x="900" y="530" font-size="12.5" font-style="italic" fill="#6B7280">Secrets (keys, passwords) live in the</text>
+  <text x="900" y="548" font-size="12.5" font-style="italic" fill="#6B7280">platform — never in the code that flows through.</text>
+
+  <!-- ============ BOTTOM: THE DAILY LOOP ============ -->
+  <line x1="60" y1="690" x2="1340" y2="690" stroke="#8A6D3B" stroke-width="1" stroke-dasharray="4 4"/>
+  <text x="60" y="725" font-size="15" font-weight="bold" fill="#8A6D3B" letter-spacing="2">THE DAILY LOOP — HOW A PROJECT SURVIVES OVER WEEKS</text>
+
+  <!-- repo at center -->
+  <rect x="600" y="760" width="200" height="90" rx="6" fill="#1F3A5F"/>
+  <text x="700" y="795" font-size="18" font-weight="bold" fill="#FFFFFF" text-anchor="middle">THE REPO</text>
+  <text x="700" y="820" font-size="12.5" fill="#CADCFC" text-anchor="middle">code + docs + close-out notes</text>
+  <text x="700" y="838" font-size="12" font-style="italic" fill="#E8C77D" text-anchor="middle">your memory lives HERE, not in the chat</text>
+
+  <!-- post-flight (left) -->
+  <rect x="120" y="755" width="330" height="100" rx="6" fill="#F4F1EA" stroke="#8A6D3B" stroke-width="1"/>
+  <text x="140" y="783" font-size="14" font-weight="bold" fill="#8A6D3B">POST-FLIGHT · end of session</text>
+  <text x="140" y="808" font-size="13.5" fill="#3A4A5A">AI writes a close-out: what got done,</text>
+  <text x="140" y="827" font-size="13.5" fill="#3A4A5A">what's open, what's next.</text>
+  <text x="140" y="846" font-size="13" font-style="italic" fill="#1F3A5F">Commit it → the baton for tomorrow.</text>
+
+  <!-- pre-flight (right) -->
+  <rect x="950" y="755" width="330" height="100" rx="6" fill="#F4F1EA" stroke="#8A6D3B" stroke-width="1"/>
+  <text x="970" y="783" font-size="14" font-weight="bold" fill="#8A6D3B">PRE-FLIGHT · start of session</text>
+  <text x="970" y="808" font-size="13.5" fill="#3A4A5A">Fresh chat. Hand the Planner a dated</text>
+  <text x="970" y="827" font-size="13.5" fill="#3A4A5A">snapshot + yesterday's close-out.</text>
+  <text x="970" y="846" font-size="13" font-style="italic" fill="#1F3A5F">"Where are we? What's next?"</text>
+
+  <!-- loop arrows -->
+  <line x1="450" y1="805" x2="595" y2="805" stroke="#3A4A5A" stroke-width="2.5" marker-end="url(#arrow)"/>
+  <line x1="805" y1="805" x2="945" y2="805" stroke="#3A4A5A" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <!-- footer line -->
+  <text x="700" y="920" font-size="18" font-weight="bold" font-style="italic" fill="#1F3A5F" text-anchor="middle">Lay the Keel first. Then build the thing you've waited your whole career to build.</text>
+  <text x="700" y="955" font-size="13" fill="#6B7280" text-anchor="middle">KEEL · The Build-First Pattern — a companion diagram to the field manual</text>
+
+  <!-- arrow markers -->
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#3A4A5A"/>
+    </marker>
+    <marker id="arrowG" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#3F7A4F"/>
+    </marker>
+    <marker id="arrowR" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#7A2E2E"/>
+    </marker>
+  </defs>
+</svg>
