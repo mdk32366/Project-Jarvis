@@ -326,3 +326,9 @@ episodes accumulate before building graduation/curation.
    project-memory or four episodes linked by topic? (Leaning: four episodes, one
    topic tag, and recall groups by topic — preserves the timeline, which IS the
    value of "a couple years ago.")
+
+---
+
+## Implementation note (phase 1, 2026-07-16)
+
+Action-item→task linking (§4 step 6) was not wired: `Task` has no `thread_key`, so there is no correlation key between a call and tasks created during it — action items are stored as strings on the episode. Follow-up: add `Task.thread_key` (or equivalent) if linked episodes-to-tasks becomes worth having.

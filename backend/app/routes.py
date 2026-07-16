@@ -93,6 +93,27 @@ def _xml(body: str) -> Response:
     return Response(content=body, media_type="application/xml")
 
 
+def _voice_party(db: Session, params: dict) -> str:
+    """The HUMAN's number on this call, regardless of who dialled whom.
+
+    On an inbound call Twilio's From is the caller — the human. On a call WE
+    placed, From is JARVIS's own Twilio number and the human is in To. Trusting
+    From blindly meant every outbound call's first reply was rejected as
+    NOT_AUTHORIZED — the allowlist was vetting JARVIS against herself, so no
+    outbound call ever completed a single conversational turn.
+
+    Direction is decided by OUR outbound_calls row for this CallSid — we minted
+    that sid at dial time, so it can't be spoofed from outside — not by Twilio's
+    Direction param, which we'd have to take on faith.
+    """
+    from app.channels import outbound_voice as ov
+
+    call_sid = params.get("CallSid", "")
+    if call_sid and ov.get_by_sid(db, call_sid) is not None:
+        return params.get("To", "")
+    return params.get("From", "")
+
+
 @router.post("/voice/inbound", tags=["jarvis"], include_in_schema=False)
 async def voice_inbound(request: Request, db: Session = Depends(get_db)):
     """Call connected. Whitelist, then greet and listen."""
@@ -123,7 +144,7 @@ async def voice_gather(
     from app.channels import voice_pipeline as vp
 
     params = await _validated_params(request)
-    from_number = params.get("From", "")
+    from_number = _voice_party(db, params)
     call_sid = params.get("CallSid", "")
 
     if not vp.is_allowed(db, from_number):
@@ -180,7 +201,7 @@ async def voice_poll(
     from app.channels import voice_pipeline as vp
 
     params = await _validated_params(request)
-    from_number = params.get("From", "")
+    from_number = _voice_party(db, params)
     call_sid = params.get("CallSid", "")
 
     if not vp.is_allowed(db, from_number):
@@ -260,7 +281,7 @@ async def voice_status(request: Request, db: Session = Depends(get_db)):
 
     params = await _validated_params(request)
     call_sid = params.get("CallSid", "")
-    from_number = params.get("From", "")
+    from_number = _voice_party(db, params)
     call_status = params.get("CallStatus", "")
 
     if call_status == "completed":
@@ -274,6 +295,17 @@ async def voice_status(request: Request, db: Session = Depends(get_db)):
         if row is not None and row.status in ("ringing", "answered"):
             row.status = "done" if row.status == "answered" else "no_answer"
             db.commit()
+
+        # Episodic memory (TDD #14): the call is over — enqueue distillation.
+        # One trigger covers inbound and outbound alike (this callback fires
+        # for both). Never inline, never fatal: memory is best-effort, a
+        # distiller bug must not break the hangup path.
+        try:
+            from app.episodic import close_episode
+
+            close_episode(db, "voice", call_sid, source_ref=call_sid)
+        except Exception as e:  # noqa: BLE001
+            log.error("could not enqueue episode distillation for %s: %s", call_sid, e)
 
     return _xml(vp.twiml_empty())
 

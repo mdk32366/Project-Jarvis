@@ -98,6 +98,15 @@ class Settings(BaseSettings):
     # How many semantically-relevant facts to inject into the system preamble.
     memory_recall_k: int = 8
 
+    # ── Episodic memory (TDD #14) ────────────────────────────────────────────
+    # Distill a dated Episode from each conversation at its close.
+    episodes_enabled: bool = True
+    # A call needs at least this many real owner exchanges to become an episode —
+    # a one-line "you have mail" briefing that got hung up on is not an episode.
+    episode_min_turns: int = 2
+    # How many episodes recall_episodes returns.
+    episode_recall_k: int = 5
+
     # ── Morning briefing (Phase 2) ───────────────────────────────────────────
     briefing_enabled: bool = False          # turn on to send the daily email
     briefing_hour: int = 6                  # local hour (24h) to send
