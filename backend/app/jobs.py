@@ -28,7 +28,10 @@ _HANDLERS: Dict[str, Callable[[Session, dict], str]] = {}
 # Jobs whose failure must NOT trigger a failure-notification — the notification
 # is itself an email_copy job, so notifying about a failed email would recurse
 # forever, spawning jobs faster than the worker can drain them.
-_NEVER_NOTIFY = {"email_copy", "reflect"}
+# distill_episode joins reflect here: both are best-effort memory jobs that run
+# after every conversation — a transient LLM failure emailing the owner each
+# time would be pure noise. Failures still land in the job row and the log.
+_NEVER_NOTIFY = {"email_copy", "reflect", "distill_episode"}
 
 
 def job_handler(kind: str):
@@ -202,6 +205,22 @@ def _handle_reflect(db: Session, payload: dict) -> str:
     convo_id = int(payload["conversation_id"])
     stored = reflect_conversation(db, convo_id)
     return f"stored {stored} fact(s)"
+
+
+@job_handler("distill_episode")
+def _handle_distill_episode(db: Session, payload: dict) -> str:
+    """Distill a closed conversation into an episodic memory (TDD #14).
+
+    A job for the same reason reflect is: it makes an LLM call, which must
+    never block a hangup or a reply."""
+    from app.episodic import distill_episode
+
+    return distill_episode(
+        db,
+        channel=payload["channel"],
+        thread_key=payload["thread_key"],
+        source_ref=payload.get("source_ref", ""),
+    )
 
 
 @job_handler("commit_idea")

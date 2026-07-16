@@ -1,5 +1,5 @@
-from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from datetime import date, datetime
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -353,6 +353,67 @@ class LocationPing(Base):
     source: Mapped[str] = mapped_column(String(32), default="phone")
     label: Mapped[str] = mapped_column(String(120), default="")   # e.g. "leaving home"
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Episode(Base):
+    """A distilled, dated record of one conversation — the episodic memory tier.
+
+    Tier 3 of the memory model (TDD #14 §1): `persona/preferences` are
+    authoritative, `memories` are atomic inferred facts, and episodes are the
+    *narrative* layer — "on DATE we discussed X." The raw turns stay in their
+    per-channel cold store (`voice_turns` for calls, `messages` for text);
+    an Episode is distilled FROM them at conversation close and is what JARVIS
+    actually remembers with. `source_ref` points back at the cold store so
+    "show me the actual call" stays answerable.
+
+    The summary is interpretation (fallible, like a Memory). Anything
+    load-bearing — a decision, a commitment — lives in EpisodeQuote, verbatim.
+    """
+
+    __tablename__ = "episodes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    channel: Mapped[str] = mapped_column(String(32))                  # voice|sms|email|web
+    thread_key: Mapped[str] = mapped_column(String(255), index=True)
+    # THE temporal handle ("a couple of years ago") — owner-local calendar date.
+    occurred_on: Mapped[date] = mapped_column(Date, index=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    title: Mapped[str] = mapped_column(String(512), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    topics: Mapped[str] = mapped_column(Text, default="[]")           # JSON array of tags
+    action_items: Mapped[str] = mapped_column(Text, default="[]")     # JSON array
+    salience: Mapped[float] = mapped_column(Float, default=0.5)
+    # Portable embedding storage — same pattern as Memory.embedding: JSON floats
+    # here (source of truth for the cosine fallback), pgvector mirror in prod.
+    embedding: Mapped[str] = mapped_column(Text, default="")
+    source_ref: Mapped[str] = mapped_column(String(128), default="", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    quotes: Mapped[list["EpisodeQuote"]] = relationship(
+        back_populates="episode", cascade="all, delete-orphan"
+    )
+
+
+class EpisodeQuote(Base):
+    """A VERBATIM fragment anchoring an episode's load-bearing claims.
+
+    The faithfulness guarantee (TDD #14 §3): "you decided X" must be
+    quote-anchored, and a quote is stored ONLY if it is a byte-for-byte
+    substring of a raw turn (speaker-matched). A paraphrase is dropped at
+    distill time — the one unacceptable failure is laundering a hallucination
+    into "your exact words."
+    """
+
+    __tablename__ = "episode_quotes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    episode_id: Mapped[int] = mapped_column(
+        ForeignKey("episodes.id", ondelete="CASCADE"), index=True
+    )
+    speaker: Mapped[str] = mapped_column(String(16))                  # owner|jarvis
+    quote: Mapped[str] = mapped_column(Text)
+    kind: Mapped[str] = mapped_column(String(16), default="key_fact") # decision|commitment|key_fact|preference
+    turn_ref: Mapped[str] = mapped_column(String(64), default="")
+    episode: Mapped["Episode"] = relationship(back_populates="quotes")
 
 
 class GoogleDocument(Base):
