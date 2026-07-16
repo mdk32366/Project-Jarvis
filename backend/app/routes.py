@@ -296,6 +296,17 @@ async def voice_status(request: Request, db: Session = Depends(get_db)):
             row.status = "done" if row.status == "answered" else "no_answer"
             db.commit()
 
+        # Episodic memory (TDD #14): the call is over — enqueue distillation.
+        # One trigger covers inbound and outbound alike (this callback fires
+        # for both). Never inline, never fatal: memory is best-effort, a
+        # distiller bug must not break the hangup path.
+        try:
+            from app.episodic import close_episode
+
+            close_episode(db, "voice", call_sid, source_ref=call_sid)
+        except Exception as e:  # noqa: BLE001
+            log.error("could not enqueue episode distillation for %s: %s", call_sid, e)
+
     return _xml(vp.twiml_empty())
 
 

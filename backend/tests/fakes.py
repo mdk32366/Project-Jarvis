@@ -38,10 +38,12 @@ def install_llm(monkeypatch, fn):
     import app.reflector as refl
     import app.agents as agents
     import app.briefing as briefing
+    import app.episodic as episodic
     monkeypatch.setattr(orch, "create_message", fn)
     monkeypatch.setattr(refl, "create_message", fn)
     monkeypatch.setattr(agents, "create_message", fn)
     monkeypatch.setattr(briefing, "create_message", fn)
+    monkeypatch.setattr(episodic, "create_message", fn)
     return fn
 
 

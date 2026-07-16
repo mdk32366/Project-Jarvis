@@ -66,6 +66,13 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "recall_facts",
     "forget_fact",
     "audit_memory",
+    # episodic memory (TDD #14) — read-only recall of past conversations, plus
+    # the same correction right the fact store has. NOTE: every archivist tool
+    # must appear here or the roster-subset check silently removes the whole
+    # agent from voice.
+    "recall_episodes",
+    "recall",
+    "forget_episode",
     # researcher: she can find out instead of guessing — and can say when she's
     # guessing, which is arguably worth more.
     "web_search",
