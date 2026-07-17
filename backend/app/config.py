@@ -200,7 +200,13 @@ class Settings(BaseSettings):
     # (flight-booking TDD §4.3).
     owner_dob: str = ""            # YYYY-MM-DD
     owner_gender: str = ""         # "m" | "f" — Duffel's passenger schema
-    owner_passport: str = ""       # only needed for international itineraries
+    # Passport — only needed for international itineraries, but Duffel requires
+    # ALL THREE (number + expiry + issuing country) to build an identity_document;
+    # a bare number is useless. Booking refuses an intl offer up front if these
+    # aren't all set, rather than failing after the confirmation gate (audit M5).
+    owner_passport: str = ""              # passport number
+    owner_passport_expiry: str = ""       # YYYY-MM-DD
+    owner_passport_country: str = ""      # ISO 3166-1 alpha-2, e.g. "US"
 
     # Vehicles, vessels, and anything else with a number you'd otherwise have to
     # go look up. The rule for this whole block: if it never changes and you've

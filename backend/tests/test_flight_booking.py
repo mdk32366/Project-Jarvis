@@ -516,3 +516,73 @@ def test_voice_phantom_offer_confirm_is_refused_before_totp_prompt(db, monkeypat
         "Voice phantom-offer confirm generated a TOTP prompt — ordering fix not effective on voice path"
     )
     assert db.query(Trip).count() == 0
+
+
+# ── M5: passport / international itineraries ──────────────────────────────────
+def _seed_intl_offer(db, **kw):
+    """An offer Duffel flags as needing passenger identity documents."""
+    row = _seed_offer(db, **kw)
+    row.raw = '{"passenger_identity_documents_required": true}'
+    db.commit()
+    return row
+
+
+def _set_passport(monkeypatch):
+    monkeypatch.setattr(settings, "owner_passport", "X1234567")
+    monkeypatch.setattr(settings, "owner_passport_expiry", "2031-05-01")
+    monkeypatch.setattr(settings, "owner_passport_country", "us")   # lower-case on purpose
+
+
+def test_intl_offer_without_passport_is_refused_before_the_gate(db, monkeypatch):
+    """An international itinerary needs a passport. Without one configured, refuse
+    up front — never clear confirmation + TOTP only to hit an opaque Duffel 422."""
+    _enable_booking(monkeypatch)   # no passport set
+    _seed_intl_offer(db)
+    install_llm(monkeypatch, use_tool_then(
+        "booking", "book_flight", {"offer_id": "off_test123"}))
+    run(db, channel="sms", thread_key=THREAD, user_text="book it", actor="+1555")
+    refusal = db.query(ActionAudit).filter(ActionAudit.status == "refused").first()
+    assert refusal is not None
+    assert "passport" in refusal.result.lower()
+    assert db.query(PendingConfirmation).count() == 0   # refused outright, never gated
+
+
+def test_domestic_offer_needs_no_passport(db, monkeypatch):
+    """A domestic fare (no identity-docs flag) gates normally even with no passport."""
+    _enable_booking(monkeypatch)
+    _seed_offer(db)   # raw="{}" -> not flagged
+    install_llm(monkeypatch, use_tool_then(
+        "Readback ready", "book_flight", {"offer_id": "off_test123"}))
+    run(db, channel="sms", thread_key=THREAD, user_text="book it", actor="+1555")
+    assert db.query(PendingConfirmation).count() == 1   # reached the gate, not refused
+
+
+def test_intl_offer_with_passport_reaches_the_gate(db, monkeypatch):
+    _enable_booking(monkeypatch)
+    _set_passport(monkeypatch)
+    _seed_intl_offer(db)
+    install_llm(monkeypatch, use_tool_then(
+        "Readback ready", "book_flight", {"offer_id": "off_test123"}))
+    run(db, channel="sms", thread_key=THREAD, user_text="book it", actor="+1555")
+    assert db.query(PendingConfirmation).count() == 1   # passport present -> proceeds
+
+
+def test_passenger_carries_passport_only_when_intl_and_configured(monkeypatch):
+    import app.handlers.travel as travel
+
+    _set_passport(monkeypatch)
+    monkeypatch.setattr(settings, "owner_name", "Matt Kelly")
+    monkeypatch.setattr(settings, "owner_dob", "1970-01-01")
+    monkeypatch.setattr(settings, "owner_gender", "m")
+    monkeypatch.setattr(settings, "owner_email", "me@example.com")
+
+    intl = travel._passenger_from_whoami(include_passport=True)
+    doc = intl["identity_documents"][0]
+    assert doc["type"] == "passport"
+    assert doc["unique_identifier"] == "X1234567"
+    assert doc["expires_on"] == "2031-05-01"
+    assert doc["issuing_country_code"] == "US"   # normalized upper-case
+
+    # Never attach a passport when it isn't needed (domestic), even if configured.
+    domestic = travel._passenger_from_whoami(include_passport=False)
+    assert "identity_documents" not in domestic
