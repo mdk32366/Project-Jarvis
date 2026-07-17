@@ -208,6 +208,9 @@ class Idea(Base):
     source: Mapped[str] = mapped_column(String(32), default="")  # channel
     committed_sha: Mapped[str] = mapped_column(String(64), default="")
     commit_error: Mapped[str] = mapped_column(Text, default="")
+    # Set when the idea is promoted into its own GitHub project repo — the repo
+    # html_url. Non-empty means "already a project"; a second promotion is refused.
+    promoted_url: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

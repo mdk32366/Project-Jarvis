@@ -109,6 +109,11 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "cancel_task",
     "capture_idea",
     "list_ideas",
+    "get_idea",
+    # create_project_from_idea: GATED + top-level (creates a GitHub repo). Voice-
+    # reachable behind the confirmation gate, same posture as send_email — it's an
+    # outward action, not money, and a private repo is easily undone.
+    "create_project_from_idea",
     # travel — read, booking, and document creation.
     "list_trips",
     "search_flights",

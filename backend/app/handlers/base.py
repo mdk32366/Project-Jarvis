@@ -123,7 +123,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # (delegate) and governs the one irreversible action (trading) behind the
         # confirmation gate. All read-only/domain tools live in specialist agents.
         from app import agents
-        from app.handlers import datetime_tools, finance, scheduling, secretary, travel
+        from app.handlers import datetime_tools, finance, ideas, scheduling, secretary, travel
 
         agents.register_delegate(reg, db)
         finance.register_trading(reg)
@@ -134,6 +134,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         secretary.register_gated(reg)     # send_email
         scheduling.register_gated(reg)    # create_event
         travel.register_gated(reg)        # book_flight (+ TOTP second factor)
+        ideas.register_gated(reg)         # create_project_from_idea (creates a repo)
         # get_current_datetime is ungated and universal — registered at top level
         # AND in the sub-agent branch (TDD §4.1: both branches).
         datetime_tools.register(reg)
