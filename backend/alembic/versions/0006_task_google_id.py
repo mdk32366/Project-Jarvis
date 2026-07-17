@@ -14,6 +14,9 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # `tasks` is created by 0004_agents_expansion (which runs before this), so
+    # unlike the create_all-only tables handled by 0013_baseline, it always
+    # exists here — a plain add_column is safe on both a fresh and an existing DB.
     op.add_column(
         "tasks",
         sa.Column("google_id", sa.String(length=128), nullable=False, server_default=""),

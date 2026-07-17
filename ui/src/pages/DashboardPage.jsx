@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/api.js";
 
-// Example data-driven page using TanStack Query against a protected endpoint.
+// Status page: signed-in identity + live API/DB health.
 export default function DashboardPage() {
   const health = useQuery({
     queryKey: ["health"],
@@ -12,7 +12,7 @@ export default function DashboardPage() {
 
   return (
     <div className="card">
-      <h1>Dashboard</h1>
+      <h1>Status</h1>
       <p>Signed in as <strong>{me.data?.username ?? "…"}</strong>.</p>
 
       <h2>API health</h2>
@@ -25,10 +25,6 @@ export default function DashboardPage() {
           <li>Database: {health.data.database}</li>
         </ul>
       )}
-      <p className="hint">
-        Replace this page with your app. Add protected routes in{" "}
-        <code>App.jsx</code> and endpoints in <code>backend/app/routes.py</code>.
-      </p>
     </div>
   );
 }

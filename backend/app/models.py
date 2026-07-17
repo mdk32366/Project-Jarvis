@@ -383,8 +383,9 @@ class Episode(Base):
     topics: Mapped[str] = mapped_column(Text, default="[]")           # JSON array of tags
     action_items: Mapped[str] = mapped_column(Text, default="[]")     # JSON array
     salience: Mapped[float] = mapped_column(Float, default=0.5)
-    # Portable embedding storage — same pattern as Memory.embedding: JSON floats
-    # here (source of truth for the cosine fallback), pgvector mirror in prod.
+    # Portable embedding storage: JSON floats, searched with an in-Python cosine
+    # fallback (episodic.py). Unlike Memory, episodes have NO pgvector mirror yet
+    # — a mirror table can slot in later (audit L8 corrected the prior claim).
     embedding: Mapped[str] = mapped_column(Text, default="")
     source_ref: Mapped[str] = mapped_column(String(128), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

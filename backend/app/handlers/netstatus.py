@@ -88,10 +88,10 @@ def _uptime(seconds: int) -> str:
     days, rem = divmod(seconds, 86400)
     hours = rem // 3600
     if days and hours:
-        return f"{days} day{'s' if days != 1 else ''}, {hours} hour{'s' if hours != 1 else ''}"
+        return f"{_plural(days, 'day')}, {_plural(hours, 'hour')}"
     if days:
-        return f"{days} day{'s' if days != 1 else ''}"
-    return f"{hours} hour{'s' if hours != 1 else ''}"
+        return _plural(days, "day")
+    return _plural(hours, "hour")
 
 
 def _render_node(n: dict) -> str:

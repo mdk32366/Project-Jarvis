@@ -123,6 +123,13 @@ async def voice_inbound(request: Request, db: Session = Depends(get_db)):
     from_number = params.get("From", "")
     call_sid = params.get("CallSid", "")
 
+    # Kill switch. Caller-ID auth is spoofable, so this is the documented way to
+    # take the whole voice channel offline; it must actually gate the entrypoint
+    # (see audit H4 — it previously gated nothing).
+    if not settings.voice_enabled:
+        log.info("Voice disabled (voice_enabled=False); hanging up on %s", call_sid)
+        return _xml(vp.twiml_hangup(vp.NOT_AUTHORIZED))
+
     if not vp.is_allowed(db, from_number):
         # Deliberately uninformative: don't confirm to a stranger that they've
         # found a system worth probing.
@@ -284,22 +291,40 @@ async def voice_status(request: Request, db: Session = Depends(get_db)):
     from_number = _voice_party(db, params)
     call_status = params.get("CallStatus", "")
 
-    if call_status == "completed":
-        log.info("Voice call ended: %s", call_sid)
-        vp.email_transcript(db, call_sid, from_number)
+    # Twilio fires this callback on ANY terminal state, with the real outcome
+    # in CallStatus: completed | busy | no-answer | failed | canceled. We must
+    # act on all of them — an unanswered outbound call that only closed out on
+    # "completed" would sit in the OutboundCall table as "ringing" forever, so
+    # due_calls never re-dials it, pending_callbacks lists a ghost, and
+    # cancel_callback (which only cancels "queued") can't clear it.
+    _TERMINAL = {"completed", "busy", "no-answer", "failed", "canceled"}
+    if call_status not in _TERMINAL:
+        return _xml(vp.twiml_empty())
 
-        # If this was a call SHE placed, close the row out.
-        from app.channels import outbound_voice as ov
+    log.info("Voice call ended: %s (%s)", call_sid, call_status)
 
-        row = ov.get_by_sid(db, call_sid)
-        if row is not None and row.status in ("ringing", "answered"):
+    # If this was a call SHE placed, close the row out based on the outcome.
+    from app.channels import outbound_voice as ov
+
+    row = ov.get_by_sid(db, call_sid)
+    if row is not None and row.status in ("ringing", "answered"):
+        if call_status == "completed":
+            # "completed" only means the call connected and hung up normally if
+            # we actually answered it; an unanswered call can also report
+            # completed after ringing out, so trust the row's own state.
             row.status = "done" if row.status == "answered" else "no_answer"
-            db.commit()
+        else:
+            row.status = "no_answer" if call_status in ("busy", "no-answer") else "failed"
+        db.commit()
+
+    if call_status == "completed":
+        vp.email_transcript(db, call_sid, from_number)
 
         # Episodic memory (TDD #14): the call is over — enqueue distillation.
         # One trigger covers inbound and outbound alike (this callback fires
         # for both). Never inline, never fatal: memory is best-effort, a
-        # distiller bug must not break the hangup path.
+        # distiller bug must not break the hangup path. Only for connected
+        # calls — an unanswered call has no turns worth distilling.
         try:
             from app.episodic import close_episode
 

@@ -63,7 +63,11 @@ class Settings(BaseSettings):
     compliance_email: str = "jarvismajorus+compliance@gmail.com"
 
     # ── Voice channel (Phase 1) ──────────────────────────────────────────────
-    voice_enabled: bool = False
+    # Opt-out KILL SWITCH (audit H4): on by default so the channel keeps working
+    # without extra config, and honored by the voice routes so setting
+    # VOICE_ENABLED=false actually takes the spoofable caller-ID channel offline.
+    # Was previously default-False AND read by nothing — the switch did nothing.
+    voice_enabled: bool = True
     voice_tts_voice: str = "Polly.Matthew-Neural"
     # Public base URL Twilio posts to, e.g. https://jarvis-mdk.fly.dev
     # Behind Fly's proxy str(request.url) can report http://, which will NOT
@@ -214,7 +218,6 @@ class Settings(BaseSettings):
     # scraping. duffel_api_key is TEST MODE search+booking; never make the live
     # key the only path (flight-booking TDD §3). Keep both working always.
     duffel_api_key: str = ""
-    amadeus_api_key: str = ""
 
     # ── Flight booking (SPENDS REAL MONEY — flight-booking TDD) ──────────────
     # Off until deliberately enabled. When False, book_flight is a hard-refused

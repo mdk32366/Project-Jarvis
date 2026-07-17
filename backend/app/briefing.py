@@ -24,7 +24,10 @@ from app.models import Memory
 log = logging.getLogger(__name__)
 
 # Sources not yet integrated — shown so the briefing is honest about coverage.
-_PENDING_SECTIONS = ["Upcoming bills", "Weekend & travel", "Project status"]
+# "Weekend & travel" was removed here (audit L12): a live ## Travel section is
+# now assembled from recorded trips, so listing travel as "not yet connected"
+# contradicted the brief's own content.
+_PENDING_SECTIONS = ["Upcoming bills", "Project status"]
 
 # ── NWS / external API constants ──────────────────────────────────────────────
 # Nominatim usage policy requires a meaningful User-Agent identifying the app.

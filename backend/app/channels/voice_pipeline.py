@@ -161,10 +161,12 @@ VOICE_AGENTS_PHASE1: set[str] = {
 }
 
 # ── Confirmation vocabulary (TDD §8.2) ───────────────────────────────────────
-# Deliberately NARROWER than the orchestrator's typed-text sets. Anything not
-# listed here is ambiguous and falls through, causing JARVIS to re-ask.
-VOICE_AFFIRMATIVE = {"confirm", "confirmed", "affirmative", "execute", "roger", "do it"}
-VOICE_NEGATIVE = {"negative", "cancel", "abort", "belay", "no"}
+# The voice confirmation vocabulary is NARROWER than the orchestrator's
+# typed-text sets — "ok"/"yeah" must never fire a gated action. The single
+# source of truth is orchestrator._VOCAB["voice"], consumed by the gate. A
+# duplicate copy used to live here under this banner but was never read;
+# removed in the 2026-07-17 audit (audit M8) so edits land where they take
+# effect.
 
 # ── Poll budget (TDD §6.2) ───────────────────────────────────────────────────
 POLL_INTERVAL_SECONDS = 2

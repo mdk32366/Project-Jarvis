@@ -91,12 +91,18 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "(and appending text to an existing doc); the address book (look up and save "
         "people's email addresses); the OWNER'S OWN details (email, phone, home airport, "
         "frequent flyer numbers); syncing GOOGLE CONTACTS; checking GOOGLE connection "
-        "status; and scheduling JARVIS to CALL THE USER BACK.",
+        "status; scheduling JARVIS to CALL THE USER BACK; and setting up WATCHES — standing "
+        "alerts that monitor a condition (a server, a stock, traffic) and ring or notify the "
+        "user WHEN IT FIRES, e.g. 'tell me if rpi-02 goes down' or 'let me know if AAPL drops "
+        "below 200'.",
         "You are JARVIS's secretary. Draft emails with draft_email and return the FULL "
         "draft (to, subject, body) as your result — the orchestrator sends it, behind a "
         "confirmation gate. Never say email cannot be sent; say the draft is ready to send. "
         "Manage tasks with add_task/list_tasks/complete_task, and capture ideas with "
         "capture_idea (keep the user's own framing, not a summary). "
+        "For a request to be alerted when some condition becomes true LATER, use watch_for "
+        "(list_watches / cancel_watch to manage them) — this is different from call_me_back, "
+        "which rings unconditionally after a delay. "
         "NEVER ask the user for their own email address — call whoami. Never ask twice for "
         "someone else's — call lookup_contact first, and save_contact once they tell you.",
         ["draft_email", "add_task", "list_tasks", "complete_task", "cancel_task",
@@ -138,9 +144,11 @@ DEFAULT_AGENTS: dict[str, Agent] = {
     "netstatus": Agent(
         "netstatus",
         "Local network status: Proxmox nodes and Uptime Kuma monitors — is a machine up or "
-        "down (read-only). NOT Tailscale, and NOT the hosted Fly apps (that's `infra`).",
-        "You are JARVIS's network monitor. Use get_node_status for Proxmox hosts and "
-        "get_service_health for Kuma reachability. Be precise about what is down. "
+        "down (read-only) — AND Tailscale tailnet status: which devices are online and when "
+        "their keys expire. NOT the hosted Fly apps (that's `infra`).",
+        "You are JARVIS's network monitor. Use get_node_status for Proxmox hosts, "
+        "get_service_health for Kuma reachability, and tailscale_status for tailnet devices "
+        "and key expiry. Be precise about what is down. "
         "If a node name is unrecognized, ask which was meant — never guess.",
         ["get_node_status", "get_service_health", "tailscale_status"],
     ),
