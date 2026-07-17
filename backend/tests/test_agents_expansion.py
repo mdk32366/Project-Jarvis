@@ -62,6 +62,41 @@ def test_subagent_refuses_gated_tool_even_if_roster_lists_it(db, monkeypatch, ca
     assert any("refusing" in r.message for r in caplog.records)
 
 
+# ── The researcher-failure bug: never return "(no result)" ───────────────────
+def test_run_agent_forces_a_synthesis_when_it_runs_out_of_iterations(db, monkeypatch):
+    """CONFIRMED root cause of 'the research agent just failed': the agent burned
+    every tool-loop iteration searching and never wrote an answer, so run_agent
+    returned '(no result)' and the orchestrator relayed a failure — throwing away
+    everything gathered. It must instead force a final synthesis from the evidence."""
+    from app.agents import Agent, run_agent
+    from app.handlers.base import Context
+    from fakes import install_llm, response, text_block, tool_block
+
+    calls = {"tool_loops": 0, "synthesis": 0}
+
+    def fake(system, messages, tools=None, model=None):
+        if tools:                       # tool loop — keep searching, never conclude
+            calls["tool_loops"] += 1
+            return response([tool_block("web_search", {"query": "kubota fuel filter"})],
+                            stop_reason="tool_use")
+        calls["synthesis"] += 1         # forced no-tools pass -> deliver the answer
+        return response([text_block("Fuel-filter checklist: 1) shut off fuel 2) ... "
+                                    "Videos: https://youtu.be/aaa https://youtu.be/bbb")],
+                        stop_reason="end_turn")
+
+    install_llm(monkeypatch, fake)
+
+    researcher = Agent("researcher", "d", "s", ["web_search"])
+    ctx_ = Context(db=db, channel="email", actor="me@example.com", thread_key="t")
+    out = run_agent(db, researcher, "research fuel filters, checklist + 3 videos",
+                    ctx_, max_iters=4)
+
+    assert out != "(no result)"
+    assert "checklist" in out.lower() and "youtu.be" in out
+    assert calls["tool_loops"] == 4, "should use its full tool budget first"
+    assert calls["synthesis"] == 1, "then force exactly one final synthesis pass"
+
+
 def test_send_email_requires_confirmation_at_top_level(db, monkeypatch):
     """Top-level: a gated tool creates a PendingConfirmation, doesn't execute."""
     from app.models import PendingConfirmation
