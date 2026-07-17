@@ -110,6 +110,17 @@ caller should have to guess which one a bare timestamp refers to.
 
 ### 4.1 `get_current_datetime` primitive
 
+> **AMENDED 2026-07-17 (audit M6).** The `user_tz_source` precedence below lists
+> four sources, but only **`location_report` > `default`** are implemented. The
+> two richer sources are **future work**, each in its own TDD, and are no longer
+> claimed as a live precedence (leaving them as placeholders made the contract
+> over-promise — "I'm in Phoenix right now" had zero effect on `user_time`):
+> `stated` (a tz asserted in conversation) needs tz extraction + city→IANA
+> mapping + a TTL, and belongs in a conversation-intent TDD; `active_trip` needs
+> `Trip.destination_tz` (no such field) plus "which trip is active" logic, and
+> belongs in a travel TDD. The phone's location report already covers the common
+> "physically there" case, so the live gap is narrow.
+
 ```python
 def register_datetime(reg: Registry) -> None:
     """Available to orchestrator AND all sub-agent rosters — unlike gated
@@ -183,6 +194,15 @@ Two backstops:
    prompt, every time).
 
 ### 4.3 Post-processing sanity check
+
+> **AMENDED 2026-07-17 (audit M7).** Only the **past-date** half of this shipped.
+> `flag_stale_dates(text, reference_dt)` annotates past dates `[stale: …]`. The
+> "outside the request's intended window" check (steps 2's window comparison,
+> the `[outside window: …]` annotation) was **never wired** — it needs the caller
+> to infer a window ("next 7 days") from the request, which isn't available at the
+> `run_agent` call site — so its dead `window_start`/`window_end` parameters were
+> removed rather than left as a false claim. **Request-window flagging is future
+> work**; the rest of this section describes that unbuilt half.
 
 Applies to sub-agent outputs (web researcher first; email/calendar-adjacent
 agents as a fast-follow) that contain parseable dates.

@@ -51,27 +51,26 @@ DATE_BEARING_TOOLS: frozenset[str] = frozenset({
 def _resolve_user_tz(ctx: Context) -> tuple[str, str]:
     """Return (tz_name, source) for the user's current timezone.
 
-    Priority (highest to lowest):
-      stated > active_trip > location_report > default
+    SUPPORTED sources, highest priority first:
+      location_report > default
 
-    "stated" and "active_trip" are placeholders — the data models that would
-    support them (conversation-stated tz, Trip.destination_tz) don't exist
-    yet. The wiring is here so the precedence is testable and the right call
-    site is obvious when they're added.
+    Audit M6: two richer sources were once documented in the precedence but
+    never implemented, which made the contract over-promise ("I'm in Phoenix
+    right now" had zero effect). They are formally FUTURE WORK, not a live
+    precedence, and each belongs in its own TDD (see below), so this now
+    documents only what actually runs:
+
+    - `stated` (a tz the user asserts in conversation) — needs tz extraction from
+      the live conversation, city/state → IANA mapping, and a TTL decision.
+      Belongs in a conversation-intent TDD.
+    - `active_trip` (the destination tz of the trip you're currently on) — needs
+      Trip.destination_tz (no such field), plus logic for which trip is "active".
+      Belongs in a travel TDD alongside the Trip model extension.
+
+    The phone's location report already covers the common travel case (you're
+    physically there), so the gap is narrow.
     """
-    # 1. stated — DEFERRED (not a TDD #11 gap).
-    #    "I'm in Phoenix right now" requires extracting a tz assertion from the
-    #    live conversation, mapping the city/state to an IANA name, deciding its
-    #    TTL (session? stored?), and a place ctx can reach. None of that
-    #    scaffolding exists. Belongs in a conversation-intent TDD, not here.
-
-    # 2. active_trip — DEFERRED (not a TDD #11 gap).
-    #    Requires Trip.destination_tz (field does not exist), logic to decide
-    #    which trip is currently "active" (in-flight vs. at destination vs.
-    #    returning), and a join from here into the trips table. Belongs in a
-    #    travel TDD alongside the Trip model extension.
-
-    # 3. location_report — use the most recent LocationPing if fresh enough.
+    # location_report — use the most recent LocationPing if fresh enough.
     #    We have lat/lon; convert to IANA timezone name via timezonefinder.
     #    This is what makes "Matt is in Scottsdale in December" produce
     #    "America/Phoenix" (UTC-7, no DST) instead of "America/Los_Angeles"
@@ -91,8 +90,8 @@ def _resolve_user_tz(ctx: Context) -> tuple[str, str]:
         except Exception:
             pass  # library missing or DB error — fall through to default
 
-    # 4. default — falls back to user_tz_default (same source of truth as
-    #    the scheduler and quiet-hours logic).
+    # default — falls back to user_tz_default (same source of truth as the
+    # scheduler and quiet-hours logic).
     from app.config import settings
     default_tz = getattr(settings, "user_tz_default", None) or settings.calendar_timezone
     return default_tz, "default"
@@ -311,24 +310,23 @@ _WRITTEN_DATE_RE = re.compile(
 )
 
 
-def flag_stale_dates(
-    text: str,
-    reference_dt: datetime,
-    window_start: Optional[datetime] = None,
-    window_end: Optional[datetime] = None,
-) -> tuple[str, list[str]]:
-    """Annotate dates in sub-agent output that are stale or outside a window.
+def flag_stale_dates(text: str, reference_dt: datetime) -> tuple[str, list[str]]:
+    """Annotate PAST dates in sub-agent output so the model can't relay a stale
+    date as current. Returns (annotated_text, list_of_flag_messages).
 
-    Returns (annotated_text, list_of_flag_messages).
-
-    Behaviour:
     - Past date → appended "[stale: YYYY-MM-DD]"
-    - Date past window_end → appended "[outside window: YYYY-MM-DD]"
-    - Future date inside window → unchanged
+    - Present/future date → unchanged
+
+    SCOPE (audit M7): only past-date staleness is flagged. The earlier
+    "outside the request's intended window" check was never wired — it needs the
+    caller to infer a window ("next 7 days") from the request, which isn't
+    available at the run_agent call site — so it (and its dead `window_start` /
+    `window_end` parameters) were removed rather than left as a false claim.
+    Request-window flagging remains future work in TDD-datetime-awareness §4.3.
 
     Flight offer expiry is NOT handled here — Duffel's native rejection is the
-    transactional control for that (TDD §4.3 exception clause). This function
-    is for *content* (web snippets, search results, calendar text).
+    transactional control for that. This function is for *content* (web snippets,
+    search results, calendar text).
 
     Silent filtering is explicitly rejected. Stale content is annotated and
     surfaced so the orchestrator or user can decide what to do. A system that
@@ -349,11 +347,6 @@ def flag_stale_dates(
             msg = f"stale: dated {parsed.isoformat()}, reference {ref_date.isoformat()}"
             flags.append(msg)
             return f"{raw} [stale: {parsed.isoformat()}]"
-
-        if window_end is not None and parsed > window_end.date():
-            msg = f"outside window: {parsed.isoformat()} > {window_end.date().isoformat()}"
-            flags.append(msg)
-            return f"{raw} [outside window: {parsed.isoformat()}]"
 
         return raw
 
