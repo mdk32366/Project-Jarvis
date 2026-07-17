@@ -21,7 +21,11 @@ from app.llm import create_message
 
 log = logging.getLogger(__name__)
 
-_MAX_ITERS = 5
+# Sub-agent tool-loop budget. Research legitimately needs several searches (find
+# the procedure, then sources/videos, then synthesize), so this is not tight — and
+# run_agent forces a final synthesis if the budget is spent, so a high value never
+# risks an empty "(no result)".
+_MAX_ITERS = 8
 
 
 @dataclass
@@ -41,6 +45,17 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "You are JARVIS's researcher. You can SEARCH THE WEB \u2014 use web_search whenever the "
         "answer depends on current information (news, prices, schedules, whether something is "
         "still true, anything that could have changed since your training). Cite your sources.\n"
+        "WORK EFFICIENTLY AND ALWAYS FINISH. You have a limited number of tool calls, so:\n"
+        "- web_search already returns each source's URL and a summary. That is usually ALL you "
+        "need \u2014 to give the user links (including YouTube videos), just cite the URLs from "
+        "the search results. Do a couple of well-aimed searches, not many.\n"
+        "- Use fetch_page ONLY when you truly need the full text of one specific page. Do NOT "
+        "fetch_page YouTube or other video URLs \u2014 they can't be extracted and it wastes a "
+        "call; take the link straight from the search results.\n"
+        "- The moment you have enough to answer, STOP searching and WRITE THE ANSWER. Never end "
+        "your turn on a tool call with no answer \u2014 always deliver your best synthesis of "
+        "what you found, in the exact format the user asked for (e.g. a checklist, with the "
+        "requested links). A partial, sourced answer beats no answer.\n"
         "If you answer from memory instead of searching, SAY SO: 'that's from what I already "
         "knew \u2014 want me to look it up?' Admitting you might be out of date is more useful "
         "than a confident wrong answer.\n"
@@ -295,6 +310,7 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
 
     messages = [{"role": "user", "content": initial_task}]
     final_text = ""
+    used_tools = False
 
     for _ in range(max_iters):
         resp = create_message(system=agent.system, messages=messages, tools=tools)
@@ -304,6 +320,7 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
             final_text = "\n".join(text_parts)
         if resp.stop_reason != "tool_use" or not tool_uses:
             break
+        used_tools = True
         messages.append({"role": "assistant", "content": resp.content})
         results = []
         for tu in tool_uses:
@@ -331,6 +348,31 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
             _audit_subagent(ctx, agent.name, tu.name, tu.input, content)
             results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(content)})
         messages.append({"role": "user", "content": results})
+    else:
+        # Loop ran the full budget and the agent was STILL calling tools — it never
+        # stopped to write an answer. Returning here would give the orchestrator
+        # "(no result)", which it relays to the user as "the agent just failed"
+        # while throwing away everything that was gathered (confirmed root cause of
+        # the researcher failures). Force ONE final answer with NO tools, from the
+        # evidence already collected, so a research turn always produces something.
+        if used_tools:
+            if (messages and messages[-1]["role"] == "user"
+                    and isinstance(messages[-1]["content"], list)):
+                messages[-1]["content"].append({
+                    "type": "text",
+                    "text": ("That's enough gathering. Using ONLY what you've already "
+                             "found above, give your best, complete answer to the task "
+                             "now — do not call any more tools."),
+                })
+            try:
+                resp = create_message(system=agent.system, messages=messages, tools=[])
+                synth = "\n".join(b.text for b in resp.content if b.type == "text").strip()
+                if synth:
+                    final_text = synth
+                    log.info("agent %r: forced synthesis after exhausting %d iters",
+                             agent.name, max_iters)
+            except Exception as e:  # noqa: BLE001 — a synthesis blip must not kill the turn
+                log.error("agent %r forced-synthesis pass failed: %s", agent.name, e)
 
     # §4.3: post-processing sanity check for date-bearing agents.
     # Annotates stale dates in the output before it reaches the orchestrator.

@@ -187,6 +187,10 @@ flowchart TD
     ORCH -- delegate --> SC[scheduling<br/>calendar_lookup - read only]
 ```
 
+Sub-agents run a bounded tool loop (`run_agent`, `_MAX_ITERS` iterations). If an agent
+spends its whole budget still calling tools without writing an answer, `run_agent` forces
+one final no-tools synthesis pass from the evidence gathered — so a research turn always
+returns a real answer, never an empty `(no result)` that surfaces as "the agent failed".
 Sub-agents with date-sensitive tools get real "now" injected and stale-date flagging on
 their output. Every sub-agent tool call is audited as `agent:tool` in `actions_audit`.
 
