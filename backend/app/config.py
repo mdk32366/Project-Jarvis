@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     # Behind Fly's proxy str(request.url) can report http://, which will NOT
     # match the base string Twilio signed. Set this in prod.
     voice_public_url_base: str = ""
+    # Hold music for the "I'll wait" path (a slow research turn). A publicly
+    # reachable audio URL Twilio can <Play> on a loop while the answer cooks.
+    # EMPTY -> she uses short spoken reassurance instead (still no re-prompt
+    # loop). Must be license-clear for streaming (e.g. a Pixabay/CC0 track you
+    # host); do NOT point it at copyrighted music.
+    voice_hold_music_url: str = ""
+    # How long she'll hold the line before handing off to email, in seconds.
+    voice_hold_max_seconds: int = 300
 
     # ── Action safety ────────────────────────────────────────────────────────
     confirm_threshold_usd: float = 50.0

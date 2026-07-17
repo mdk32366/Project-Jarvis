@@ -149,6 +149,11 @@ class VoiceTurn(Base):
     user_text: Mapped[str] = mapped_column(Text, default="")
     reply: Mapped[str] = mapped_column(Text, default="")
     error: Mapped[str] = mapped_column(Text, default="")
+    # Set when the caller was handed off (held past the budget, or asked to be
+    # called/emailed) while this turn was still running. run_turn emails the
+    # finished answer on completion — so a slow research turn the caller stopped
+    # waiting for still reaches them, rather than being silently orphaned.
+    notify_email: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 

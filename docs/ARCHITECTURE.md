@@ -111,6 +111,12 @@ Channel quirks that matter:
   resolve a new confirmation. Replies pass through `_speakable()` which strips URLs before
   text-to-speech. Each completed call emails the owner a transcript and enqueues episodic
   distillation.
+- **Slow turns can be held.** When a turn outruns the poll budget (~40 s), she offers to
+  hold the line or hand off. Saying "wait" enters `/voice/hold` — a listen-free loop that
+  plays hold music (`voice_hold_music_url`) or brief reassurance and re-checks the *same*
+  running turn, so a silent waiting caller is never looped with "Still there?". The answer
+  is spoken the moment it's ready; after `voice_hold_max_seconds` (default 300) she hands
+  off, and the finished answer is emailed via the `notify_email` flag on the turn row.
 - **Email** has one deliberate hole: airline confirmation emails from non-whitelisted
   senders are never orchestrated, but *are* parsed into the `trips` table
   (`travel.record_trip_from_email`).
