@@ -87,6 +87,10 @@ class Settings(BaseSettings):
 
     # ── Action safety ────────────────────────────────────────────────────────
     confirm_threshold_usd: float = 50.0
+    # A pending confirmation is a reply to something JUST proposed. Past this age
+    # it's stale and can no longer be confirmed — a later "yes" must never fire a
+    # buffered action from hours ago (audit: a 36h-old email was sent this way).
+    pending_confirmation_ttl_seconds: int = 900   # 15 minutes
     # Master switch for real-money trading. Kept OFF until the dashboard has
     # proper auth/security. When False, place_stock_order is a hard-disabled stub.
     enable_trading: bool = False

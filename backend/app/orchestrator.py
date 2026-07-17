@@ -133,6 +133,30 @@ def _norm(text: str) -> str:
     return text.strip().lower().rstrip(".!")
 
 
+# Words that may accompany a bare yes/no without turning it into a new request.
+_CONFIRM_FILLER = {"please", "thanks", "thank", "you", "now", "then", "just",
+                   "sure", "it", "that", "one", "and", "the", "go", "ahead"}
+
+
+def _bare_match(norm: str, vocab: set[str]) -> bool:
+    """True only when the message is essentially JUST an affirmative/negative.
+
+    The old check fired on any message STARTING with 'yes' — so 'Yes please run
+    it now for part numbers and videos' (a NEW instruction) was read as confirming
+    a stale pending action, and a 36-hour-old email got sent (audit). A real
+    confirmation is a bare 'yes'/'confirm'/'do it', optionally with harmless
+    filler. Anything carrying a content word falls through to normal handling.
+    """
+    if not norm:
+        return False
+    if norm in vocab:
+        return True
+    tokens: set[str] = set()
+    for phrase in vocab:
+        tokens.update(phrase.split())
+    return all(w in tokens or w in _CONFIRM_FILLER for w in norm.split())
+
+
 def _audit(db: Session, ctx: Context, tool: str, args: dict, result: str, status: str) -> None:
     db.add(
         ActionAudit(
@@ -172,12 +196,31 @@ def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: s
     if pending is None:
         return None
 
+    # Fix 1 (audit): a confirmation answers something JUST proposed. If the pending
+    # has aged past the TTL it's stale — expire it and behave as if none exists, so
+    # a later "yes" can't fire a buffered action from hours ago. (awaiting_code has
+    # its own tighter code_deadline, enforced in _resolve_awaiting_code.)
+    if pending.status == "pending":
+        created = pending.created_at
+        if created is not None:
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            age = (datetime.now(timezone.utc) - created).total_seconds()
+            if age > settings.pending_confirmation_ttl_seconds:
+                _expire_stale_pending(db, ctx.thread_key)
+                log.info("ignoring stale pending %s (%.0fs old) for thread %s",
+                         pending.tool, age, ctx.thread_key)
+                return None
+
     if pending.status == "awaiting_code":
         return _resolve_awaiting_code(db, registry, ctx, pending, user_text)
 
     affirmative, negative = _vocab(ctx.channel)
     norm = _norm(user_text)
-    if norm in affirmative or any(norm.startswith(a + " ") for a in affirmative):
+    # Fix 2 (audit): only a BARE affirmative confirms — a message that merely
+    # starts with "yes" but carries a new instruction is a new request, not a
+    # confirmation of the buffered action.
+    if _bare_match(norm, affirmative):
         if pending.tool in _SECOND_FACTOR_TOOLS:
             return _start_second_factor(db, registry, ctx, pending)
         args = json.loads(pending.arguments)
@@ -187,12 +230,41 @@ def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: s
         _audit(db, ctx, pending.tool, args, result, "confirmed")
         return f"Done — {pending.summary}.\n\n{result}"
 
-    if norm in negative or any(norm.startswith(n + " ") for n in negative):
+    if _bare_match(norm, negative):
         pending.status = "cancelled"
         db.commit()
         return f"Cancelled: {pending.summary}."
 
     return None  # ambiguous — fall through to normal handling
+
+
+def _expire_stale_pending(db: Session, thread_key: str) -> int:
+    """Mark every over-age un-resolved pending on this thread as 'expired', so
+    stale buffered actions stop lingering as landmines a future 'yes' could fire."""
+    cutoff = datetime.now(timezone.utc) - timedelta(
+        seconds=settings.pending_confirmation_ttl_seconds)
+    rows = (
+        db.execute(
+            select(PendingConfirmation)
+            .where(PendingConfirmation.thread_key == thread_key)
+            .where(PendingConfirmation.status == "pending")
+        )
+        .scalars()
+        .all()
+    )
+    n = 0
+    for r in rows:
+        created = r.created_at
+        if created is None:
+            continue
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if created < cutoff:
+            r.status = "expired"
+            n += 1
+    if n:
+        db.commit()
+    return n
 
 
 def _start_second_factor(db: Session, registry: Registry, ctx: Context, pending: PendingConfirmation) -> str:
