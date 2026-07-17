@@ -243,6 +243,13 @@ written from web-fenced content get a provenance footer; `book_flight` and
 `append_to_google_doc` require an ownership row (`flight_offers` / `google_documents`)
 created by JARVIS herself — an ID the model invents or was told about simply doesn't book.
 
+**Ideas → projects.** A captured idea (`capture_idea`, committed to the fixed `jarvis-ideas`
+repo) can be read back in full (`get_idea`) and promoted into a brand-new GitHub repo:
+`create_project_from_idea` (gated) creates the repo via `POST /user/repos`, seeds a README +
+the idea, and records `Idea.promoted_url`. The orchestrator asks for the repo name if the user
+didn't give one; the gate confirms before anything is created. See
+`docs/TDD-idea-to-project.md`.
+
 ---
 
 ## 7. Memory — three tiers
