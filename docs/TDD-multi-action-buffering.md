@@ -9,6 +9,12 @@ shipped first and this built on them. What shipped vs. deferred is noted per sec
 - Every gated action raised in ONE request shares a per-turn `batch_id`
   (`orchestrator.run`). Ungated actions (tasks, docs, sheets) already execute immediately in
   the sub-agent, so they need no buffering.
+- **No-confirmation work runs FIRST.** `run()` handles tool calls in two passes: pass 1
+  executes every ungated action (and outright refusals), pass 2 buffers the gated ones — so
+  ungated deliverables are completed and their results in hand before any gated action is
+  queued, regardless of the model's tool ordering. (Cross-turn ordering — the model calling
+  all ungated tools in the same turn — remains prompt-directed; nothing can force a deferred
+  tool call.)
 - A single bare "confirm" executes the WHOLE batch in creation order and returns one summary
   listing every deliverable; a single "cancel" drops them all (`_execute_batch` /
   `_cancel_batch`). Inherits the TTL + bare-affirmative rules.

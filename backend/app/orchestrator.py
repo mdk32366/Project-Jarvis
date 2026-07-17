@@ -480,7 +480,16 @@ def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, 
             break
 
         messages.append({"role": "assistant", "content": resp.content})
-        results = []
+
+        # Two passes, so NO-CONFIRMATION work always happens FIRST. Pass 1 runs
+        # every ungated action (and outright refusals); pass 2 then buffers the
+        # gated ones. This guarantees ungated deliverables are executed — and
+        # their results in hand — before any gated action is queued for
+        # confirmation, rather than depending on the model's tool ordering.
+        # Tool results are still emitted in the model's ORIGINAL order (the API
+        # matches them by id), so the model sees a coherent transcript.
+        contents: dict[str, str] = {}
+        gated = []
         for tu in tool_uses:
             pregate_refusal = registry.pregate(tu.name, tu.input, ctx) if registry.has(tu.name) else None
             if pregate_refusal is not None:
@@ -488,31 +497,35 @@ def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, 
                 # request that's already invalid (unknown offer_id, booking
                 # disabled, an absurd fare). "Confirm or cancel" implies
                 # there's something legitimate to confirm; there isn't.
-                content = pregate_refusal
-                _audit(db, ctx, tu.name, tu.input, content, "refused")
+                contents[tu.id] = pregate_refusal
+                _audit(db, ctx, tu.name, tu.input, pregate_refusal, "refused")
             elif _needs_confirmation(registry, tu.name, tu.input):
-                summary = registry.summarize(tu.name, tu.input)
-                db.add(
-                    PendingConfirmation(
-                        thread_key=thread_key,
-                        channel=channel,
-                        tool=tu.name,
-                        arguments=json.dumps(tu.input),
-                        summary=summary,
-                        batch_id=batch_id,
-                    )
-                )
-                db.commit()
-                content = (
-                    f"PENDING_CONFIRMATION: '{summary}'. Ask the user to reply to "
-                    f"confirm before this is executed. Do not call this tool again."
-                )
+                gated.append(tu)  # buffer AFTER all ungated work below
             else:
-                content = registry.execute(tu.name, tu.input, ctx)
-                _audit(db, ctx, tu.name, tu.input, content, "ok")
+                result = registry.execute(tu.name, tu.input, ctx)
+                _audit(db, ctx, tu.name, tu.input, result, "ok")
+                contents[tu.id] = str(result)
 
-            results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(content)})
+        for tu in gated:
+            summary = registry.summarize(tu.name, tu.input)
+            db.add(
+                PendingConfirmation(
+                    thread_key=thread_key,
+                    channel=channel,
+                    tool=tu.name,
+                    arguments=json.dumps(tu.input),
+                    summary=summary,
+                    batch_id=batch_id,
+                )
+            )
+            db.commit()
+            contents[tu.id] = (
+                f"PENDING_CONFIRMATION: '{summary}'. Ask the user to reply to "
+                f"confirm before this is executed. Do not call this tool again."
+            )
 
+        results = [{"type": "tool_result", "tool_use_id": tu.id, "content": str(contents[tu.id])}
+                   for tu in tool_uses]
         messages.append({"role": "user", "content": results})
 
     final_text = final_text or "Done."

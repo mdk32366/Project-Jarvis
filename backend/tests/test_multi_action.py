@@ -65,6 +65,42 @@ def test_one_cancel_cancels_the_whole_batch(db, monkeypatch):
     assert db.query(ActionAudit).filter(ActionAudit.status == "confirmed").count() == 0
 
 
+def test_ungated_actions_run_before_gated_ones_buffer(db, monkeypatch):
+    """Explicit ordering: no-confirmation work happens FIRST, even when the model
+    emits the gated tool BEFORE the ungated one. The ungated tool's spy records
+    how many gated actions were buffered at the moment it ran — must be zero."""
+    import app.handlers.datetime_tools as dt
+    from app.orchestrator import run
+
+    real = dt._get_current_datetime
+    seen = {}
+
+    def spy(args, ctx):
+        seen["pending_at_exec"] = ctx.db.query(PendingConfirmation).count()
+        return real(args, ctx)
+
+    monkeypatch.setattr(dt, "_get_current_datetime", spy)
+    monkeypatch.setattr("app.notifier.send_email", lambda *a, **k: "msg-id")
+
+    from fakes import ScriptedLLM
+    # NOTE: the GATED tool (send_email) is emitted FIRST, the ungated one second.
+    llm = ScriptedLLM(
+        response([tool_block("send_email",
+                             {"to": "a@example.com", "subject": "S", "body": "b"}, id="t1"),
+                  tool_block("get_current_datetime", {}, id="t2")],
+                 stop_reason="tool_use"),
+        response([text_block("Time's noted; email queued — reply confirm.")], stop_reason="end_turn"),
+    )
+    install_llm(monkeypatch, llm)
+
+    run(db, channel="sms", thread_key="+1555",
+        user_text="what time is it, and email S", actor="+1555")
+
+    assert seen.get("pending_at_exec") == 0, \
+        "the ungated action must execute before any gated action is buffered"
+    assert db.query(PendingConfirmation).filter_by(status="pending").count() == 1
+
+
 def test_a_single_gated_action_still_confirms_normally(db, monkeypatch):
     """Don't regress the common case: one action, one 'yes', one deliverable."""
     from app.orchestrator import run
