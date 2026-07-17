@@ -20,7 +20,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     jarvis_model: str = "claude-sonnet-5"          # was claude-sonnet-4-20250514
     jarvis_router_model: str = "claude-haiku-4-5-20251001"
-    max_tokens: int = 2048
+    # Response cap for every LLM call. Raised 2048 -> 3584 (+75%) so detailed
+    # research answers (checklists with links, multi-step procedures) aren't
+    # truncated mid-answer.
+    max_tokens: int = 3584
 
     # ── Email channel ────────────────────────────────────────────────────────
     imap_host: str = "imap.gmail.com"

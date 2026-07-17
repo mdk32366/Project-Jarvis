@@ -25,7 +25,7 @@ log = logging.getLogger(__name__)
 # the procedure, then sources/videos, then synthesize), so this is not tight — and
 # run_agent forces a final synthesis if the budget is spent, so a high value never
 # risks an empty "(no result)".
-_MAX_ITERS = 8
+_MAX_ITERS = 10
 
 
 @dataclass
