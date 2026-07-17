@@ -181,10 +181,36 @@ MAX_TURNS = 40  # hard stop on call length
 GREETING = "JARVIS here. What do you need?"
 FILLER = "Copy that."
 TIMEOUT_FALLBACK = (
-    "Still working on that one. I can call you back with it, or keep going here — "
-    "which would you rather?"
+    "This one's taking a bit. I can hold the line while I finish — just say wait — "
+    "or I can email it to you when it's ready. Which would you rather?"
+)
+HOLD_INTRO = "You got it. Stay with me — I'll come right back the moment I have it."
+HOLD_REASSURE = "Still on it."
+# Said when she gives up holding and hands off to email (the user's own words).
+HANDOFF_LINE = (
+    "This is taking longer than I expected. I'll email you the full answer the "
+    "moment it's done and it'll land in your inbox automatically. Catch you in a bit."
 )
 NOT_AUTHORIZED = "I'm not able to help with that. Goodbye."
+
+# The "wait or email" choice at the timeout prompt. An explicit request to be
+# emailed/called hands off; ANYTHING ELSE (including "wait", "keep going", or
+# unrecognized speech) holds — because a turn is still running and holding is
+# what stops the caller being made to talk into a re-prompt loop.
+_CALLBACK_WORDS = ("call back", "call me back", "callback", "email", "e-mail",
+                   "hang up", "text me", "later")
+
+
+def wants_callback(speech: str) -> bool:
+    s = (speech or "").strip().lower()
+    return any(w in s for w in _CALLBACK_WORDS)
+
+
+def wants_to_hold(speech: str) -> bool:
+    """True to keep holding — explicitly, or by default when it's not a callback."""
+    if wants_callback(speech):
+        return False
+    return True
 
 
 # ── Whitelist ────────────────────────────────────────────────────────────────
@@ -301,6 +327,12 @@ def run_turn(call_sid: str, turn: int, from_number: str, user_text: str) -> None
             row.reply = reply or "Done."
             row.status = "done"
             db.commit()
+            # If the caller stopped waiting for this one (held past the budget or
+            # asked to be emailed), deliver the finished answer instead of letting
+            # it evaporate. Re-read: notify_email may have been set concurrently.
+            row = get_turn(db, call_sid, turn)
+            if row is not None and row.notify_email:
+                _enqueue_answer_email(db, from_number, row.reply)
         except Exception as e:  # noqa: BLE001 — a dropped call is worse than a logged error
             log.exception("voice turn failed: %s/%s", call_sid, turn)
             db.rollback()
@@ -434,9 +466,64 @@ def twiml_working(call_sid: str, turn: int, poll: int) -> str:
     )
 
 
+def twiml_hold(turn: int, since: int, intro: bool = False) -> str:
+    """Hold the line on a still-running turn: play music (or reassure), then poll.
+
+    CRUCIAL: there is NO <Gather> here. The caller chose to wait, so we never
+    listen — silence can't fire a "Still there?" re-prompt, which is the loop
+    that used to form when a quiet, waiting caller was treated as needing another
+    prompt. We just keep the line warm and bounce back to /voice/hold, which
+    checks whether the answer is ready.
+    """
+    parts = []
+    if intro:
+        parts.append(_say(HOLD_INTRO))
+    if settings.voice_hold_music_url:
+        # One pass = one play of the track, then re-check. escape() guards the URL.
+        parts.append(f"<Play>{escape(settings.voice_hold_music_url)}</Play>")
+    else:
+        # No music configured: a short spoken 'still on it' on entry, then quiet
+        # pauses. Recommend configuring voice_hold_music_url for a nicer hold.
+        parts.append(_say(HOLD_REASSURE) if intro else '<Pause length="8"/>')
+    action = f"/api/voice/hold?turn={turn}&amp;since={since}"
+    parts.append(f'<Redirect method="POST">{action}</Redirect>')
+    return f"{_XML}<Response>{''.join(parts)}</Response>"
+
+
 def twiml_hangup(message: str) -> str:
     return f"{_XML}<Response>{_say(message)}<Hangup/></Response>"
 
 
 def twiml_empty() -> str:
     return f"{_XML}<Response></Response>"
+
+
+def mark_notify_on_completion(db: Session, call_sid: str, turn: int, from_number: str) -> None:
+    """Arrange for a still-running turn's answer to be emailed when it finishes.
+
+    Called when the caller stops waiting (held past the budget, or asked to be
+    emailed). If the turn already finished in the race window, email it now;
+    otherwise flag it so run_turn emails on completion.
+    """
+    row = get_turn(db, call_sid, turn)
+    if row is None:
+        return
+    if row.status == "done" and row.reply:
+        _enqueue_answer_email(db, from_number, row.reply)
+        return
+    row.notify_email = True
+    db.commit()
+
+
+def _enqueue_answer_email(db: Session, from_number: str, reply: str) -> None:
+    """Queue the finished answer to the owner's inbox (best-effort, durable)."""
+    to = settings.owner_email_resolved
+    if not to:
+        return
+    enqueue(
+        db,
+        "email_copy",
+        {"to": to, "subject": "JARVIS — the answer you asked me to finish", "body": reply},
+        channel=CHANNEL,
+        actor=from_number,
+    )

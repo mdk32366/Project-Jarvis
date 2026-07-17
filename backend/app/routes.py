@@ -1,4 +1,5 @@
 import logging
+import time
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -228,16 +229,80 @@ async def voice_poll(
             vp.twiml_gather("I hit an error on that one. Try something else?", turn=turn + 1)
         )
 
-    # Still pending.
+    # Still pending. Rather than dump the caller to email (or, worse, loop
+    # "Still there?"), offer the real choice: hold the line while she finishes,
+    # or hand off to email. Note turn stays the SAME — hold_choice acts on THIS
+    # still-running turn, it does not start a new one.
     if poll >= vp.MAX_POLLS:
-        # A caller stranded in a redirect loop is worse than one told to check
-        # their inbox. The background task keeps running and the transcript job
-        # will carry the answer.
-        log.warning("poll budget exhausted for %s/%s", call_sid, turn)
-        vp.email_transcript(db, call_sid, from_number)
-        return _xml(vp.twiml_gather(vp.TIMEOUT_FALLBACK, turn=turn + 1))
+        log.info("poll budget exhausted for %s/%s — offering hold/handoff", call_sid, turn)
+        return _xml(vp.twiml_gather(vp.TIMEOUT_FALLBACK, turn=turn,
+                                    action="/api/voice/hold_choice"))
 
     return _xml(vp.twiml_working(call_sid, turn, poll=poll))
+
+
+@router.post("/voice/hold_choice", tags=["jarvis"], include_in_schema=False)
+async def voice_hold_choice(request: Request, turn: int = 0, db: Session = Depends(get_db)):
+    """Caller answered 'wait or email?'. Enter the hold loop, or hand off.
+
+    `turn` is the STILL-RUNNING turn we're waiting on — not a new one.
+    """
+    from app.channels import voice_pipeline as vp
+
+    params = await _validated_params(request)
+    from_number = _voice_party(db, params)
+    call_sid = params.get("CallSid", "")
+
+    if not vp.is_allowed(db, from_number):
+        return _xml(vp.twiml_hangup(vp.NOT_AUTHORIZED))
+
+    # It may have finished while she was asking the question.
+    row = vp.get_turn(db, call_sid, turn)
+    if row is not None and row.status == "done":
+        return _xml(vp.twiml_gather(row.reply or "Done.", turn=turn + 1))
+    if row is not None and row.status == "error":
+        return _xml(vp.twiml_gather("I hit an error on that one. Try something else?", turn=turn + 1))
+
+    speech = (params.get("SpeechResult") or "").strip()
+    if vp.wants_callback(speech):
+        vp.mark_notify_on_completion(db, call_sid, turn, from_number)
+        return _xml(vp.twiml_hangup(vp.HANDOFF_LINE))
+
+    # Hold. `since` stamps when holding began, so /voice/hold can bound it.
+    return _xml(vp.twiml_hold(turn, since=int(time.time()), intro=True))
+
+
+@router.post("/voice/hold", tags=["jarvis"], include_in_schema=False)
+async def voice_hold(request: Request, turn: int = 0, since: int = 0,
+                     db: Session = Depends(get_db)):
+    """Keep the line warm on a running turn: speak the answer when ready, or hand
+    off to email once we've held longer than voice_hold_max_seconds."""
+    from app.channels import voice_pipeline as vp
+
+    params = await _validated_params(request)
+    from_number = _voice_party(db, params)
+    call_sid = params.get("CallSid", "")
+
+    if not vp.is_allowed(db, from_number):
+        return _xml(vp.twiml_hangup(vp.NOT_AUTHORIZED))
+
+    row = vp.get_turn(db, call_sid, turn)
+    if row is None:
+        return _xml(vp.twiml_gather("Something went wrong. Try again?", turn=turn + 1))
+    if row.status == "done":
+        # The answer landed — speak it and re-open the conversation.
+        return _xml(vp.twiml_gather(row.reply or "Done.", turn=turn + 1))
+    if row.status == "error":
+        return _xml(vp.twiml_gather("I hit an error on that one. Try something else?", turn=turn + 1))
+
+    elapsed = int(time.time()) - since
+    if since <= 0 or elapsed >= settings.voice_hold_max_seconds:
+        # Held long enough. Hand off: the answer will be emailed on completion.
+        vp.mark_notify_on_completion(db, call_sid, turn, from_number)
+        vp.email_transcript(db, call_sid, from_number)
+        return _xml(vp.twiml_hangup(vp.HANDOFF_LINE))
+
+    return _xml(vp.twiml_hold(turn, since=since, intro=False))
 
 
 @router.post("/voice/outbound", tags=["jarvis"], include_in_schema=False)
