@@ -168,9 +168,17 @@ narrowed — "ok"/"yeah" never trigger a gated action; "confirm"/"affirmative"/"
 **Confirmation hygiene & batching.** A pending confirmation expires after
 `pending_confirmation_ttl_seconds` (a stale "yes" can't fire an hours-old action), and only a
 *bare* affirmative confirms — "yes, and also do X" is a new request, not a confirmation.
-Gated actions raised in one request share a `batch_id`, so a compound "do this, that, and the
-other" reads back as one numbered set and a single "confirm" runs them all (or "cancel" drops
-them). `book_flight`'s TOTP is never batched. See `docs/TDD-multi-action-buffering.md`.
+
+A compound "do this, that, and the other" is handled in one turn in **two passes**: pass 1
+executes every ungated action (tasks, docs, sheets) and any outright refusals; pass 2 buffers
+the gated ones. So no-confirmation deliverables are always completed — and their results in
+hand — before any gated action is queued (tool results are still returned in the model's
+original order, matched by id). The gated actions raised in that turn share a `batch_id`, so
+they read back as one numbered set and a single "confirm" runs them all in creation order with
+one combined summary (or "cancel" drops them all). `book_flight`'s TOTP second factor is never
+batched — it keeps its own flow. Cross-turn ordering (the model issuing all ungated tool calls
+in the same turn) is prompt-directed, not code-enforced. See
+`docs/TDD-multi-action-buffering.md`.
 
 ---
 
