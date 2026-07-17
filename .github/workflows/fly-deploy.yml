@@ -34,7 +34,6 @@ jobs:
     # can't: prove `alembic upgrade head` bootstraps a complete schema on an
     # EMPTY Postgres (audit H2). The service DB starts empty and the app never
     # boots here, so create_all() can't mask a broken migration.
-    # See docs/operational/migration-bootstrap-test.md.
     runs-on: ubuntu-latest
     services:
       db:
