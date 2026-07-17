@@ -25,6 +25,21 @@ def test_threshold_logic():
     assert _needs_confirmation(reg, "danger", {"amount": 1000}) is True   # above threshold
 
 
+def test_create_event_confirms_only_when_attendees_will_be_emailed():
+    """The gate on create_event exists to stop unreviewed email (invites), not
+    calendar writes. No attendees -> no email leaves -> no confirmation."""
+    from app.handlers import scheduling
+
+    reg = Registry()
+    scheduling.register_gated(reg)
+    solo = {"title": "Dentist", "start": "2026-07-20T14:00"}
+    assert _needs_confirmation(reg, "create_event", solo) is False
+    assert _needs_confirmation(reg, "create_event", {**solo, "attendees": ""}) is False
+    assert _needs_confirmation(reg, "create_event", {**solo, "attendees": "   "}) is False
+    invited = {**solo, "attendees": "dave@example.com"}
+    assert _needs_confirmation(reg, "create_event", invited) is True
+
+
 def test_buy_creates_pending_not_executed(db, monkeypatch):
     monkeypatch.setattr(settings, "enable_trading", True)
     install_llm(monkeypatch, use_tool_then(
