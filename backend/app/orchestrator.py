@@ -14,6 +14,7 @@ Explicit multi-agent delegation remains future work.
 
 import json
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
@@ -86,6 +87,12 @@ _INSTRUCTIONS = """
   yourself, the code is verified by the confirmation system, not a tool call.
 - When a tool result says PENDING_CONFIRMATION, tell the user what you intend to
   do and ask them to reply to confirm. Do not retry the tool yourself.
+- If a compound request has SEVERAL parts, do them all in this one turn: perform
+  every ungated action (tasks, docs, sheets, ideas) and raise each gated action
+  (emails, invites) so they buffer together. Then read the whole set back as a
+  short numbered list — what's already done and what's awaiting confirmation —
+  and tell the user a single "confirm" runs all the pending ones (or "cancel"
+  drops them). They are one batch; do not make them confirm each separately.
 - EVERYTHING ELSE: JUST DO IT. Adding a task, creating a Google Doc or Sheet,
   capturing an idea, saving a contact, or a calendar event with no attendees is
   reversible and needs NO permission. Never ask "would you like me to?" or
@@ -221,21 +228,71 @@ def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: s
     # starts with "yes" but carries a new instruction is a new request, not a
     # confirmation of the buffered action.
     if _bare_match(norm, affirmative):
+        # Second factor (book_flight) is never batched — it keeps its own TOTP
+        # flow. Everything else: one 'confirm' clears the whole batch.
         if pending.tool in _SECOND_FACTOR_TOOLS:
             return _start_second_factor(db, registry, ctx, pending)
-        args = json.loads(pending.arguments)
-        result = registry.execute(pending.tool, args, ctx)
-        pending.status = "done"
-        db.commit()
-        _audit(db, ctx, pending.tool, args, result, "confirmed")
-        return f"Done — {pending.summary}.\n\n{result}"
+        return _execute_batch(db, registry, ctx, pending)
 
     if _bare_match(norm, negative):
-        pending.status = "cancelled"
-        db.commit()
-        return f"Cancelled: {pending.summary}."
+        return _cancel_batch(db, ctx, pending)
 
     return None  # ambiguous — fall through to normal handling
+
+
+def _batch_members(db: Session, ctx: Context, pending: PendingConfirmation) -> list[PendingConfirmation]:
+    """The still-pending, non-second-factor actions grouped with `pending`.
+
+    A NULL batch_id is a standalone action (just itself). Second-factor tools are
+    excluded — they carry their own TOTP flow and must not be batch-executed.
+    """
+    if pending.batch_id is None:
+        return [pending]
+    rows = (
+        db.execute(
+            select(PendingConfirmation)
+            .where(PendingConfirmation.thread_key == ctx.thread_key)
+            .where(PendingConfirmation.batch_id == pending.batch_id)
+            .where(PendingConfirmation.status == "pending")
+            .order_by(PendingConfirmation.created_at, PendingConfirmation.id)
+        )
+        .scalars()
+        .all()
+    )
+    members = [r for r in rows if r.tool not in _SECOND_FACTOR_TOOLS]
+    return members or [pending]
+
+
+def _execute_batch(db: Session, registry: Registry, ctx: Context, pending: PendingConfirmation) -> str:
+    """Execute every buffered action in the batch, in creation order, and return a
+    single summary of all the deliverables (TDD-multi-action-buffering)."""
+    members = _batch_members(db, ctx, pending)
+    done: list[tuple[str, str]] = []
+    for r in members:
+        args = json.loads(r.arguments)
+        result = registry.execute(r.tool, args, ctx)
+        r.status = "done"
+        _audit(db, ctx, r.tool, args, result, "confirmed")
+        done.append((r.summary, str(result)))
+    db.commit()
+
+    if len(done) == 1:
+        return f"Done — {done[0][0]}.\n\n{done[0][1]}"
+    lines = [f"Done — {len(done)} actions:"]
+    lines += [f"- {summ}" for summ, _ in done]
+    lines.append("")
+    lines += [res for _, res in done]
+    return "\n".join(lines)
+
+
+def _cancel_batch(db: Session, ctx: Context, pending: PendingConfirmation) -> str:
+    members = _batch_members(db, ctx, pending)
+    for r in members:
+        r.status = "cancelled"
+    db.commit()
+    if len(members) == 1:
+        return f"Cancelled: {members[0].summary}."
+    return "Cancelled all pending actions:\n" + "\n".join(f"- {r.summary}" for r in members)
 
 
 def _expire_stale_pending(db: Session, thread_key: str) -> int:
@@ -407,6 +464,10 @@ def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, 
     messages = load_history(db, convo.id)
     tools = registry.anthropic_tools()
     final_text = ""
+    # One id per turn: gated actions raised in the SAME request are one batch, so
+    # a compound "do this, that, and the other" reads back together and clears
+    # with a single confirm (TDD-multi-action-buffering).
+    batch_id = str(uuid.uuid4())
 
     for _ in range(_MAX_ITERS):
         resp = create_message(system=system, messages=messages, tools=tools)
@@ -438,6 +499,7 @@ def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, 
                         tool=tu.name,
                         arguments=json.dumps(tu.input),
                         summary=summary,
+                        batch_id=batch_id,
                     )
                 )
                 db.commit()
