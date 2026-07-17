@@ -177,6 +177,15 @@ def check_watch(db, w: Watch) -> str:
 
     row = schedule_call(db, opening=w.opening, kind="alert",
                         context=f"Watch: {w.condition}. Observed: {observation}")
+    if row is None:
+        # The condition fired but the call couldn't be placed (owner phone unset
+        # or not allowlisted). Do NOT consume the watch — leave it active so it
+        # retries on its next scheduled check instead of firing once into the void
+        # (audit M4). last_checked_at is already set, so this won't hot-loop.
+        log.error("watch #%s FIRED but could not place the alert call "
+                  "(owner phone unset / not allowlisted) — leaving active to retry", w.id)
+        return "fired but could not call"
+
     w.last_fired_at = datetime.now(_tz())
     w.fire_count += 1
     if not w.recurring:
@@ -184,7 +193,7 @@ def check_watch(db, w: Watch) -> str:
     db.commit()
 
     log.info("watch #%s FIRED: %s", w.id, w.condition)
-    return f"fired — queued call #{row.id}" if row else "fired but could not call"
+    return f"fired — queued call #{row.id}"
 
 
 def _fired(condition: str, observation: str) -> bool:

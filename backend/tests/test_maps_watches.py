@@ -251,6 +251,27 @@ def test_a_one_shot_watch_does_not_nag(db, monkeypatch, owner_phone):
     assert db.query(OutboundCall).count() == 1, "it nagged"
 
 
+def test_watch_not_consumed_when_the_call_cannot_be_placed(db, monkeypatch):
+    """A one-shot watch that fires but can't place its call (owner phone unset /
+    not allowlisted) must stay ACTIVE and retry, not fire once into the void and
+    mark itself done (audit M4). NOTE: no owner_phone fixture -> schedule_call
+    returns None."""
+    from app.handlers import watches as W
+
+    monkeypatch.setattr(W, "_fired", lambda c, o: True)
+    w = Watch(tool="get_node_status", condition="down", opening="hi",
+              every_minutes=5, recurring=False, status="active")
+    db.add(w); db.commit(); db.refresh(w)
+
+    result = W.check_watch(db, w)
+
+    assert "could not call" in result
+    assert db.query(OutboundCall).count() == 0
+    db.refresh(w)
+    assert w.status == "active", "must not consume a one-shot watch whose alert wasn't delivered"
+    assert w.fire_count == 0
+
+
 def test_recurring_watch_is_rate_limited(db, monkeypatch, owner_phone):
     from app.handlers import watches as W
 

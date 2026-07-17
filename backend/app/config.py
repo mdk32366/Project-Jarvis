@@ -267,6 +267,10 @@ class Settings(BaseSettings):
     # ── Job queue / worker (Phase 1) ─────────────────────────────────────────
     worker_poll_seconds: int = 5
     job_max_attempts: int = 3
+    # A job left in 'running' longer than this is treated as orphaned (its worker
+    # died / Fly redeployed mid-job) and re-queued. Must exceed the slowest real
+    # job's runtime so a job actually running now is never swept.
+    job_stale_seconds: int = 300
 
     @field_validator("database_url")
     @classmethod

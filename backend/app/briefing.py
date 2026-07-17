@@ -386,8 +386,22 @@ def compose_briefing(db: Session) -> str:
             return text
     except Exception as e:  # noqa: BLE001
         log.error("briefing compose failed: %s", e)
-        return f"Could not generate the written briefing ({e}).\n\nHere is the raw data:\n\n{data}"
+        # Prefix with a degraded-sentinel so the CALL path won't read this error
+        # and raw dump aloud (audit M3). The email path still sends it verbatim so
+        # the owner can see what happened.
+        return f"(briefing failed) Could not generate the written briefing ({e}).\n\nHere is the raw data:\n\n{data}"
     return "(no briefing generated)\n\n" + data
+
+
+# Degraded compose_briefing outputs — real prose never starts with these. The
+# spoken briefing_call path checks this so it never reads an error/empty-marker
+# and raw data dump aloud; the email path sends them so the owner still sees them.
+_DEGRADED_PREFIXES = ("(no briefing", "(briefing failed")
+
+
+def is_speakable_briefing(text: str) -> bool:
+    """True only for a real, composed briefing — not an empty/failed sentinel."""
+    return bool(text) and not text.lstrip().startswith(_DEGRADED_PREFIXES)
 
 
 def send_briefing(db: Session) -> str:

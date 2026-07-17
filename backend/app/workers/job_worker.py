@@ -12,7 +12,7 @@ import time
 
 from app.config import settings
 from app.database import SessionLocal
-from app.jobs import process_available
+from app.jobs import process_available, recover_stale_jobs
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +25,11 @@ log = logging.getLogger(__name__)
 def run_once() -> int:
     db = SessionLocal()
     try:
+        # Re-queue anything a dead/redeployed worker stranded in 'running' before
+        # draining, so recovered jobs run this same pass (audit M2).
+        recovered = recover_stale_jobs(db)
+        if recovered:
+            log.info("recovered %d stale job(s)", recovered)
         n = process_available(db)
         _place_due_calls(db)
         _check_watches(db)

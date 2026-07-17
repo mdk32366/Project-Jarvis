@@ -1,4 +1,4 @@
-from app import briefing
+from app import briefing, jobs
 from app.config import settings
 from app.models import Job
 from fakes import install_llm, say
@@ -180,3 +180,23 @@ def test_briefing_news_degrades_gracefully_on_failure(db, monkeypatch):
     assert "Today's calendar" in ctx
     assert "tavily down" not in ctx
     assert "## News" not in ctx
+
+
+# ── M3: a failed briefing must not be read aloud on a call ────────────────────
+def test_is_speakable_briefing_rejects_degraded_output():
+    assert briefing.is_speakable_briefing("Good morning. Markets are up.") is True
+    assert briefing.is_speakable_briefing("") is False
+    assert briefing.is_speakable_briefing("(no briefing generated)\n\n<data>") is False
+    assert briefing.is_speakable_briefing("(briefing failed) boom\n\nHere is the raw data: <dump>") is False
+
+
+def test_briefing_call_does_not_ring_on_compose_failure(db, monkeypatch):
+    """The old guard only caught '(no briefing'; the exception fallback slipped
+    through and JARVIS phoned and read the error + raw dump aloud (audit M3)."""
+    from app.models import OutboundCall
+
+    monkeypatch.setattr(briefing, "compose_briefing",
+                        lambda db: "(briefing failed) boom\n\nHere is the raw data:\n\n<dump>")
+    result = jobs._handle_briefing_call(db, {})
+    assert result == "nothing to brief"
+    assert db.query(OutboundCall).count() == 0   # no call placed with the error text

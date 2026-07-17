@@ -275,7 +275,10 @@ Postgres on Fly (SQLite in dev/tests). 24 tables in `backend/app/models.py`:
 
 Durable queue in the `jobs` table — Postgres `FOR UPDATE SKIP LOCKED` claiming, retry with
 backoff, permanent-failure detection, owner notified by email on real failures (never for
-`email_copy`/`reflect`/`distill_episode`, to avoid recursion).
+`email_copy`/`reflect`/`distill_episode`, to avoid recursion). On each tick the worker also
+runs `recover_stale_jobs()` — a job stuck in `running` past `job_stale_seconds` (its worker
+died or Fly redeployed mid-job) is re-queued rather than lost, or failed if past
+`max_attempts`. The staleness window means a job running right now is never swept.
 
 **Job kinds:** `email_copy`, `morning_briefing`, `briefing_call`, `reflect`,
 `distill_episode`, `commit_idea`, `sync_contacts`, `push_task`, `complete_task_google`.
