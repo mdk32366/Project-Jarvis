@@ -156,6 +156,7 @@ flowchart TD
 | `create_event` | confirms **only with attendees** (an invite emails people); solo events run immediately |
 | `place_stock_order` | notional threshold ($50); also hard-disabled unless `ENABLE_TRADING` |
 | `book_flight` | confirm **+ TOTP code** + pregate (offer must come from this thread's own search, ≤ `max_booking_usd`) |
+| `create_project_from_idea` | confirm + pregate (idea exists, not already promoted, GitHub configured, name given) — creates a new GitHub repo from a captured idea |
 
 Everything else executes immediately — the prompt explicitly forbids preemptive
 "shall I?" asking for ungated actions.
@@ -230,7 +231,7 @@ the orchestrator **commits** (send, book, create with invites) — under the gat
 | Travel | search_flights, list_trips, **book_flight** | Duffel |
 | Navigation | get_traffic, find_place, where_am_i | Google Maps, `location_pings` |
 | Contacts | whoami, lookup_contact, save_contact, list_contacts, sync_google_contacts, google_status | Google People |
-| Ideas | capture_idea, list_ideas | GitHub Contents API |
+| Ideas | capture_idea, list_ideas, get_idea, **create_project_from_idea** (gated) | GitHub Contents API + `POST /user/repos` |
 | Callbacks | call_me_back, pending_callbacks, cancel_callback | Twilio (via worker) |
 | Watches | watch_for, list_watches, cancel_watch | LLM judge (worker) |
 | Infra | fleet_health, fleet_spend | Fly Machines + GraphQL |

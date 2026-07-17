@@ -192,3 +192,175 @@ def test_capture_idea_end_to_end_through_the_orchestrator(db, monkeypatch):
     assert idea is not None
     assert "narrate node status" in idea.body
     assert idea.source == "sms"
+
+
+# ── get_idea (read one idea's full text) ──────────────────────────────────────
+def test_get_idea_returns_the_full_body(ctx, db):
+    from app.handlers.ideas import _get_idea
+    idea = _idea(db, title="Boat telemetry", body="Stream NMEA to a dashboard. Long detail here.")
+
+    out = _get_idea({"idea_id": idea.id}, ctx)
+    assert "Boat telemetry" in out
+    assert "Stream NMEA to a dashboard" in out
+
+
+def test_get_idea_unknown_id(ctx, db):
+    from app.handlers.ideas import _get_idea
+    assert "no idea" in _get_idea({"idea_id": 999}, ctx).lower()
+
+
+# ── create_project_from_idea: fake GitHub (repo create + contents PUT) ─────────
+class _RepoClient:
+    def __init__(self, post_resp, put_resp, sink):
+        self._post, self._put, self._sink = post_resp, put_resp, sink
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def post(self, url, headers=None, json=None):
+        self._sink["post_url"] = url
+        self._sink["post_json"] = json
+        return self._post
+
+    def put(self, url, headers=None, json=None):
+        self._sink.setdefault("puts", []).append((url, json))
+        return self._put
+
+
+def _install_repo_github(monkeypatch, post_resp, put_resp=None):
+    monkeypatch.setattr(settings, "github_token", "ghp_test")
+    sink: dict = {}
+    import httpx
+    monkeypatch.setattr(httpx, "Client",
+                        lambda *a, **k: _RepoClient(post_resp, put_resp or _Resp(201, {"content": {}}), sink))
+    return sink
+
+
+def test_create_project_is_gated_not_executed_immediately(db, monkeypatch):
+    """Creating a repo is irreversible + outward-facing — it must go through the
+    confirmation gate, not fire on the first turn."""
+    from app.orchestrator import run
+    from app.models import PendingConfirmation
+    from fakes import install_llm, response, text_block, tool_block, ScriptedLLM
+
+    monkeypatch.setattr(settings, "github_token", "ghp_test")
+    idea = _idea(db, title="Node narrator")
+
+    llm = ScriptedLLM(
+        response([tool_block("create_project_from_idea",
+                             {"idea_id": idea.id, "project_name": "node-narrator"}, id="p1")],
+                 stop_reason="tool_use"),
+        response([text_block("I'll spin up that repo — reply confirm.")], stop_reason="end_turn"),
+    )
+    install_llm(monkeypatch, llm)
+    run(db, channel="sms", thread_key="+15551230000",
+        user_text="make idea a project called node-narrator", actor="+15551230000")
+
+    pend = db.query(PendingConfirmation).filter_by(tool="create_project_from_idea").first()
+    assert pend is not None and pend.status == "pending"
+    db.refresh(idea)
+    assert idea.promoted_url == ""     # nothing created yet
+
+
+def test_confirm_creates_repo_seeds_readme_and_reports_url(db, monkeypatch):
+    from app.orchestrator import run
+    from fakes import install_llm, response, text_block, tool_block, ScriptedLLM
+
+    sink = _install_repo_github(
+        monkeypatch,
+        post_resp=_Resp(201, {"html_url": "https://github.com/mdk32366/node-narrator",
+                              "full_name": "mdk32366/node-narrator", "default_branch": "main"}),
+        put_resp=_Resp(201, {"content": {"sha": "x"}}),
+    )
+    idea = _idea(db, title="Node narrator", body="Read node status aloud on the morning call.")
+
+    llm = ScriptedLLM(
+        response([tool_block("create_project_from_idea",
+                             {"idea_id": idea.id, "project_name": "node-narrator"}, id="p1")],
+                 stop_reason="tool_use"),
+        response([text_block("Reply confirm to create it.")], stop_reason="end_turn"),
+    )
+    install_llm(monkeypatch, llm)
+    run(db, channel="sms", thread_key="+15551230000", user_text="promote it", actor="+15551230000")
+
+    reply = run(db, channel="sms", thread_key="+15551230000", user_text="confirm", actor="+15551230000")
+
+    # repo created with the right name + private default
+    assert sink["post_url"].endswith("/user/repos")
+    assert sink["post_json"]["name"] == "node-narrator"
+    assert sink["post_json"]["private"] is True
+    # README seeded with the idea's content
+    put_paths = [u for u, _ in sink["puts"]]
+    assert any(u.endswith("/contents/README.md") for u in put_paths)
+    readme = next(j for u, j in sink["puts"] if u.endswith("/contents/README.md"))
+    body = base64.b64decode(readme["content"]).decode("utf-8")
+    assert "node-narrator" in body and "Read node status aloud" in body
+    # idea marked promoted, URL reported
+    db.refresh(idea)
+    assert idea.promoted_url == "https://github.com/mdk32366/node-narrator"
+    assert "github.com/mdk32366/node-narrator" in reply
+
+
+def test_name_collision_is_reported_not_half_created(db, monkeypatch):
+    from app.orchestrator import run
+    from fakes import install_llm, response, text_block, tool_block, ScriptedLLM
+
+    _install_repo_github(monkeypatch,
+                         post_resp=_Resp(422, text='{"message":"name already exists on this account"}'))
+    idea = _idea(db, title="Dup")
+
+    llm = ScriptedLLM(
+        response([tool_block("create_project_from_idea",
+                             {"idea_id": idea.id, "project_name": "existing-repo"}, id="p1")],
+                 stop_reason="tool_use"),
+        response([text_block("Reply confirm.")], stop_reason="end_turn"),
+    )
+    install_llm(monkeypatch, llm)
+    run(db, channel="sms", thread_key="+15551230000", user_text="promote", actor="+15551230000")
+    reply = run(db, channel="sms", thread_key="+15551230000", user_text="confirm", actor="+15551230000")
+
+    assert "already exists" in reply.lower() or "name" in reply.lower()
+    db.refresh(idea)
+    assert idea.promoted_url == ""     # not marked promoted on failure
+
+
+def test_already_promoted_idea_is_refused_before_the_gate(db, monkeypatch):
+    from app.orchestrator import run
+    from app.models import PendingConfirmation
+    from fakes import install_llm, response, text_block, tool_block, ScriptedLLM
+
+    monkeypatch.setattr(settings, "github_token", "ghp_test")
+    idea = _idea(db, title="Done already")
+    idea.promoted_url = "https://github.com/mdk32366/done-already"
+    db.commit()
+
+    llm = ScriptedLLM(
+        response([tool_block("create_project_from_idea",
+                             {"idea_id": idea.id, "project_name": "again"}, id="p1")],
+                 stop_reason="tool_use"),
+        response([text_block("...")], stop_reason="end_turn"),
+    )
+    install_llm(monkeypatch, llm)
+    run(db, channel="sms", thread_key="+15551230000", user_text="promote again", actor="+15551230000")
+
+    assert db.query(PendingConfirmation).filter_by(tool="create_project_from_idea").count() == 0
+
+
+def test_create_project_is_gated_and_top_level_only(db):
+    from app.handlers.base import build_registry
+    top = build_registry(include_delegate=True, db=db)
+    assert top.has("create_project_from_idea") and top.is_gated("create_project_from_idea")
+    sub = build_registry(include_delegate=False, db=db)
+    assert not sub.has("create_project_from_idea"), "a gated tool must not reach a sub-agent"
+    assert sub.has("get_idea"), "get_idea is an ungated secretary tool"
+
+
+def test_list_ideas_shows_promoted_marker(ctx, db):
+    idea = _idea(db, title="Shipped idea")
+    idea.promoted_url = "https://github.com/mdk32366/shipped"
+    db.commit()
+    out = _list_ideas({}, ctx)
+    assert "Shipped idea" in out and "promoted" in out.lower()

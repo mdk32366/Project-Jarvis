@@ -74,6 +74,11 @@ _INSTRUCTIONS = """
     * `create_event` — writing to their real calendar (and emailing attendees)
     * `place_stock_order` — trading
     * `book_flight`  — buying a plane ticket. SPENDS REAL MONEY.
+    * `create_project_from_idea` — creating a NEW GitHub repo from a captured idea.
+  To turn an idea into a project: the `secretary` can read the idea (get_idea) and
+  list ideas; but YOU call `create_project_from_idea` yourself, behind the gate.
+  ASK the user what to name the repo if they didn't say — never invent the name —
+  then call it with the idea_id + project_name; the readback + "confirm" create it.
   The `secretary` agent can DRAFT an email (draft_email) but cannot send one.
   When the user approves a draft, YOU call `send_email` yourself with the full
   to/subject/body. Do NOT delegate the send, and do NOT tell the user you are

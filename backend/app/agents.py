@@ -121,7 +121,7 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "NEVER ask the user for their own email address — call whoami. Never ask twice for "
         "someone else's — call lookup_contact first, and save_contact once they tell you.",
         ["draft_email", "add_task", "list_tasks", "complete_task", "cancel_task",
-         "capture_idea", "list_ideas",
+         "capture_idea", "list_ideas", "get_idea",
          "whoami", "lookup_contact", "save_contact", "list_contacts",
          "sync_google_contacts", "google_status",
          "call_me_back", "pending_callbacks", "cancel_callback",
