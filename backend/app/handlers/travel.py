@@ -497,17 +497,38 @@ def _duffel_order_headers() -> dict:
     }
 
 
-def _passenger_from_whoami() -> dict | None:
+def _passport_configured() -> bool:
+    """All three fields Duffel needs to build a passport identity_document."""
+    return bool(settings.owner_passport and settings.owner_passport_expiry
+                and settings.owner_passport_country)
+
+
+def _offer_needs_passport(offer) -> bool:
+    """Does this Duffel offer require passenger identity documents (i.e. is it an
+    international itinerary)? Read from the stored raw offer; default False if the
+    flag isn't present, so Duffel's own error is the backstop."""
+    try:
+        raw = json.loads(offer.raw or "{}")
+    except (ValueError, TypeError):
+        return False
+    return bool(raw.get("passenger_identity_documents_required"))
+
+
+def _passenger_from_whoami(include_passport: bool = False) -> dict | None:
     """Assemble a Duffel passenger from owner settings. Do NOT make the user
     recite a name or date of birth on a phone call (TDD §4.3) — it's
-    configured once via OWNER_* and simply known."""
+    configured once via OWNER_* and simply known.
+
+    `include_passport` adds the identity_document for international itineraries;
+    domestic offers never send it (avoids Duffel rejecting a passport it didn't
+    ask for). The caller gates this on _offer_needs_passport."""
     if not (settings.owner_name and settings.owner_dob and settings.owner_gender
             and settings.owner_email_resolved):
         return None
     parts = settings.owner_name.strip().split(None, 1)
     given = parts[0] if parts else ""
     family = parts[1] if len(parts) > 1 else given
-    return {
+    passenger = {
         "given_name": given,
         "family_name": family,
         "born_on": settings.owner_dob,
@@ -516,6 +537,14 @@ def _passenger_from_whoami() -> dict | None:
         "phone_number": settings.owner_phone,
         "title": "mr" if settings.owner_gender == "m" else "ms",
     }
+    if include_passport and _passport_configured():
+        passenger["identity_documents"] = [{
+            "type": "passport",
+            "unique_identifier": settings.owner_passport.strip(),
+            "expires_on": settings.owner_passport_expiry.strip(),
+            "issuing_country_code": settings.owner_passport_country.strip().upper(),
+        }]
+    return passenger
 
 
 def explain_duffel_error(status: int, body: dict | str) -> str:
@@ -540,6 +569,12 @@ def explain_duffel_error(status: int, body: dict | str) -> str:
         return "Duffel declined the booking — the account balance may be too low."
     if status == 422 and "payment" in detail.lower():
         return "Duffel rejected the payment details for this order."
+    if "identity_document" in code or "passport" in detail.lower() or "identity document" in detail.lower():
+        return (
+            "The airline needs a valid passport to ticket this international "
+            "flight. Check OWNER_PASSPORT, OWNER_PASSPORT_EXPIRY (YYYY-MM-DD), and "
+            "OWNER_PASSPORT_COUNTRY — one may be missing, mistyped, or expired."
+        )
     return f"Booking failed ({status}): {detail or 'no further detail from Duffel'}"
 
 
@@ -591,6 +626,17 @@ def _book_flight_pregate(args: dict, ctx: Context) -> str | None:
             f"obviously-off number. Book this one manually if it's genuinely correct."
         )
 
+    # 3b) International itineraries need a passport. Refuse BEFORE the gate rather
+    # than clearing confirmation + TOTP only to hit an opaque Duffel 422 (audit M5).
+    if _offer_needs_passport(offer) and not _passport_configured():
+        log.warning("book_flight refused intl offer %s — passport not configured", offer_id)
+        return (
+            "That's an international itinerary and the airline needs your passport "
+            "to ticket it, which I don't have on file. Set OWNER_PASSPORT, "
+            "OWNER_PASSPORT_EXPIRY (YYYY-MM-DD), and OWNER_PASSPORT_COUNTRY (the "
+            "two-letter issuing country, e.g. US), then ask me again."
+        )
+
     return None  # proceed to the gate
 
 
@@ -621,7 +667,7 @@ def _book_flight(args: dict, ctx: Context) -> str:
     if not settings.booking_enabled:
         return DUFFEL_DISABLED_MSG
 
-    passenger = _passenger_from_whoami()
+    passenger = _passenger_from_whoami(include_passport=_offer_needs_passport(offer))
     if passenger is None:
         return (
             "I can't book yet — passenger details are incomplete. Set OWNER_NAME, "
