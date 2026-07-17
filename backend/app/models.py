@@ -85,6 +85,10 @@ class PendingConfirmation(Base):
     arguments: Mapped[str] = mapped_column(Text)
     summary: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(16), default="pending")
+    # Groups the gated actions created in ONE request so "do this, that, and the
+    # other" can be read back together and cleared with a single confirm
+    # (TDD-multi-action-buffering). NULL for a standalone single action.
+    batch_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # Second factor (book_flight only; unused/NULL for every other gated tool).
     # See flight-booking TDD §2.3: after 'confirm' clears the readback, status

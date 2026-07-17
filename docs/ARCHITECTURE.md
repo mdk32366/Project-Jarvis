@@ -165,6 +165,13 @@ Everything else executes immediately — the prompt explicitly forbids preemptiv
 outright. A misconfigured agent roster fails closed. Voice confirmation vocabulary is
 narrowed — "ok"/"yeah" never trigger a gated action; "confirm"/"affirmative"/"execute" do.
 
+**Confirmation hygiene & batching.** A pending confirmation expires after
+`pending_confirmation_ttl_seconds` (a stale "yes" can't fire an hours-old action), and only a
+*bare* affirmative confirms — "yes, and also do X" is a new request, not a confirmation.
+Gated actions raised in one request share a `batch_id`, so a compound "do this, that, and the
+other" reads back as one numbered set and a single "confirm" runs them all (or "cancel" drops
+them). `book_flight`'s TOTP is never batched. See `docs/TDD-multi-action-buffering.md`.
+
 ---
 
 ## 5. Agents

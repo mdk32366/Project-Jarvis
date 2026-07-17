@@ -1,8 +1,33 @@
 # TDD: multi-action buffering — "do this, that, and the other" → N deliverables
 
-**Status:** proposal / design. For review with Architect Claude before build. The immediate
-confirmation-hygiene fixes (pending TTL + bare-affirmative matching) shipped separately; this
-TDD is the larger buffered-action-queue design those fixes unblock.
+**Status:** **v1 IMPLEMENTED 2026-07-17** (batch confirm via `PendingConfirmation.batch_id`,
+migration 0015). The confirmation-hygiene fixes (pending TTL + bare-affirmative matching)
+shipped first and this built on them. What shipped vs. deferred is noted per section below;
+§4.2's channel-aware confirmation and §4.4 partial-skip remain open for Architect Claude.
+
+### v1 — what shipped
+- Every gated action raised in ONE request shares a per-turn `batch_id`
+  (`orchestrator.run`). Ungated actions (tasks, docs, sheets) already execute immediately in
+  the sub-agent, so they need no buffering.
+- **No-confirmation work runs FIRST.** `run()` handles tool calls in two passes: pass 1
+  executes every ungated action (and outright refusals), pass 2 buffers the gated ones — so
+  ungated deliverables are completed and their results in hand before any gated action is
+  queued, regardless of the model's tool ordering. (Cross-turn ordering — the model calling
+  all ungated tools in the same turn — remains prompt-directed; nothing can force a deferred
+  tool call.)
+- A single bare "confirm" executes the WHOLE batch in creation order and returns one summary
+  listing every deliverable; a single "cancel" drops them all (`_execute_batch` /
+  `_cancel_batch`). Inherits the TTL + bare-affirmative rules.
+- `book_flight`'s TOTP second factor is explicitly **not** batched — it keeps its own flow.
+- The orchestrator prompt now instructs a compound request be done in one turn and read back
+  as one numbered batch.
+
+### Deferred (open for the architect)
+- **Partial skip** ("send the email but skip the invite") — v1 is all-or-nothing per batch.
+- **Channel-aware confirmation** (§4.2c) — v1 uses batch-confirm on every channel; voice may
+  want sequential/narrated confirmation using the hold-state machinery.
+- **A dedicated `buffered_actions` table** — v1 extended `pending_confirmations` (simpler,
+  reuses the gate/TTL/audit machinery). Revisit only if the batch grows richer state.
 
 ## 1. Problem
 
