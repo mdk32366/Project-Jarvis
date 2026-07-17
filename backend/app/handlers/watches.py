@@ -208,14 +208,14 @@ def _fired(condition: str, observation: str) -> bool:
         resp = create_message(
             system=(
                 "You decide whether a monitoring condition has been met. Answer with "
-                "exactly one word: YES or NO. Nothing else.\\n"
+                "exactly one word: YES or NO. Nothing else.\n"
                 "YES only if the observation clearly satisfies the condition. If it is "
                 "ambiguous, or the observation doesn't address the condition, answer NO — "
                 "a false alarm is worse than a missed one, because the user will switch "
                 "the whole thing off."
             ),
             messages=[{"role": "user", "content":
-                       f"Condition: {condition}\\n\\nObservation: {observation}\\n\\nMet?"}],
+                       f"Condition: {condition}\n\nObservation: {observation}\n\nMet?"}],
             tools=[],
             model=settings.jarvis_router_model,
         )

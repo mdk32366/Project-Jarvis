@@ -35,7 +35,10 @@ def _format_episode(ep, quotes=True) -> str:
         topics = ", ".join(json.loads(ep.topics or "[]"))
     except ValueError:
         topics = ""
-    lines = [f"[{ep.occurred_on.isoformat()}] {ep.title}"
+    # Lead with the id: forget_episode needs it, and this is the ONLY place the
+    # model ever sees it. Without it the model must guess an integer and could
+    # delete the wrong episode (audit H5). Mirrors recall_facts' "#id:" style.
+    lines = [f"#{ep.id} [{ep.occurred_on.isoformat()}] {ep.title}"
              + (f"  (topics: {topics})" if topics else "")]
     lines.append(f"  {ep.summary}")
     if quotes:

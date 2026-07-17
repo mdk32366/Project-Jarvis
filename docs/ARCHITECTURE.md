@@ -272,8 +272,7 @@ backoff, permanent-failure detection, owner notified by email on real failures (
 `email_copy`/`reflect`/`distill_episode`, to avoid recursion).
 
 **Job kinds:** `email_copy`, `morning_briefing`, `briefing_call`, `reflect`,
-`distill_episode`, `commit_idea`, `sync_contacts`, `push_task`, `complete_task_google`,
-`place_calls`.
+`distill_episode`, `commit_idea`, `sync_contacts`, `push_task`, `complete_task_google`.
 
 The worker loop (5 s) also runs the **outbound dialer** (due `outbound_calls`, quiet hours
 21:00–07:00 except callbacks/briefings, max 6/hr), the **watch engine** (LLM-judged

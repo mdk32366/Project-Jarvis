@@ -42,23 +42,31 @@ def upgrade() -> None:
     # create_all-at-boot; SQLite dev/test gets it (with these columns already
     # present) from create_all reading the current models, so there is nothing
     # for alembic to do there either way.
+    # Guard on table existence too, not just dialect: pending_confirmations is a
+    # create_all-only bootstrap table, so on a from-scratch Postgres it does not
+    # exist yet here (0013_baseline creates it afterward, already carrying these
+    # columns). Existence guard + IF NOT EXISTS keeps `upgrade head` from
+    # aborting on a fresh/restored database.
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
-        op.add_column(
-            "pending_confirmations",
-            sa.Column("code_deadline", sa.DateTime(timezone=True), nullable=True),
-        )
-        op.add_column(
-            "pending_confirmations",
-            sa.Column("code_attempts", sa.Integer(), nullable=False, server_default="0"),
+        op.execute(
+            """
+            DO $$
+            BEGIN
+              IF to_regclass('public.pending_confirmations') IS NOT NULL THEN
+                ALTER TABLE pending_confirmations ADD COLUMN IF NOT EXISTS code_deadline TIMESTAMPTZ;
+                ALTER TABLE pending_confirmations ADD COLUMN IF NOT EXISTS code_attempts INTEGER NOT NULL DEFAULT 0;
+              END IF;
+            END $$;
+            """
         )
 
 
 def downgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name == "postgresql":
-        op.drop_column("pending_confirmations", "code_attempts")
-        op.drop_column("pending_confirmations", "code_deadline")
+        op.execute("ALTER TABLE IF EXISTS pending_confirmations DROP COLUMN IF EXISTS code_attempts;")
+        op.execute("ALTER TABLE IF EXISTS pending_confirmations DROP COLUMN IF EXISTS code_deadline;")
     op.drop_index(op.f("ix_flight_offers_offer_id"), table_name="flight_offers")
     op.drop_index(op.f("ix_flight_offers_thread_key"), table_name="flight_offers")
     op.drop_table("flight_offers")

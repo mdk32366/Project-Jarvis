@@ -73,8 +73,8 @@ Fly secrets restart the affected machines. After the deploy settles:
 Check, in order:
 - Worker machine actually running? (`fly status --app jarvis-mdk` — the `worker`
   process must be up; it hosts the scheduler.)
-- `outbound_calls_enabled` true? (call path is gated in `_handle_place_calls`
-  and `_place_due_calls`.)
+- `outbound_calls_enabled` true? (the call path is gated in
+  `outbound_voice._place_due_calls`, which the worker runs directly each tick.)
 - Quiet hours: is the effective end ≤ 3? (a 4 AM call inside quiet is dropped.)
 - Compose returned empty? Today that's silent ("nothing to brief"); TDD §4.4(d)
   makes it notify.

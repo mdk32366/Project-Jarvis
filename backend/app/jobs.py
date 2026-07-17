@@ -281,16 +281,8 @@ def _handle_briefing_call(db: Session, payload: dict) -> str:
     return f"queued briefing call #{row.id}" if row else "could not queue briefing call"
 
 
-@job_handler("place_calls")
-def _handle_place_calls(db: Session, payload: dict) -> str:
-    """Dial anything queued and due. Runs on the worker's tick."""
-    from app.channels.outbound_voice import due_calls, place_call
-
-    if not settings.outbound_calls_enabled:
-        return "outbound disabled"
-
-    rows = due_calls(db)
-    if not rows:
-        return "nothing due"
-    results = [place_call(db, r) for r in rows]
-    return f"placed {len(results)}: " + "; ".join(results)
+# NOTE: the outbound dialer is NOT a job. The worker calls
+# outbound_voice._place_due_calls() directly on every tick (workers/job_worker.py)
+# so a queued call goes out within seconds rather than waiting to be enqueued.
+# A "place_calls" job handler used to live here but was never enqueued by
+# anything — removed in the 2026-07-17 audit cleanup (dead code, audit L1).

@@ -29,6 +29,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def safe_static_file(static_root: str, full_path: str) -> str | None:
+    """Return the real file for `full_path` under `static_root`, or None.
+
+    SECURITY (audit H1): the SPA catch-all serves arbitrary path segments. Without
+    containment, a non-normalizing request like `/..%2fapp%2fconfig.py` resolves
+    through os.path.join to a real backend source file and FileResponse would
+    serve it. realpath + commonpath is the same protection StaticFiles gives
+    /assets; this hand-rolled catch-all must not skip it. Returns None for an
+    empty path, an escaping path, or a non-file so the caller falls back to the
+    SPA index.
+    """
+    if not full_path:
+        return None
+    root = os.path.realpath(static_root)
+    candidate = os.path.realpath(os.path.join(root, full_path))
+    if candidate != root and os.path.commonpath([candidate, root]) != root:
+        return None
+    return candidate if os.path.isfile(candidate) else None
+
+
 def _seed_first_user() -> None:
     """Create the seed admin user if the users table is empty."""
     db = SessionLocal()
@@ -307,15 +327,17 @@ if os.path.isdir(_static_dir):
         name="assets",
     )
 
+    _static_root = os.path.realpath(_static_dir)
+
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str):
         if full_path.startswith("api/"):
             return JSONResponse({"detail": "Not Found"}, status_code=404)
         # "/" is the public compliance landing page (declared above); the SPA
         # lives at /app and its client-side routes below it.
-        candidate = os.path.join(_static_dir, full_path)
-        if full_path and os.path.isfile(candidate):
-            return FileResponse(candidate)
+        safe = safe_static_file(_static_root, full_path)
+        if safe is not None:
+            return FileResponse(safe)
         if os.path.isfile(_index_file):
             return FileResponse(_index_file)
         return JSONResponse({"detail": "Frontend not built"}, status_code=404)
