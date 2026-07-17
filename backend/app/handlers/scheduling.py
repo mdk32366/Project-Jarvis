@@ -166,6 +166,22 @@ def register(reg: Registry) -> None:
     )
 
 
+def _event_notional(args: dict) -> float | None:
+    """The gate's real job here is stopping unreviewed EMAIL, not calendar writes.
+
+    An event with attendees emails them an invite the moment it's created —
+    that's send_email in a party hat, so it must be read back and confirmed
+    (None -> _needs_confirmation returns True unconditionally). An event with
+    no attendees touches only the user's own calendar and is trivially
+    reversible (delete it), so it skips confirmation: 0.0 is below any sane
+    confirm_threshold_usd. Same mechanism travel uses for cheap refundable
+    holds — no new gate plumbing.
+    """
+    if (args.get("attendees") or "").strip():
+        return None
+    return 0.0
+
+
 def register_gated(reg: Registry) -> None:
     """Gated — top-level registry only. See secretary.register_gated."""
     reg.register(
@@ -173,9 +189,10 @@ def register_gated(reg: Registry) -> None:
             "name": "create_event",
             "description": (
                 "Create an event on the user's Google Calendar (a meeting, appointment, "
-                "or block of time). This writes to their real calendar and, if attendees "
-                "are given, EMAILS THEM AN INVITE — so the system will require the user's "
-                "explicit confirmation before it executes."
+                "or block of time). This writes to their real calendar. If attendees "
+                "are given, it EMAILS THEM AN INVITE and the system will require the "
+                "user's explicit confirmation before it executes; with no attendees it "
+                "runs immediately — do not ask the user for permission first."
             ),
             "input_schema": {
                 "type": "object",
@@ -195,7 +212,8 @@ def register_gated(reg: Registry) -> None:
             },
         },
         _create_event,
-        gated=True,                # notional is None -> confirmation ALWAYS required
+        gated=True,
+        notional=_event_notional,  # attendees -> None -> always confirm; none -> 0.0 -> skip
         summarize=_summarize_event,
     )
 

@@ -25,6 +25,7 @@ See TDD §3.
 from __future__ import annotations
 
 import logging
+import re
 from xml.sax.saxutils import escape
 
 from sqlalchemy import select
@@ -381,12 +382,27 @@ def email_transcript(db: Session, call_sid: str, from_number: str) -> None:
 # ── TwiML builders ───────────────────────────────────────────────────────────
 _XML = '<?xml version="1.0" encoding="UTF-8"?>'
 
+# _VOICE_INSTRUCTIONS already tells the model never to read a URL aloud, but a
+# prompt is a request, not a guarantee — when the model quotes an email body or
+# research verbatim, links come with it and the TTS dutifully spells out every
+# character of a 200-char tracking URL. Sanitize deterministically at the last
+# exit before <Say>, where nothing can slip past. Transcripts and the DB keep
+# the full reply; only the spoken audio is filtered.
+_MD_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")            # [text](url) -> text
+_BARE_URL = re.compile(r"(?:https?://|www\.)[^\s<>\"')\]]+", re.IGNORECASE)
+
+
+def _speakable(text: str) -> str:
+    text = _MD_LINK.sub(r"\1", text)
+    text = _BARE_URL.sub("a link", text)
+    return re.sub(r"[ \t]{2,}", " ", text)
+
 
 def _say(text: str) -> str:
     # escape() handles & < > but NOT quotes unless given an entity map. The reply
     # is LLM output — it will contain quoted hostnames. Escape them too.
-    body = escape(text, {'"': "&quot;", "'": "&apos;"})
-    return f'<Say voice="{settings.voice_tts_voice}">{body}</Say>' 
+    body = escape(_speakable(text), {'"': "&quot;", "'": "&apos;"})
+    return f'<Say voice="{settings.voice_tts_voice}">{body}</Say>'
 
 
 def twiml_gather(prompt: str, turn: int, action: str = "/api/voice/gather") -> str:
