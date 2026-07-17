@@ -17,6 +17,9 @@ backend/static/
 # OS
 .DS_Store
 
-# Local tooling / archives (not tracked)
+# Local tooling / archives (not tracked). Code snapshots must NEVER be committed
+# — jarvis.tar.gz landed in history on day one and still can't be fully removed.
 .claude/
-repo.zip
+*.zip
+*.tar.gz
+*.tgz
