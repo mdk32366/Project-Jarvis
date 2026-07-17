@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Callable, Dict, Optional
 
 from sqlalchemy import select
@@ -163,6 +164,43 @@ def _notify_job_failure(db: Session, job: Job, err: Exception) -> None:
         log.warning("could not notify about failed job %s: %s", job.id, e2)
 
 
+def recover_stale_jobs(db: Session, stale_seconds: Optional[int] = None) -> int:
+    """Re-queue jobs stranded in 'running' when their worker died or Fly
+    redeployed mid-job (audit M2). Without this they sit `running` forever:
+    claim_next only ever selects `queued`, so the work — including user-facing
+    kinds like email_copy / push_task / morning_briefing — is silently lost.
+
+    Only jobs whose last update is older than `stale_seconds` are touched, so a
+    job legitimately running right now (recently claimed → recent updated_at) is
+    never swept, even if another worker overlaps during a rolling deploy. A job
+    that has already exhausted its attempts is failed rather than looped forever.
+    """
+    if stale_seconds is None:
+        stale_seconds = settings.job_stale_seconds
+    cutoff = datetime.now(timezone.utc).timestamp() - stale_seconds
+    rows = db.execute(select(Job).where(Job.status == "running")).scalars().all()
+    n = 0
+    for job in rows:
+        ua = job.updated_at
+        if ua is None:
+            continue
+        # updated_at is tz-aware on Postgres, naive (UTC) on SQLite — normalize.
+        ts = ua.replace(tzinfo=timezone.utc).timestamp() if ua.tzinfo is None else ua.timestamp()
+        if ts > cutoff:
+            continue  # still fresh — may be running this very moment
+        if job.attempts >= job.max_attempts:
+            job.status = "error"
+            job.error = (job.error or "").strip() or "stranded in 'running' past max_attempts (worker died mid-job)"
+            log.warning("stale job %s (%s) exhausted attempts -> error", job.id, job.kind)
+        else:
+            job.status = "queued"
+            log.info("recovered stale job %s (%s): running -> queued", job.id, job.kind)
+        n += 1
+    if n:
+        db.commit()
+    return n
+
+
 def process_available(db: Session, limit: int = 100) -> int:
     """Drain up to `limit` queued jobs once. Returns number processed.
 
@@ -268,11 +306,14 @@ def _handle_briefing_call(db: Session, payload: dict) -> str:
     is no dead air while an LLM thinks after you pick up. If composing fails we
     simply don't ring — better silence than a call with nothing to say.
     """
-    from app.briefing import compose_briefing
+    from app.briefing import compose_briefing, is_speakable_briefing
     from app.channels.outbound_voice import schedule_call
 
     text = compose_briefing(db)
-    if not text or text.startswith("(no briefing"):
+    # Only ring with a real briefing. A compose failure returns an error + raw
+    # data dump; reading that aloud is worse than staying silent (audit M3).
+    if not is_speakable_briefing(text):
+        log.warning("briefing not speakable (compose failed or empty) — not ringing")
         return "nothing to brief"
 
     opening = f"Good morning. Here's your brief. {text}"

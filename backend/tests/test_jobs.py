@@ -1,5 +1,9 @@
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import text
+
 from app import jobs
-from app.jobs import claim_next, enqueue, job_handler, process_available, run_job
+from app.jobs import claim_next, enqueue, job_handler, process_available, recover_stale_jobs, run_job
 from app.models import Job
 
 # a throwaway handler for tests
@@ -52,3 +56,37 @@ def test_retry_then_fail(db, monkeypatch):
     j = db.query(Job).first()
     assert j.status == "error" and j.attempts == 2
     assert calls["n"] == 2
+
+
+# ── M2: orphaned-job recovery ────────────────────────────────────────────────
+def _running_job(db, *, attempts=1, max_attempts=3, age_seconds=0) -> Job:
+    """A job in 'running' whose updated_at is `age_seconds` in the past. The raw
+    UPDATE backdates updated_at without tripping the onupdate=now() the ORM would."""
+    j = Job(kind="test_echo", payload="{}", status="running",
+            attempts=attempts, max_attempts=max_attempts)
+    db.add(j); db.commit(); db.refresh(j)
+    old = (datetime.now(timezone.utc) - timedelta(seconds=age_seconds)).replace(tzinfo=None)
+    db.execute(text("UPDATE jobs SET updated_at = :t WHERE id = :i"), {"t": old, "i": j.id})
+    db.commit(); db.refresh(j)
+    return j
+
+
+def test_recover_requeues_stale_running_job(db):
+    j = _running_job(db, age_seconds=10_000)
+    assert recover_stale_jobs(db, stale_seconds=300) == 1
+    db.refresh(j)
+    assert j.status == "queued"   # will be retried instead of lost
+
+
+def test_recover_leaves_a_freshly_claimed_job_alone(db):
+    j = _running_job(db, age_seconds=0)     # claimed just now — may be running
+    assert recover_stale_jobs(db, stale_seconds=300) == 0
+    db.refresh(j)
+    assert j.status == "running"
+
+
+def test_recover_fails_stale_job_past_max_attempts(db):
+    j = _running_job(db, attempts=3, max_attempts=3, age_seconds=10_000)
+    assert recover_stale_jobs(db, stale_seconds=300) == 1
+    db.refresh(j)
+    assert j.status == "error"    # don't loop a poison job forever
