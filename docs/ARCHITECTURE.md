@@ -297,7 +297,7 @@ flowchart LR
 
 ## 8. Database
 
-Postgres on Fly (SQLite in dev/tests). 26 tables in `backend/app/models.py`:
+Postgres on Fly (SQLite in dev/tests). 29 tables in `backend/app/models.py`:
 
 | Group | Tables |
 |---|---|
@@ -307,6 +307,20 @@ Postgres on Fly (SQLite in dev/tests). 26 tables in `backend/app/models.py`:
 | Work | `jobs`, `tasks`, `ideas`, `watches`, `outbound_calls` |
 | Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` |
 | App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below), `scheduler_heartbeat` (briefing-scheduler proof-of-life + catch-up state) |
+| Health | `component` (topology inventory), `remediation` (fault→runbook), `health_result` (transient current status) |
+
+**Health model** (`app/health.py`, TDD §4): a relational map of the deterministic topology.
+`component` is the inventory — every agent, external API, subsystem, and data feed — each row
+carrying its `kind`, `depends_on`, `check_type`, `blast_radius` (trunk subsystems are `multi`),
+and `check_config` (JSON thresholds, e.g. the worker-scheduler heartbeat staleness = 300s, so
+checks read the number from data, not code). `remediation` maps `(component, fault_code)` → a
+stored runbook (the "place to start"), joined at surface time — detection and fix are decoupled.
+`health_result` is transient (latest status per component, overwritten each check). Seeded +
+**reconciled** on startup (`seed_health_topology`, the `seed_agents` lesson — kind/description/
+check fields are refreshed from code so stale reference data can't persist). `component_for_tool`
+is the tool→component lookup that groups `actions_audit` rows by the component they belong to
+(the evidence bridge). *The health **checks** that populate `health_result` are PR-B; PR-A is the
+model + seed only.*
 
 **Runtime settings overlay** (`app/runtime_settings.py`, health TDD §7): a bounded
 allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the four

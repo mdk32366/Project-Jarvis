@@ -453,6 +453,66 @@ class GoogleDocument(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class Component(Base):
+    """The deterministic system topology — one row per agent, external API, or
+    subsystem (health TDD §4.1). Stable reference data, seeded from the topology
+    and reconciled on startup (like the agent roster), editable at runtime.
+
+    `check_type` selects which health check applies; `check_config` (JSON) carries
+    that check's thresholds (e.g. the heartbeat staleness seconds), so PR-B reads
+    them from here rather than hardcoding. `blast_radius=multi` marks the trunk
+    (a failure there takes down many limbs) so it surfaces first.
+    """
+
+    __tablename__ = "component"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32))          # agent|external_api|internal_subsystem|data_feed
+    description: Mapped[str] = mapped_column(String(300), default="")
+    depends_on: Mapped[str] = mapped_column(Text, default="")   # comma list of component names / secret names
+    check_type: Mapped[str] = mapped_column(String(32), default="none")  # liveness|secret_age|published_expiry|heartbeat|freshness|none
+    blast_radius: Mapped[str] = mapped_column(String(16), default="single")  # single|multi
+    check_config: Mapped[str] = mapped_column(Text, default="")  # JSON thresholds for the check
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Remediation(Base):
+    """The fault -> fix mapping (health TDD §4.2). A tripped check emits a
+    `fault_code` against a `component`; the surfacing layer JOINS to the matching
+    row for the "place to start". Seeded, runtime-editable (edit a row when a
+    consent flow changes — no redeploy)."""
+
+    __tablename__ = "remediation"
+    __table_args__ = (UniqueConstraint("component", "fault_code", name="uq_remediation_component_fault"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    component: Mapped[str] = mapped_column(String(64), index=True)
+    fault_code: Mapped[str] = mapped_column(String(64))
+    runbook: Mapped[str] = mapped_column(Text)
+    severity: Mapped[str] = mapped_column(String(16), default="warn")   # info|warn|critical
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class HealthResult(Base):
+    """Transient current status — latest per component, overwritten each check
+    (health TDD §4.3). NOT history and NOT reference data: kept separate from
+    `component`/`remediation` on purpose. `fault_code` (when not ok) joins to
+    `remediation` for the runbook."""
+
+    __tablename__ = "health_result"
+
+    component: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="unknown")  # ok|degraded|down|unknown
+    fault_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    age_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class SchedulerHeartbeat(Base):
     """Proof-of-life for the worker's briefing scheduler (health TDD §5.2, §6).
 
