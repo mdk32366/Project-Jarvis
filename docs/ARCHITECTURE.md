@@ -297,7 +297,7 @@ flowchart LR
 
 ## 8. Database
 
-Postgres on Fly (SQLite in dev/tests). 25 tables in `backend/app/models.py`:
+Postgres on Fly (SQLite in dev/tests). 26 tables in `backend/app/models.py`:
 
 | Group | Tables |
 |---|---|
@@ -306,7 +306,7 @@ Postgres on Fly (SQLite in dev/tests). 25 tables in `backend/app/models.py`:
 | Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` |
 | Work | `jobs`, `tasks`, `ideas`, `watches`, `outbound_calls` |
 | Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` |
-| App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below) |
+| App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below), `scheduler_heartbeat` (briefing-scheduler proof-of-life + catch-up state) |
 
 **Runtime settings overlay** (`app/runtime_settings.py`, health TDD §7): a bounded
 allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the four
@@ -336,9 +336,18 @@ died or Fly redeployed mid-job) is re-queued rather than lost, or failed if past
 The worker loop (5 s) also runs the **outbound dialer** (due `outbound_calls`, quiet hours
 defaulting 21:00–07:00 except callbacks/briefings, max 6/hr — window and cap both runtime-
 overridable via the settings overlay), the **watch engine** (LLM-judged
-conditions that ring the owner when they fire), and an APScheduler cron for the **morning
-briefing** — calendar + portfolio + weather/marine + traffic + news gathered concurrently,
-composed in the principal's voice, delivered by email or phone call.
+conditions that ring the owner when they fire), and the **morning briefing** — calendar +
+portfolio + weather/marine + traffic + news gathered concurrently, composed in the
+principal's voice, delivered by email or phone call.
+
+**Briefing scheduler (health TDD §6):** a per-tick enqueuer, not an APScheduler cron. Each
+tick reads the effective briefing time (runtime overlay) and fires when that minute has
+**passed** today and nothing has briefed today — so a missed run (worker was down at the
+minute) still catches up once, guarded against double-fire by `scheduler_heartbeat.last_
+briefing_date` (owner tz), and a runtime time change takes effect within a tick with **no
+restart**. Every tick writes `scheduler_heartbeat` (`beat_at`, `next_run_at`, `enabled`) —
+the proof-of-life the §5.2 health check reads to tell a live scheduler from a dead one. A
+scheduled brief that composes empty is **emailed** (visible), never silently dropped.
 
 ---
 
