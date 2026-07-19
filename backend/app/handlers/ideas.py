@@ -27,7 +27,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from app.config import settings
-from app.handlers.base import Context, Registry
+from app.handlers.base import Context, Registry, ToolFault
 from app.models import Idea
 
 log = logging.getLogger(__name__)
@@ -135,7 +135,7 @@ def _explain_repo_error(status: int, text: str) -> str:
         return ("A repo with that name already exists on the account — pick a different "
                 "project name and I'll try again.")
     if status == 401:
-        return "GitHub rejected the token. Check GITHUB_TOKEN (needs `repo` scope)."
+        raise ToolFault("GitHub rejected the token. Check GITHUB_TOKEN (needs `repo` scope).")
     if status == 403:
         return "GitHub refused the request (permissions or rate limit). Try again shortly."
     return f"GitHub wouldn't create the repo ({status}): {text[:200]}"
@@ -215,9 +215,11 @@ def _create_project_from_idea(args: dict, ctx: Context) -> str:
                 )
                 if pr.status_code not in (200, 201):
                     log.warning("seed PUT %s failed (%s): %s", path, pr.status_code, pr.text[:200])
+    except ToolFault:
+        raise  # a deliberate fault (e.g. 401) keeps its own message — don't rewrap
     except Exception as e:  # noqa: BLE001 — a tool must never crash the turn
         log.error("create_project_from_idea #%s failed: %s", idea.id, e)
-        return f"Couldn't create the project repo: {e}"
+        raise ToolFault(f"Couldn't create the project repo: {e}")
 
     idea.promoted_url = html_url
     ctx.db.commit()

@@ -24,7 +24,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from app.config import settings
-from app.handlers.base import Context, Registry
+from app.handlers.base import Context, Registry, ToolFault
 
 log = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def _tailscale_status(args: dict, ctx: Context) -> str:
         devices = _fetch_devices()
     except Exception as e:  # noqa: BLE001
         log.error("tailscale failed: %s", e)
-        return f"Couldn't reach Tailscale: {e}"
+        raise ToolFault(f"Couldn't reach Tailscale: {e}")
 
     if not devices:
         return "No devices on the tailnet."

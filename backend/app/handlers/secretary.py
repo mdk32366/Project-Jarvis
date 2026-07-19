@@ -23,7 +23,7 @@ import logging
 import re
 
 from app.config import settings
-from app.handlers.base import Context, Registry
+from app.handlers.base import Context, Registry, ToolFault
 
 log = logging.getLogger(__name__)
 
@@ -62,7 +62,7 @@ def _send_email(args: dict, ctx: Context) -> str:
         msg_id = smtp_send(to, subject, body)
     except Exception as e:  # noqa: BLE001
         log.error("send_email failed: %s", e)
-        return f"Send failed: {e}"
+        raise ToolFault(f"Send failed: {e}")
     return f"Sent to {to} — subject: {subject}"
 
 

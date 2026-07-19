@@ -1,7 +1,10 @@
 from datetime import datetime
+
+import pytest
+
 from app.config import settings
 from app.handlers import scheduling
-from app.handlers.base import Context
+from app.handlers.base import Context, ToolFault
 
 
 def test_calendar_unconfigured(db, monkeypatch):
@@ -46,8 +49,13 @@ def test_calendar_error_is_caught(db, monkeypatch):
     def boom(*a): raise RuntimeError("api down")
     monkeypatch.setattr(scheduling, "_fetch_events", boom)
     ctx = Context(db=db, channel="web", actor="me", thread_key="t")
-    out = scheduling._calendar_lookup({"range": "today"}, ctx)
-    assert "Error reading calendar" in out
+    # A calendar read failure now RAISES ToolFault — the structured fault signal
+    # the audit/health substrate keys off (PR-0) — carrying the same informative
+    # message. The "never crashes the loop" guarantee moved to the run_tool /
+    # execute seam, which catches it and records status="error"
+    # (see test_audit_status.py).
+    with pytest.raises(ToolFault, match="Error reading calendar"):
+        scheduling._calendar_lookup({"range": "today"}, ctx)
 
 
 def test_load_sa_info_json_and_base64():

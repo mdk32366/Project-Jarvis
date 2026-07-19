@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 
 from app.config import settings
-from app.handlers.base import Context, Registry
+from app.handlers.base import Context, Registry, ToolFault
 
 log = logging.getLogger(__name__)
 
@@ -99,15 +99,17 @@ def _web_search(args: dict, ctx: Context) -> str:
         with httpx.Client(timeout=_TIMEOUT) as client:
             r = client.post(_API, json=payload)
         if r.status_code == 401:
-            return "Tavily rejected the API key. Check TAVILY_API_KEY."
+            raise ToolFault("Tavily rejected the API key. Check TAVILY_API_KEY.")
         if r.status_code == 432:
-            return "Tavily says the plan is out of credits."
+            raise ToolFault("Tavily says the plan is out of credits.")
         if r.status_code >= 400:
-            return f"Search failed ({r.status_code}): {r.text[:200]}"
+            raise ToolFault(f"Search failed ({r.status_code}): {r.text[:200]}")
         data = r.json()
+    except ToolFault:
+        raise  # a deliberate fault (401, out-of-credits) keeps its own message
     except Exception as e:  # noqa: BLE001 — a tool must never kill the turn
         log.error("tavily search failed: %s", e)
-        return f"Couldn't reach the search service: {e}"
+        raise ToolFault(f"Couldn't reach the search service: {e}")
 
     answer = (data.get("answer") or "").strip()
     results = data.get("results") or []

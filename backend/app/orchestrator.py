@@ -507,8 +507,8 @@ def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, 
             elif _needs_confirmation(registry, tu.name, tu.input):
                 gated.append(tu)  # buffer AFTER all ungated work below
             else:
-                result = registry.execute(tu.name, tu.input, ctx)
-                _audit(db, ctx, tu.name, tu.input, result, "ok")
+                result, status = registry.run_tool(tu.name, tu.input, ctx)
+                _audit(db, ctx, tu.name, tu.input, result, status)
                 contents[tu.id] = str(result)
 
         for tu in gated:
