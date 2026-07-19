@@ -319,13 +319,25 @@ stored runbook (the "place to start"), joined at surface time — detection and 
 **reconciled** on startup (`seed_health_topology`, the `seed_agents` lesson — kind/description/
 check fields are refreshed from code so stale reference data can't persist). `component_for_tool`
 is the tool→component lookup that groups `actions_audit` rows by the component they belong to
-(the evidence bridge). *The health **checks** that populate `health_result` are PR-B; PR-A is the
-model + seed only.*
+(the evidence bridge).
+
+**Health checks** (`app/health_checks.py`, TDD §5): `run_all_checks(db)` runs each component's
+check (by `check_type`) and upserts `health_result` (trunk first). A check NEVER raises into its
+caller — a broken check returns `unknown` with the error in `detail`, so one can't take the page
+down. v1 set: **liveness** (derives `last_success`/`last_failure` from `actions_audit` — a
+`confirmed`/`refused` row counts as ok, the gate working; no evidence → `unknown`, never green),
+**heartbeat** (reads `scheduler_heartbeat` vs the seeded `stale_seconds`; disabled → ok-labeled,
+not down), **freshness** (location pings vs the seeded thresholds, suppressed outside the runtime
+active-hours window), and **app up-status**. Secret-age (needs a Fly API token in-container) and
+published-expiry (Google refresh tokens publish none — nothing honest to report) are deliberately
+deferred rather than shipped as perpetual `unknown`. *Surfacing (`/api/status/full`, the page) is
+PR-D/PR-E.*
 
 **Runtime settings overlay** (`app/runtime_settings.py`, health TDD §7): a bounded
 allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the four
-`quiet_hours_*` fields, `outbound_calls_enabled`, `max_outbound_calls_per_hour` — each
-overridable at runtime without a redeploy. `get_effective(db, key)` returns the
+`quiet_hours_*` fields, `outbound_calls_enabled`, `max_outbound_calls_per_hour`, and the
+`location_active_start/end_hour` freshness window — each overridable at runtime without a
+redeploy. `get_effective(db, key)` returns the
 `runtime_settings` override if present, else the env/`Settings` default (never mutating the
 `@lru_cache` singleton). Every runtime reader of one of these keys reads through
 `get_effective`, not `settings.X`. The allow-list is the enforcement boundary: **a secret
