@@ -330,7 +330,12 @@ down. v1 set: **liveness** (derives `last_success`/`last_failure` from `actions_
 not down), **freshness** (location pings vs the seeded thresholds, suppressed outside the runtime
 active-hours window), and **app up-status**. Secret-age (needs a Fly API token in-container) and
 published-expiry (Google refresh tokens publish none — nothing honest to report) are deliberately
-deferred rather than shipped as perpetual `unknown`. Liveness only counts audit rows from the
+deferred rather than shipped as perpetual `unknown`. The **`self_whoami`** tool (ungated,
+universal — registered in both registry branches like `get_current_datetime`, voice-reachable)
+answers "what am I running / how are you feeling" in chat from `app/provenance.py` (commit + build
+time **baked** via Dockerfile ARG, Fly deploy metadata, `in_service_days` anchored on the first
+user row) plus a live `run_all_checks` rollup — the same state the page shows, so chat and page
+can't disagree. Liveness only counts audit rows from the
 PR-0 truthful-audit epoch onward — pre-epoch rows are `ok` by construction and would be false
 evidence. `status_payload(db)` (behind `GET /api/status/full`) runs the checks, upserts
 `health_result`, and joins the runbook + evidence for anything not-ok. *The exception-first page

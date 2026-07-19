@@ -55,6 +55,7 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "delegate",  # required — the only route to any tool
     # ungated, universal, no side effects — available everywhere (TDD #11 §4.1)
     "get_current_datetime",
+    "self_whoami",  # JARVIS's own provenance + health ("how are you feeling")
     # netstatus
     "get_node_status",
     "get_service_health",
