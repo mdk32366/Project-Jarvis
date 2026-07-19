@@ -36,9 +36,28 @@ def run_once() -> int:
         _place_due_calls(db)
         _check_watches(db)
         _briefing_tick(db)
+        _maybe_prune_request_log(db)
         return n
     finally:
         db.close()
+
+
+_last_request_log_prune = [0.0]   # monotonic ts of the last prune (module state)
+
+
+def _maybe_prune_request_log(db) -> None:
+    """Sweep the request log at most hourly (time-based 90d + row-count valve).
+    Never raises — a prune hiccup must not stop the job queue."""
+    try:
+        prev = _last_request_log_prune[0]
+        now = time.monotonic()
+        if prev and now - prev < 3600:
+            return
+        _last_request_log_prune[0] = now
+        from app.request_log import prune
+        prune(db)
+    except Exception as e:  # noqa: BLE001
+        log.error("request_log prune error: %s", e)
 
 
 def _check_watches(db) -> None:

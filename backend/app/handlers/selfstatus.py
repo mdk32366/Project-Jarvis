@@ -35,6 +35,17 @@ def _self_whoami(args: dict, ctx: Context) -> str:
         lines.append("Nothing is down or degraded right now.")
     if unknown:
         lines.append("No recent activity to judge: " + ", ".join(sorted(r.component for r in unknown)) + ".")
+
+    # What have I done recently (request log, §9 Phase 2)?
+    from app.request_log import recent_summary
+
+    rs = recent_summary(ctx.db)
+    if rs["window"]:
+        by = ", ".join(f"{v} {k}" for k, v in sorted(rs["by_disposition"].items()))
+        lines.append(f"Recently: {rs['window']} requests ({by}).")
+        if rs["recent_errors"]:
+            e = rs["recent_errors"][0]
+            lines.append(f"Last error: \"{e['trigger']}\" — {e['error']}")
     return "\n".join(lines)
 
 

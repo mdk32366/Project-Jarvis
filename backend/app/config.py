@@ -168,6 +168,11 @@ class Settings(BaseSettings):
     # Fly secret age past this many days is flagged as "aging" (real Fly metadata,
     # not a fabricated countdown). The health check reads it hourly-cached.
     secret_age_flag_days: int = 90
+    # Request-log retention: TIME is the primary policy (a busy week must not evict
+    # the quiet month you need to investigate). max_rows is a safety valve so a
+    # runaway loop can't fill a 512MB disk before the daily time-sweep runs.
+    request_log_retention_days: int = 90
+    request_log_max_rows: int = 50000
 
     # ── Web search (Tavily) ──────────────────────────────────────────────────
     # Purpose-built for LLMs: search + extract + synthesize in one call, returning
