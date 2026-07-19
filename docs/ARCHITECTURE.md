@@ -330,8 +330,11 @@ down. v1 set: **liveness** (derives `last_success`/`last_failure` from `actions_
 not down), **freshness** (location pings vs the seeded thresholds, suppressed outside the runtime
 active-hours window), and **app up-status**. Secret-age (needs a Fly API token in-container) and
 published-expiry (Google refresh tokens publish none — nothing honest to report) are deliberately
-deferred rather than shipped as perpetual `unknown`. *Surfacing (`/api/status/full`, the page) is
-PR-D/PR-E.*
+deferred rather than shipped as perpetual `unknown`. Liveness only counts audit rows from the
+PR-0 truthful-audit epoch onward — pre-epoch rows are `ok` by construction and would be false
+evidence. `status_payload(db)` (behind `GET /api/status/full`) runs the checks, upserts
+`health_result`, and joins the runbook + evidence for anything not-ok. *The exception-first page
+is PR-E.*
 
 **Runtime settings overlay** (`app/runtime_settings.py`, health TDD §7): a bounded
 allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the four
@@ -393,7 +396,9 @@ by FastAPI itself — one origin, no separate frontend deploy.
 REST surface (`/api/...`): auth (`/auth/login`, `/auth/me`, `/auth/change-password`),
 chat + history, memory CRUD + audit, agent-config CRUD, action audit, briefing on demand,
 runtime settings (`GET /settings` effective-value+source, `PUT /settings/{key}` — 403 for a
-safety-critical key without confirm, 404 for a non-allow-list key), health probes — plus
+safety-critical key without confirm, 404 for a non-allow-list key), the true status surface
+(`GET /status/full` — runs every health check fresh, joins each not-ok component's stored
+runbook + recent failing audit rows as evidence; auth-gated, no secrets), health probes — plus
 the unauthenticated-but-signed channel webhooks (`/sms/inbound`, `/voice/*`, `/location`).
 Public `/`, `/privacy`, `/terms` are carrier-compliance pages.
 
