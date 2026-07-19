@@ -161,7 +161,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # (delegate) and governs the one irreversible action (trading) behind the
         # confirmation gate. All read-only/domain tools live in specialist agents.
         from app import agents
-        from app.handlers import datetime_tools, finance, ideas, scheduling, secretary, travel
+        from app.handlers import datetime_tools, finance, ideas, scheduling, secretary, selfstatus, travel
 
         agents.register_delegate(reg, db)
         finance.register_trading(reg)
@@ -176,6 +176,10 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # get_current_datetime is ungated and universal — registered at top level
         # AND in the sub-agent branch (TDD §4.1: both branches).
         datetime_tools.register(reg)
+        # self_whoami: JARVIS's own provenance + health. Universal + ungated, so
+        # the orchestrator (a pure delegator) can answer "how are you feeling"
+        # directly instead of delegating it (health TDD §9).
+        selfstatus.register(reg)
         if allow is not None:
             reg.restrict(allow)
         return reg
@@ -184,7 +188,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
     # no gated trading -> no recursion, no ungoverned money actions).
     from app.handlers import (audit, callback, contacts, datetime_tools, episodes,
                               finance, general, googledocs, ideas, infra, location,
-                              maps, netstatus, scheduling, secretary, tailscale,
+                              maps, netstatus, scheduling, secretary, selfstatus, tailscale,
                               tasks, travel, watches, websearch)
 
     finance.register(reg)
@@ -206,6 +210,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
     tailscale.register(reg)
     watches.register(reg)
     googledocs.register(reg)
+    selfstatus.register(reg)   # self_whoami — universal, ungated (both branches)
     # get_current_datetime: ungated, universal, no side effects.
     # Registered in BOTH branches (TDD §4.1). Sub-agents can always call it;
     # run_agent() also auto-injects it into every agent's effective tool list
