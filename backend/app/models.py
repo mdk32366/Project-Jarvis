@@ -451,3 +451,21 @@ class GoogleDocument(Base):
     url: Mapped[str] = mapped_column(String(512), default="")
     thread_key: Mapped[str] = mapped_column(String(255), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RuntimeSetting(Base):
+    """A runtime override for a bounded allow-list of behavioral settings
+    (briefing time, quiet hours, outbound-call toggles). The overlay accessor
+    `app.runtime_settings.get_effective` returns this row's value when present,
+    else the env/`Settings` default — so behavior is visible and changeable
+    without a redeploy (health TDD §7). Value is stored as text and coerced to
+    the key's declared type on read. NEVER holds a secret: the allow-list in
+    `runtime_settings.ALLOWED_KEYS` is the enforcement boundary.
+    """
+
+    __tablename__ = "runtime_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

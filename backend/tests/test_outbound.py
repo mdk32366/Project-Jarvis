@@ -84,7 +84,7 @@ def test_does_not_ring_at_3am(db, owner, monkeypatch):
     tz = ZoneInfo(settings.calendar_timezone)
     three_am = datetime.now(tz).replace(hour=3, minute=0)
 
-    assert ov.in_quiet_hours(three_am) is True
+    assert ov.in_quiet_hours(db, three_am) is True
 
     # An ALERT is not owner-scheduled, so quiet hours hold it until morning.
     # Briefings and callbacks are exempt (the owner set/asked for those) — see
@@ -107,45 +107,45 @@ def test_a_callback_the_user_ASKED_for_is_exempt_from_quiet_hours(db, owner, mon
 
 
 # ── Quiet hours: minute-granularity window (e.g. 21:00–03:30) ────────────────
-def test_quiet_minute_precision_inside_before_end(monkeypatch):
+def test_quiet_minute_precision_inside_before_end(db, monkeypatch):
     _quiet(monkeypatch, 21, 0, 3, 30)
     tz = ZoneInfo(settings.calendar_timezone)
-    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=3, minute=15)) is True
+    assert ov.in_quiet_hours(db, datetime.now(tz).replace(hour=3, minute=15)) is True
 
 
-def test_quiet_minute_precision_just_after_end(monkeypatch):
+def test_quiet_minute_precision_just_after_end(db, monkeypatch):
     _quiet(monkeypatch, 21, 0, 3, 30)
     tz = ZoneInfo(settings.calendar_timezone)
-    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=3, minute=45)) is False
+    assert ov.in_quiet_hours(db, datetime.now(tz).replace(hour=3, minute=45)) is False
 
 
-def test_quiet_wraps_midnight_evening_is_inside(monkeypatch):
+def test_quiet_wraps_midnight_evening_is_inside(db, monkeypatch):
     _quiet(monkeypatch, 21, 0, 3, 30)
     tz = ZoneInfo(settings.calendar_timezone)
-    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=22, minute=0)) is True
+    assert ov.in_quiet_hours(db, datetime.now(tz).replace(hour=22, minute=0)) is True
 
 
-def test_quiet_midday_is_outside(monkeypatch):
+def test_quiet_midday_is_outside(db, monkeypatch):
     _quiet(monkeypatch, 21, 0, 3, 30)
     tz = ZoneInfo(settings.calendar_timezone)
-    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=12, minute=0)) is False
+    assert ov.in_quiet_hours(db, datetime.now(tz).replace(hour=12, minute=0)) is False
 
 
-def test_quiet_non_wrapping_window(monkeypatch):
+def test_quiet_non_wrapping_window(db, monkeypatch):
     """A same-day window (start < end) still works with minute precision."""
     _quiet(monkeypatch, 13, 0, 14, 0)
     tz = ZoneInfo(settings.calendar_timezone)
-    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=13, minute=30)) is True
+    assert ov.in_quiet_hours(db, datetime.now(tz).replace(hour=13, minute=30)) is True
 
 
-def test_quiet_defaults_preserve_legacy_behavior(monkeypatch):
+def test_quiet_defaults_preserve_legacy_behavior(db, monkeypatch):
     """Minute fields default to 0, so a 21:00–07:00 window behaves exactly as it
     did before this change."""
     monkeypatch.setattr(settings, "quiet_hours_start", 21)
     monkeypatch.setattr(settings, "quiet_hours_end", 7)
     tz = ZoneInfo(settings.calendar_timezone)
-    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=3, minute=0)) is True
-    assert ov.in_quiet_hours(datetime.now(tz).replace(hour=12, minute=0)) is False
+    assert ov.in_quiet_hours(db, datetime.now(tz).replace(hour=3, minute=0)) is True
+    assert ov.in_quiet_hours(db, datetime.now(tz).replace(hour=12, minute=0)) is False
 
 
 # ── Quiet hours: the briefing is exempt (owner set its time) ─────────────────
@@ -165,7 +165,7 @@ def test_due_calls_briefing_inside_quiet_is_exempt(db, owner, monkeypatch):
     tz = ZoneInfo(settings.calendar_timezone)
     two_am = datetime.now(tz).replace(hour=2, minute=0)
 
-    assert ov.in_quiet_hours(two_am) is True
+    assert ov.in_quiet_hours(db, two_am) is True
     ov.schedule_call(db, opening="your brief", kind="briefing")
     assert len(ov.due_calls(db, now=two_am)) == 1
 
