@@ -440,6 +440,30 @@ def _enqueue_reflect(db: Session, ctx: Context, convo_id: int) -> None:
 
 
 def run(db: Session, channel: str, thread_key: str, user_text: str, actor: str, subject: str = "") -> str:
+    """Top-level request entry, wrapped in a request-log receipt (§9 Phase 2).
+
+    The receipt is written + committed on its own session BEFORE the work, and
+    resolved in `finally` on another — so a crashed or killed request still leaves
+    a row (an `in_progress` row that never resolved is itself the signal). ~4ms on
+    the prod VM, and voice orchestrates in a background task, so it's off the call's
+    critical path. A logging failure never breaks the request."""
+    import time as _time
+
+    from app import request_log
+
+    req_id = request_log.start(channel, thread_key, actor, user_text)
+    t0 = _time.perf_counter()
+    disposition, error = "ok", ""
+    try:
+        return _run_inner(db, channel, thread_key, user_text, actor, subject)
+    except Exception as e:  # noqa: BLE001 — record the crash, then re-raise
+        disposition, error = "error", repr(e)
+        raise
+    finally:
+        request_log.finish(req_id, disposition, int((_time.perf_counter() - t0) * 1000), error)
+
+
+def _run_inner(db: Session, channel: str, thread_key: str, user_text: str, actor: str, subject: str = "") -> str:
     """Process one inbound message and return JARVIS's reply text."""
     # Voice: restrict the top-level registry. NOTE `delegate` MUST stay in the
     # allowlist — the top-level registry is a pure delegator and it is voice's

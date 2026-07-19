@@ -297,13 +297,13 @@ flowchart LR
 
 ## 8. Database
 
-Postgres on Fly (SQLite in dev/tests). 29 tables in `backend/app/models.py`:
+Postgres on Fly (SQLite in dev/tests). 30 tables in `backend/app/models.py`:
 
 | Group | Tables |
 |---|---|
 | Conversation | `conversations`, `messages`, `voice_turns` |
 | Memory | `persona_profile`, `preferences`, `memories`, `memory_embeddings`, `episodes`, `episode_quotes` |
-| Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` |
+| Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` (per-*tool*), `request_log` (per-*request* — one coarse row per top-level request; retention 90d + row cap) |
 | Work | `jobs`, `tasks`, `ideas`, `watches`, `outbound_calls` |
 | Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` |
 | App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below), `scheduler_heartbeat` (briefing-scheduler proof-of-life + catch-up state) |
@@ -334,8 +334,12 @@ deferred rather than shipped as perpetual `unknown`. The **`self_whoami`** tool 
 universal — registered in both registry branches like `get_current_datetime`, voice-reachable)
 answers "what am I running / how are you feeling" in chat from `app/provenance.py` (commit + build
 time **baked** via Dockerfile ARG, Fly deploy metadata, `in_service_days` anchored on the first
-user row) plus a live `run_all_checks` rollup — the same state the page shows, so chat and page
-can't disagree. Liveness only counts audit rows from the
+user row), a live `run_all_checks` rollup — the same state the page shows, so chat and page can't
+disagree — and a **request-log** rollup ("what have I done recently"). `app/request_log.py` writes
+one coarse row per top-level `orchestrator.run()` on an INDEPENDENT session (committed before the
+work, resolved in `finally` on another) so a crashed request still leaves a row recorded `error`
+(~4ms on the VM, off the voice critical path which orchestrates in a background task). Retention is
+time-primary (90d) with a row-count safety valve, swept hourly by the worker. Liveness only counts audit rows from the
 PR-0 truthful-audit epoch onward — pre-epoch rows are `ok` by construction and would be false
 evidence. `status_payload(db)` (behind `GET /api/status/full`) runs the checks, upserts
 `health_result`, and joins the runbook + evidence for anything not-ok. *The exception-first page

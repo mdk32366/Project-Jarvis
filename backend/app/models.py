@@ -453,6 +453,29 @@ class GoogleDocument(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class RequestLog(Base):
+    """One coarse row per top-level request — "what was JARVIS *asked*" (health
+    TDD §9 Phase 2). Grain: per-request (a single "book me a flight" is ONE row),
+    vs `actions_audit` which is per-*tool* (search + gate + book = several). The
+    receipt is written at request start and committed independently, so a crashed
+    request still leaves a row (an `in_progress` row that never resolved is itself
+    the signal). Retention is time-based (§11) with a row-count safety valve.
+    """
+
+    __tablename__ = "request_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True)
+    channel: Mapped[str] = mapped_column(String(32), default="")
+    actor: Mapped[str] = mapped_column(String(255), default="")
+    thread_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    trigger: Mapped[str] = mapped_column(String(300), default="")   # first ~200 chars of the ask
+    disposition: Mapped[str] = mapped_column(String(16), default="in_progress")  # in_progress|ok|error
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_detail: Mapped[str] = mapped_column(Text, default="")
+
+
 class Component(Base):
     """The deterministic system topology — one row per agent, external API, or
     subsystem (health TDD §4.1). Stable reference data, seeded from the topology
