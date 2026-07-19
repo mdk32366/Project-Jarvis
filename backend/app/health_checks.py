@@ -43,6 +43,15 @@ log = logging.getLogger(__name__)
 _OK_AUDIT = {"ok", "confirmed", "refused"}
 _LIVENESS_WINDOW_DAYS = 30   # bounded lookback over actions_audit
 
+# The audit substrate only became truthful at the PR-0 deploy (commit 9855a28,
+# deployed 2026-07-19T19:09:19Z): before it, every actions_audit row was
+# status="ok" by construction (the old code hardcoded it). Those rows are NOT
+# evidence of health — counting them would let a component seen ONLY before the
+# epoch report a false "ok" instead of the honest "unknown" (the exact false-green
+# the "no evidence → unknown" rule exists to prevent). Liveness floors its window
+# here, so pre-epoch fabricated history can't dilute the signal.
+_AUDIT_TRUTHFUL_EPOCH = datetime(2026, 7, 19, 19, 9, 19, tzinfo=timezone.utc)
+
 
 @dataclass
 class CheckResult:
@@ -90,7 +99,7 @@ def check_liveness(db: Session, c: Component) -> CheckResult:
     """Derive credential/API liveness from recent `actions_audit` (§5.1) — no new
     write path. Reads the outcomes of the component's tools: unhealthy iff its most
     recent call FAILED; `unknown` when there's no evidence (absence ≠ health)."""
-    since = _now() - timedelta(days=_LIVENESS_WINDOW_DAYS)
+    since = max(_now() - timedelta(days=_LIVENESS_WINDOW_DAYS), _AUDIT_TRUTHFUL_EPOCH)
     rows = [
         r for r in db.query(ActionAudit).filter(ActionAudit.created_at >= since).all()
         if component_for_tool(r.tool) == c.name

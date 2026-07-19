@@ -49,8 +49,10 @@ def test_liveness_down_on_recent_failure(db):
 
 def test_liveness_ok_when_latest_succeeds(db):
     seed_health_topology(db)
-    _audit(db, "search_flights", "error", when=_now() - timedelta(hours=2))
-    _audit(db, "search_flights", "ok", when=_now())   # recovered since the failure
+    # Recent offsets: always post-epoch AND inside the 30-day window, so the test
+    # stays stable regardless of wall-clock.
+    _audit(db, "search_flights", "error", when=_now() - timedelta(minutes=10))
+    _audit(db, "search_flights", "ok", when=_now() - timedelta(minutes=1))  # recovered
     r = check_liveness(db, _c(db, "duffel"))
     assert r.status == "ok"
     assert r.last_success_at and r.last_failure_at    # both timestamps captured
@@ -70,6 +72,18 @@ def test_liveness_resolves_agent_prefixed_rows(db):
     seed_health_topology(db)
     _audit(db, "researcher:web_search", "error")      # sub-agent audit row
     assert check_liveness(db, _c(db, "tavily")).status == "down"
+
+
+def test_liveness_ignores_pre_epoch_rows(db):
+    """Rows before the PR-0 audit-truthful epoch are 'ok' by construction and are
+    NOT evidence — a component seen ONLY before the epoch is unknown, not falsely
+    green (17 days of fabricated history must not dilute the signal)."""
+    from app.health_checks import _AUDIT_TRUTHFUL_EPOCH
+    seed_health_topology(db)
+    _audit(db, "search_flights", "ok", when=_AUDIT_TRUTHFUL_EPOCH - timedelta(days=1))
+    assert check_liveness(db, _c(db, "duffel")).status == "unknown"   # pre-epoch: no evidence
+    _audit(db, "search_flights", "ok", when=_now() - timedelta(minutes=1))
+    assert check_liveness(db, _c(db, "duffel")).status == "ok"        # recent: real evidence
 
 
 # ── heartbeat (§5.2) ─────────────────────────────────────────────────────────
