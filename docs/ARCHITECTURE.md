@@ -210,6 +210,18 @@ returns a real answer, never an empty `(no result)` that surfaces as "the agent 
 Sub-agents with date-sensitive tools get real "now" injected and stale-date flagging on
 their output. Every sub-agent tool call is audited as `agent:tool` in `actions_audit`.
 
+**Audit status is outcome-derived, not assumed.** Tool execution runs through the single
+seam `Registry.run_tool()`, which returns `(result, status)`: a handler that raises
+`ToolFault` (or any exception) — e.g. a Calendar 401, a Duffel key rejection, an
+unreachable Tavily — is recorded as `status="error"`, a healthy call as `ok`. Handlers
+raise `ToolFault` (message preserved verbatim, so the user still sees the guidance)
+*instead of* returning a hand-worded error string; the registry catches it so a failure
+still never crashes the loop. Gate decisions are written literally, not derived:
+`confirmed` (the user approved) and `refused` (a sub-agent hit the top-level-only gate, or
+a pre-gate refusal) both stay in the ok-family — a refused booking is a healthy system.
+This makes `actions_audit` a truthful substrate that credential/liveness health checks can
+read to tell a real failure from silence.
+
 The division of labor is intentional: specialists **prepare** (draft, search, look up),
 the orchestrator **commits** (send, book, create with invites) — under the gate.
 

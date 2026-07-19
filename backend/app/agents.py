@@ -326,6 +326,7 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
         for tu in tool_uses:
             if tu.name not in effective_tools:
                 content = f"Tool '{tu.name}' is not available to the {agent.name} agent."
+                status = "refused"  # a routing denial, not a component fault
             elif not reg.has(tu.name) or reg.is_gated(tu.name):
                 # STRUCTURAL SAFETY: the confirmation gate lives in
                 # orchestrator.run(); run_agent calls reg.execute() directly and
@@ -343,9 +344,10 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
                     f"'{tu.name}' requires the user's confirmation and cannot be run by a "
                     f"sub-agent. Tell the orchestrator to call it directly."
                 )
+                status = "refused"  # sub-agent hit the gate — a decision, not a fault
             else:
-                content = reg.execute(tu.name, tu.input, ctx)
-            _audit_subagent(ctx, agent.name, tu.name, tu.input, content)
+                content, status = reg.run_tool(tu.name, tu.input, ctx)
+            _audit_subagent(ctx, agent.name, tu.name, tu.input, content, status)
             results.append({"type": "tool_result", "tool_use_id": tu.id, "content": str(content)})
         messages.append({"role": "user", "content": results})
     else:
@@ -388,14 +390,20 @@ def run_agent(db, agent: Agent, task: str, ctx: Context, max_iters: int = _MAX_I
     return final_text or "(no result)"
 
 
-def _audit_subagent(ctx: Context, agent_name: str, tool: str, args: dict, result) -> None:
-    """Record a sub-agent's raw tool call in the audit trail (visible in Admin)."""
+def _audit_subagent(ctx: Context, agent_name: str, tool: str, args: dict, result,
+                    status: str = "ok") -> None:
+    """Record a sub-agent's raw tool call in the audit trail (visible in Admin).
+
+    `status` is the derived outcome from `run_tool` (`ok`/`error`), or `refused`
+    when a sub-agent hit the gate — never assumed `ok`, so liveness (health TDD
+    §5.1) reads a truthful substrate for tools reached via delegation too.
+    """
     try:
         from app.models import ActionAudit
 
         ctx.db.add(ActionAudit(
             channel=ctx.channel, actor=ctx.actor, tool=f"{agent_name}:{tool}",
-            arguments=json.dumps(args)[:4000], result=str(result)[:4000], status="ok",
+            arguments=json.dumps(args)[:4000], result=str(result)[:4000], status=status,
         ))
         ctx.db.commit()
     except Exception:

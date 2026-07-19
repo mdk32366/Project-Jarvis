@@ -793,6 +793,7 @@ def test_search_is_honest_when_it_cannot_search(ctx):
 def test_search_never_kills_the_turn(ctx, tavily, monkeypatch):
     import httpx
     from app.handlers.websearch import _web_search
+    from app.handlers.base import ToolFault
 
     class C:
         def __init__(self, **kw): pass
@@ -801,8 +802,11 @@ def test_search_never_kills_the_turn(ctx, tavily, monkeypatch):
         def post(self, *a, **kw): raise RuntimeError("network on fire")
 
     monkeypatch.setattr(httpx, "Client", C)
-    out = _web_search({"query": "x"}, ctx)
-    assert "couldn't reach" in out.lower()
+    # A search failure now raises ToolFault (structured fault signal, PR-0) so the
+    # tavily component's health can go red. Loop-safety lives at the run_tool /
+    # execute seam that catches it — see test_audit_status.py.
+    with pytest.raises(ToolFault, match="(?i)couldn't reach"):
+        _web_search({"query": "x"}, ctx)
 
 
 def test_the_researcher_finally_has_tools():

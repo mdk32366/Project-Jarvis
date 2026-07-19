@@ -27,7 +27,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.config import settings
-from app.handlers.base import Context, Registry
+from app.handlers.base import Context, Registry, ToolFault
 from app.timefmt import clock
 
 log = logging.getLogger(__name__)
@@ -156,16 +156,16 @@ def _get_traffic(args: dict, ctx: Context) -> str:
         data = r.json()
     except Exception as e:  # noqa: BLE001
         log.error("directions failed: %s", e)
-        return f"Couldn't reach Google Maps: {e}"
+        raise ToolFault(f"Couldn't reach Google Maps: {e}")
 
     status = data.get("status")
     if status == "ZERO_RESULTS":
         return f"No route found from {origin} to {dest}."
     if status == "REQUEST_DENIED":
-        return ("Google denied the maps request — check GOOGLE_MAPS_API_KEY and that the "
-                "Directions API is enabled.")
+        raise ToolFault("Google denied the maps request — check GOOGLE_MAPS_API_KEY and that the "
+                        "Directions API is enabled.")
     if status != "OK":
-        return f"Maps error: {status}. {data.get('error_message', '')}"
+        raise ToolFault(f"Maps error: {status}. {data.get('error_message', '')}")
 
     leg = data["routes"][0]["legs"][0]
     free = leg["duration"]["value"]
@@ -267,10 +267,10 @@ def _find_place(args: dict, ctx: Context) -> str:
             r = client.get(_PLACES, params=params)
         data = r.json()
     except Exception as e:  # noqa: BLE001
-        return f"Couldn't reach Google Maps: {e}"
+        raise ToolFault(f"Couldn't reach Google Maps: {e}")
 
     if data.get("status") == "REQUEST_DENIED":
-        return "Google denied the request — check the Places API is enabled."
+        raise ToolFault("Google denied the request — check the Places API is enabled.")
     results = data.get("results") or []
     if not results:
         return f"Nothing found for {query}."
