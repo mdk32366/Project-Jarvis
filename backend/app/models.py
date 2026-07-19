@@ -453,6 +453,26 @@ class GoogleDocument(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class SchedulerHeartbeat(Base):
+    """Proof-of-life for the worker's briefing scheduler (health TDD §5.2, §6).
+
+    A single row (id=1), upserted on every worker tick. `beat_at` is how the §5.2
+    health check tells a live scheduler from a dead one (a stale beat = the worker
+    died). `last_briefing_date` (owner-tz) is the missed-run catch-up guard — it
+    fires the brief once even if the worker was down at the scheduled minute, and
+    never twice the same day. `next_run_at`/`enabled` let the check report the next
+    run or say "disabled" instead of "down".
+    """
+
+    __tablename__ = "scheduler_heartbeat"
+
+    id: Mapped[int] = mapped_column(primary_key=True)          # always 1
+    beat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_briefing_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
 class RuntimeSetting(Base):
     """A runtime override for a bounded allow-list of behavioral settings
     (briefing time, quiet hours, outbound-call toggles). The overlay accessor
