@@ -57,6 +57,8 @@ ALLOWED_KEYS: dict[str, _Key] = {
     "quiet_hours_end_minute":      _Key("int", min=0, max=59),
     "outbound_calls_enabled":      _Key("bool", safety_critical=True),
     "max_outbound_calls_per_hour": _Key("int", safety_critical=True, min=1, max=20),
+    "location_active_start_hour":  _Key("int", min=0, max=23),
+    "location_active_end_hour":    _Key("int", min=0, max=23),
 }
 
 _TRUE = {"1", "true", "yes", "on", "t"}

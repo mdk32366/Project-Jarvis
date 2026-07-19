@@ -159,6 +159,15 @@ class Settings(BaseSettings):
     # position will confidently route you from a coffee shop you left at breakfast.
     location_max_age_minutes: int = 30
     location_keep_pings: int = 200
+    # Location-ping freshness is only meaningful during hours the owner expects to
+    # be moving — an overnight gap while the phone charges is not a fault. The
+    # freshness health check suppresses flags outside [start, end) local. Both are
+    # runtime-overridable (settings overlay), so the window tunes without a deploy.
+    location_active_start_hour: int = 7
+    location_active_end_hour: int = 23
+    # Fly secret age past this many days is flagged as "aging" (real Fly metadata,
+    # not a fabricated countdown). The health check reads it hourly-cached.
+    secret_age_flag_days: int = 90
 
     # ── Web search (Tavily) ──────────────────────────────────────────────────
     # Purpose-built for LLMs: search + extract + synthesize in one call, returning
