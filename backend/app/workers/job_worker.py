@@ -59,7 +59,9 @@ def _place_due_calls(db) -> None:
     within seconds rather than waiting for a job to be enqueued. Never raises:
     a dialling failure must not stop the job queue.
     """
-    if not settings.outbound_calls_enabled:
+    from app.runtime_settings import get_effective
+
+    if not get_effective(db, "outbound_calls_enabled"):
         return
     try:
         from app.channels.outbound_voice import due_calls, place_call
@@ -71,10 +73,23 @@ def _place_due_calls(db) -> None:
 
 
 def _start_briefing_scheduler():
-    """Schedule the daily morning briefing (enqueues a job the worker then runs)."""
-    if not settings.briefing_enabled:
-        log.info("morning briefing disabled (BRIEFING_ENABLED=false)")
-        return None
+    """Schedule the daily morning briefing (enqueues a job the worker then runs).
+
+    Reads the briefing time/enabled through the runtime overlay (`get_effective`)
+    at bind time. A change made after start takes effect on the next worker
+    restart; hot reschedule-on-change is R3 (scheduler hardening).
+    """
+    from app.runtime_settings import get_effective
+
+    db0 = SessionLocal()
+    try:
+        if not get_effective(db0, "briefing_enabled"):
+            log.info("morning briefing disabled (briefing_enabled=false)")
+            return None
+        brief_hour = get_effective(db0, "briefing_hour")
+        brief_minute = get_effective(db0, "briefing_minute")
+    finally:
+        db0.close()
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
 
@@ -84,18 +99,18 @@ def _start_briefing_scheduler():
                 from app.jobs import enqueue
 
                 # A call, not an alarm you have to set. That was the whole idea.
-                kind = ("briefing_call" if settings.briefing_by_phone
-                        and settings.outbound_calls_enabled else "morning_briefing")
+                kind = ("briefing_call" if get_effective(db, "briefing_by_phone")
+                        and get_effective(db, "outbound_calls_enabled") else "morning_briefing")
                 enqueue(db, kind, {}, channel="briefing", actor="scheduler")
                 log.info("enqueued %s", kind)
             finally:
                 db.close()
 
         sched = BackgroundScheduler(timezone=settings.calendar_timezone)
-        sched.add_job(_enqueue, "cron", hour=settings.briefing_hour, minute=settings.briefing_minute)
+        sched.add_job(_enqueue, "cron", hour=brief_hour, minute=brief_minute)
         sched.start()
         log.info("briefing scheduled daily at %02d:%02d %s",
-                 settings.briefing_hour, settings.briefing_minute, settings.calendar_timezone)
+                 brief_hour, brief_minute, settings.calendar_timezone)
         return sched
     except Exception as e:  # noqa: BLE001
         log.error("could not start briefing scheduler: %s", e)

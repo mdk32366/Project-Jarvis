@@ -297,7 +297,7 @@ flowchart LR
 
 ## 8. Database
 
-Postgres on Fly (SQLite in dev/tests). 24 tables in `backend/app/models.py`:
+Postgres on Fly (SQLite in dev/tests). 25 tables in `backend/app/models.py`:
 
 | Group | Tables |
 |---|---|
@@ -306,7 +306,18 @@ Postgres on Fly (SQLite in dev/tests). 24 tables in `backend/app/models.py`:
 | Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` |
 | Work | `jobs`, `tasks`, `ideas`, `watches`, `outbound_calls` |
 | Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` |
-| App | `users`, `agent_configs` |
+| App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below) |
+
+**Runtime settings overlay** (`app/runtime_settings.py`, health TDD §7): a bounded
+allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the four
+`quiet_hours_*` fields, `outbound_calls_enabled`, `max_outbound_calls_per_hour` — each
+overridable at runtime without a redeploy. `get_effective(db, key)` returns the
+`runtime_settings` override if present, else the env/`Settings` default (never mutating the
+`@lru_cache` singleton). Every runtime reader of one of these keys reads through
+`get_effective`, not `settings.X`. The allow-list is the enforcement boundary: **a secret
+can never be read or written through this path.** `outbound_calls_enabled` and
+`max_outbound_calls_per_hour` are safety-critical — changing them needs an explicit confirm
+and is always audited.
 
 ---
 
@@ -323,7 +334,8 @@ died or Fly redeployed mid-job) is re-queued rather than lost, or failed if past
 `distill_episode`, `commit_idea`, `sync_contacts`, `push_task`, `complete_task_google`.
 
 The worker loop (5 s) also runs the **outbound dialer** (due `outbound_calls`, quiet hours
-21:00–07:00 except callbacks/briefings, max 6/hr), the **watch engine** (LLM-judged
+defaulting 21:00–07:00 except callbacks/briefings, max 6/hr — window and cap both runtime-
+overridable via the settings overlay), the **watch engine** (LLM-judged
 conditions that ring the owner when they fire), and an APScheduler cron for the **morning
 briefing** — calendar + portfolio + weather/marine + traffic + news gathered concurrently,
 composed in the principal's voice, delivered by email or phone call.
@@ -345,8 +357,10 @@ by FastAPI itself — one origin, no separate frontend deploy.
 
 REST surface (`/api/...`): auth (`/auth/login`, `/auth/me`, `/auth/change-password`),
 chat + history, memory CRUD + audit, agent-config CRUD, action audit, briefing on demand,
-health probes — plus the unauthenticated-but-signed channel webhooks (`/sms/inbound`,
-`/voice/*`, `/location`). Public `/`, `/privacy`, `/terms` are carrier-compliance pages.
+runtime settings (`GET /settings` effective-value+source, `PUT /settings/{key}` — 403 for a
+safety-critical key without confirm, 404 for a non-allow-list key), health probes — plus
+the unauthenticated-but-signed channel webhooks (`/sms/inbound`, `/voice/*`, `/location`).
+Public `/`, `/privacy`, `/terms` are carrier-compliance pages.
 
 ---
 

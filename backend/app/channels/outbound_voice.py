@@ -58,8 +58,12 @@ def _tz() -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
-def in_quiet_hours(now: datetime | None = None) -> bool:
+def in_quiet_hours(db: Session, now: datetime | None = None) -> bool:
     """Don't ring at 3am. Applies to alerts and other non-exempt calls.
+
+    Reads the quiet-hours window through the runtime overlay (`get_effective`),
+    so the owner can change it without a redeploy (health TDD §7). Takes `db` for
+    that reason — the reader must read the overlay, not `settings` directly.
 
     Two kinds are exempt because the owner asked for them at this time: a
     `callback` the user explicitly requested (if they said "call me back,"
@@ -67,9 +71,13 @@ def in_quiet_hours(now: datetime | None = None) -> bool:
     set the briefing time deliberately). Exemption for those is enforced in
     `due_calls`, not here.
     """
+    from app.runtime_settings import get_effective
+
     now = (now or datetime.now(_tz())).astimezone(_tz()).time()
-    start = time(settings.quiet_hours_start, settings.quiet_hours_start_minute)
-    end = time(settings.quiet_hours_end, settings.quiet_hours_end_minute)
+    start = time(get_effective(db, "quiet_hours_start"),
+                 get_effective(db, "quiet_hours_start_minute"))
+    end = time(get_effective(db, "quiet_hours_end"),
+               get_effective(db, "quiet_hours_end_minute"))
     if start < end:
         return start <= now < end
     return now >= start or now < end          # window wraps midnight
@@ -151,7 +159,7 @@ def due_calls(db: Session, now: datetime | None = None) -> list[OutboundCall]:
                 continue
         # A callback or a scheduled briefing the owner set the time for is exempt
         # from quiet hours — in both cases the owner asked for it at this time.
-        if r.kind not in ("callback", "briefing") and in_quiet_hours(now):
+        if r.kind not in ("callback", "briefing") and in_quiet_hours(db, now):
             continue
         out.append(r)
     return out
@@ -172,8 +180,10 @@ def place_call(db: Session, row: OutboundCall) -> str:
 
     # Rate limit: a bug that dials in a loop is a genuine nightmare, and the
     # person on the other end can't easily make it stop.
+    from app.runtime_settings import get_effective
+
     since = datetime.now(_tz()) - timedelta(hours=1)
-    if _calls_placed_since(db, since) >= settings.max_outbound_calls_per_hour:
+    if _calls_placed_since(db, since) >= get_effective(db, "max_outbound_calls_per_hour"):
         log.warning("outbound rate limit hit — deferring call #%s", row.id)
         return "rate_limited"
 
