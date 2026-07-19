@@ -390,8 +390,8 @@ by FastAPI itself — one origin, no separate frontend deploy.
 | `/login` | JWT login |
 | `/` | Chat with JARVIS |
 | `/memory` | Browse/audit/correct memories |
-| `/status` | Health dashboard |
-| `/admin` | **Live agent-roster editor** — tools, prompts, enable/disable per agent |
+| `/status` | **Exception-first health page** — polls `/api/status/full` every 30s; shows only non-ok components (detail + joined runbook + evidence), healthy collapses to one line, `unknown` rendered distinctly (never green), stale-poll indicator |
+| `/admin` | **Live agent-roster editor** — tools, prompts, enable/disable per agent — plus a **Runtime settings** panel (effective value + source; edit with confirm for safety-critical keys) |
 
 REST surface (`/api/...`): auth (`/auth/login`, `/auth/me`, `/auth/change-password`),
 chat + history, memory CRUD + audit, agent-config CRUD, action audit, briefing on demand,
