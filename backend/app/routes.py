@@ -593,6 +593,16 @@ def list_audit(limit: int = 100, _: User = Depends(get_current_user), db: Sessio
     return rows
 
 
+@router.get("/status/full", tags=["admin"])
+def status_full(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """The true status surface: runs every health check fresh, upserts
+    `health_result`, and returns each component's status with (when not ok) its
+    stored runbook + the recent failing audit rows as evidence. Auth-gated; no
+    secrets. Backs the exception-first status page (PR-E)."""
+    from app.health_checks import status_payload
+    return status_payload(db)
+
+
 @router.get("/settings", tags=["admin"])
 def get_settings(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Effective value + source (override/default) for every runtime-overridable

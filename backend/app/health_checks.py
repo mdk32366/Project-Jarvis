@@ -33,7 +33,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.health import component_for_tool
+from app.health import component_for_tool, get_runbook
 from app.models import ActionAudit, Component, HealthResult, LocationPing, SchedulerHeartbeat
 
 log = logging.getLogger(__name__)
@@ -228,7 +228,13 @@ def _upsert(db: Session, r: CheckResult) -> None:
 
 def run_all_checks(db: Session) -> list[CheckResult]:
     """Run every enabled component's check and upsert `health_result`. Returns the
-    results (trunk first, so a blast-radius=multi failure surfaces prominently)."""
+    results (trunk first, so a blast-radius=multi failure surfaces prominently).
+
+    Sequential on the request thread on purpose: every v1 check is DB-bound, and a
+    SQLAlchemy Session is not thread-safe (build §2.4 — DB checks stay on the main
+    thread). Parallelization via a thread pool becomes worthwhile only once
+    external-call checks (e.g. secret-age hitting the Fly API) land; those are the
+    ones that can run off-thread without touching the session."""
     comps = db.query(Component).filter(Component.enabled.is_(True)).all()
     comps.sort(key=lambda c: (c.blast_radius != "multi", c.name))  # trunk first
     results = []
@@ -240,3 +246,61 @@ def run_all_checks(db: Session) -> list[CheckResult]:
         results.append(r)
     db.commit()
     return results
+
+
+def _evidence_for(db: Session, component: str, limit: int = 5) -> list[dict]:
+    """The recent post-epoch non-ok `actions_audit` rows for a component — the
+    §4A bridge that turns 'scheduling: down' into the actual failing calls. Only
+    truthful (post-PR-0-epoch) rows count; a `confirmed`/`refused` row is not
+    evidence of a fault."""
+    rows = (
+        db.query(ActionAudit)
+        .filter(ActionAudit.created_at >= _AUDIT_TRUTHFUL_EPOCH,
+                ActionAudit.status.notin_(_OK_AUDIT))
+        .order_by(ActionAudit.created_at.desc())
+        .limit(200)
+        .all()
+    )
+    mine = [r for r in rows if component_for_tool(r.tool) == component][:limit]
+    return [{"tool": r.tool, "status": r.status,
+             "detail": (r.result or "")[:160],
+             "at": _aware(r.created_at).isoformat() if r.created_at else None}
+            for r in mine]
+
+
+def _iso(dt: datetime | None) -> str | None:
+    dt = _aware(dt)
+    return dt.isoformat() if dt else None
+
+
+def status_payload(db: Session) -> dict:
+    """The single `/api/status/full` payload: runs every check fresh, upserts
+    `health_result`, and for anything not-ok joins its stored runbook (never
+    improvised) and its evidence rows. Contains NO secrets — component names,
+    statuses, timestamps, runbooks, and (owner-only, admin-gated) recent failing
+    calls."""
+    results = run_all_checks(db)
+    checks = []
+    for r in results:
+        item = {
+            "component": r.component,
+            "status": r.status,
+            "fault_code": r.fault_code,
+            "detail": r.detail,
+            "checked_at": _iso(r.checked_at),
+            "expires_at": _iso(r.expires_at),
+            "age_days": r.age_days,
+            "last_success_at": _iso(r.last_success_at),
+            "last_failure_at": _iso(r.last_failure_at),
+        }
+        if r.status != "ok":
+            rem = get_runbook(db, r.component, r.fault_code) if r.fault_code else None
+            item["remediation"] = ({"runbook": rem.runbook, "severity": rem.severity}
+                                   if rem else None)
+            item["evidence"] = _evidence_for(db, r.component)
+        checks.append(item)
+
+    summary: dict[str, int] = {"ok": 0, "degraded": 0, "down": 0, "unknown": 0}
+    for r in results:
+        summary[r.status] = summary.get(r.status, 0) + 1
+    return {"generated_at": _iso(_now()), "summary": summary, "checks": checks}
