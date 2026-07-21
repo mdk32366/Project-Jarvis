@@ -59,6 +59,12 @@ ALLOWED_KEYS: dict[str, _Key] = {
     "max_outbound_calls_per_hour": _Key("int", safety_critical=True, min=1, max=20),
     "location_active_start_hour":  _Key("int", min=0, max=23),
     "location_active_end_hour":    _Key("int", min=0, max=23),
+    # Location pull. Behavioural, not secret — AUTOREMOTE_KEY is deliberately NOT
+    # here and never will be. The interval floor is 5 minutes because the cost of a
+    # tighter cadence is the owner's phone battery, and that bill arrives silently.
+    "location_pull_enabled":           _Key("bool"),
+    "location_pull_interval_minutes":  _Key("int", min=5, max=240),
+    "location_pull_timeout_seconds":   _Key("int", min=30, max=900),
 }
 
 _TRUE = {"1", "true", "yes", "on", "t"}

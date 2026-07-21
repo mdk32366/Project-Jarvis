@@ -36,6 +36,7 @@ def run_once() -> int:
         _place_due_calls(db)
         _check_watches(db)
         _briefing_tick(db)
+        _location_pull_tick(db)
         _maybe_prune_request_log(db)
         return n
     finally:
@@ -58,6 +59,32 @@ def _maybe_prune_request_log(db) -> None:
         prune(db)
     except Exception as e:  # noqa: BLE001
         log.error("request_log prune error: %s", e)
+
+
+def _location_pull_tick(db) -> None:
+    """Ask the phone where it is when a fix is due, and age out asks that went
+    unanswered.
+
+    Rides the existing worker tick rather than an APScheduler cron — that path was
+    deliberately replaced in PR #29 so schedule changes apply without a restart, and
+    a second scheduling mechanism would reintroduce exactly the drift it removed.
+
+    The sweep runs on EVERY tick, not only when a pull is due: a request left
+    `pending` forever is a responsiveness check that can never read false.
+
+    Never raises: a pull hiccup must not stop the job queue.
+    """
+    try:
+        from app.handlers.location import due_for_pull, new_request, sweep_timeouts
+
+        if due_for_pull(db):
+            req = new_request(db, trigger="scheduled")
+            log.info("location pull requested (request %s, dispatch_ok=%s)",
+                     req.id, req.dispatch_ok)
+        sweep_timeouts(db)
+    except Exception as e:  # noqa: BLE001
+        log.error("location pull tick error: %s", e)
+        db.rollback()
 
 
 def _check_watches(db) -> None:

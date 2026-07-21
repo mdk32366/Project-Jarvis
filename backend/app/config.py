@@ -165,6 +165,22 @@ class Settings(BaseSettings):
     # runtime-overridable (settings overlay), so the window tunes without a deploy.
     location_active_start_hour: int = 7
     location_active_end_hour: int = 23
+    # ── Location PULL (JARVIS asks; the phone answers) ────────────────────────
+    # Phone-side scheduling has no reliable path on this device: Tasker cannot hold
+    # SCHEDULE_EXACT_ALARM, so its timed profiles fall back to inexact alarms that
+    # Android defers indefinitely in doze. The fix is not a better phone-side
+    # schedule — it is to stop asking the phone to remember. AutoRemote delivers via
+    # high-priority FCM, which Android DOES deliver through doze, so the trigger
+    # becomes external to the phone and the whole failure class goes away.
+    #
+    # AutoRemote personal key — a SECRET. Never on the runtime-settings allow-list,
+    # never logged, never echoed into dispatch_error.
+    autoremote_key: str = ""
+    location_pull_enabled: bool = True
+    location_pull_interval_minutes: int = 15
+    # A request unanswered for this long is swept to `timeout`. Without the sweep,
+    # `pending` rows accumulate and the responsiveness check can never read false.
+    location_pull_timeout_seconds: int = 120
     # Fly secret age past this many days is flagged as "aging" (real Fly metadata,
     # not a fabricated countdown). The health check reads it hourly-cached.
     secret_age_flag_days: int = 90

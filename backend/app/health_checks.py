@@ -9,8 +9,15 @@ runbook is NOT carried here — it's joined from `remediation` at surface time
 
 v1 checks: credential **liveness** (§5.1, reads `actions_audit` — PR-0 made that
 substrate truthful), scheduler **heartbeat** (§5.2, reads `scheduler_heartbeat` +
-its seeded `stale_seconds`), location **freshness** (§5.3, honours the runtime
+its seeded `stale_seconds`), the two halves of the **location split**
+(`location_scheduler` / `location_responsiveness`, honouring the runtime
 active-hours window), and **app up-status**.
+
+The location split replaced a single freshness check that read one signal —
+"pings are stale" — for two different faults. It could not distinguish a server
+that had stopped asking from a phone that had stopped answering, and 2026-07-19
+was spent establishing by hand which one it was. The two checks below each read a
+fault they can actually attribute, and their runbooks point at different machines.
 
 Deliberately deferred (a conscious call, not an oversight): **secret-age** needs
 Fly secret metadata, which isn't reachable from inside the app container without
@@ -27,14 +34,14 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
-
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.health import component_for_tool, get_runbook
-from app.models import ActionAudit, Component, HealthResult, LocationPing, SchedulerHeartbeat
+from app.models import (
+    ActionAudit, Component, HealthResult, LocationRequest, SchedulerHeartbeat,
+)
 
 log = logging.getLogger(__name__)
 
@@ -77,13 +84,6 @@ def _aware(dt: datetime | None) -> datetime | None:
     if dt is None:
         return None
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-
-
-def _tz() -> ZoneInfo:
-    try:
-        return ZoneInfo(settings.calendar_timezone)
-    except Exception:  # noqa: BLE001
-        return ZoneInfo("UTC")
 
 
 def _cfg(component: Component) -> dict:
@@ -140,38 +140,99 @@ def check_heartbeat(db: Session, c: Component) -> CheckResult:
                        last_success_at=beat)
 
 
-def check_freshness(db: Session, c: Component) -> CheckResult:
-    """Data-feed freshness (§5.3). Only meaningful during the owner's active hours
-    (runtime-configurable window) — an overnight gap is not a fault, so outside the
-    window this reports ok. Thresholds from seeded `check_config`."""
+def check_location_scheduler(db: Session, c: Component) -> CheckResult:
+    """*Is the server asking?* — half one of the location split (TDD §7.1).
+
+    Reads only `location_request` rows with `trigger=scheduled`. This deliberately
+    ignores whether the phone answered: that is the other check's job, and keeping
+    them separate is what makes a missing fix attributable instead of inferred.
+    """
+    from app.handlers.location import in_active_hours
     from app.runtime_settings import get_effective
 
-    cfg = _cfg(c)
-    ok_m = cfg.get("ok_minutes", 20)
-    deg_m = cfg.get("degraded_minutes", 60)
-    latest = db.query(LocationPing).order_by(LocationPing.created_at.desc()).first()
-    if latest is None:
-        return CheckResult(c.name, "unknown", "no_data", "no pings on record", checked_at=_now())
+    interval = get_effective(db, "location_pull_interval_minutes")
+    last = (
+        db.query(LocationRequest)
+        .filter(LocationRequest.trigger == "scheduled")
+        .order_by(LocationRequest.id.desc())
+        .first()
+    )
+    if last is None:
+        # No evidence is not health. A fresh deploy has no basis for a green.
+        return CheckResult(c.name, "unknown", "no_requests",
+                           "no scheduled pull has ever been sent", checked_at=_now())
 
-    ping_at = _aware(latest.created_at)
-    age_min = (_now() - ping_at).total_seconds() / 60
-    start = get_effective(db, "location_active_start_hour")
-    end = get_effective(db, "location_active_end_hour")
-    hour = _now().astimezone(_tz()).hour
-    active = (start <= hour < end) if start <= end else (hour >= start or hour < end)
-    if not active:
+    at = _aware(last.requested_at)
+    age_min = (_now() - at).total_seconds() / 60
+
+    if not in_active_hours(db):
         return CheckResult(c.name, "ok", None,
-                           f"outside active hours; last ping {int(age_min)}m ago",
-                           checked_at=_now(), last_success_at=ping_at)
-    if age_min <= ok_m:
+                           f"outside active hours; last pull {int(age_min)}m ago",
+                           checked_at=_now(), last_success_at=at)
+
+    # A failing dispatch is a distinct fault from a scheduler that never ran, and it
+    # sends you to a different place (the key, not the worker), so it gets its own
+    # code even while requests are being minted on time.
+    if not last.dispatch_ok:
+        return CheckResult(c.name, "down", "dispatch_failing",
+                           f"last pull {int(age_min)}m ago did not dispatch: "
+                           f"{last.dispatch_error or 'unknown error'}",
+                           checked_at=_now(), last_failure_at=at)
+
+    if age_min <= interval + 5:
         status, fault = "ok", None
-    elif age_min <= deg_m:
-        status, fault = "degraded", "stale"
+    elif age_min <= interval * 2:
+        # Late but not dead — the same three-tier shape as the freshness check.
+        status, fault = "degraded", "not_asking"
     else:
-        status, fault = "down", "stale"
+        status, fault = "down", "not_asking"
     return CheckResult(c.name, status, fault,
-                       f"last ping {int(age_min)}m ago", checked_at=_now(),
-                       last_success_at=ping_at)
+                       f"last scheduled pull {int(age_min)}m ago (interval {interval}m)",
+                       checked_at=_now(),
+                       last_success_at=at if status == "ok" else None,
+                       last_failure_at=None if status == "ok" else at)
+
+
+def check_location_responsiveness(db: Session, c: Component) -> CheckResult:
+    """*Is the phone answering?* — half two of the location split (TDD §7.2).
+
+    Scores the trailing window of COMPLETED requests (both triggers). Pending rows
+    are excluded because they haven't had their chance yet; counting them would
+    read as a fault every time a pull is in flight.
+    """
+    cfg = _cfg(c)
+    window = cfg.get("window", 6)
+    ok_min = cfg.get("ok_min", 5)
+    deg_min = cfg.get("degraded_min", 3)
+
+    rows = (
+        db.query(LocationRequest)
+        .filter(LocationRequest.status.in_(("fulfilled", "timeout")))
+        .order_by(LocationRequest.id.desc())
+        .limit(window)
+        .all()
+    )
+    if len(rows) < deg_min:
+        return CheckResult(c.name, "unknown", "no_evidence",
+                           f"only {len(rows)} completed request(s); need {deg_min} to judge",
+                           checked_at=_now())
+
+    fulfilled = [r for r in rows if r.status == "fulfilled"]
+    n = len(fulfilled)
+    if n >= ok_min:
+        status, fault = "ok", None
+    elif n >= deg_min:
+        status, fault = "degraded", "not_answering"
+    else:
+        status, fault = "down", "not_answering"
+    return CheckResult(
+        c.name, status, fault,
+        f"{n} of the last {len(rows)} requests answered", checked_at=_now(),
+        last_success_at=max((_aware(r.responded_at) for r in fulfilled
+                             if r.responded_at), default=None),
+        last_failure_at=max((_aware(r.requested_at) for r in rows
+                             if r.status == "timeout" and r.requested_at), default=None),
+    )
 
 
 def check_app_up(db: Session, c: Component) -> CheckResult:
@@ -186,7 +247,8 @@ def check_app_up(db: Session, c: Component) -> CheckResult:
 _CHECKS = {
     "liveness": check_liveness,
     "heartbeat": check_heartbeat,
-    "freshness": check_freshness,
+    "location_scheduler": check_location_scheduler,
+    "location_responsiveness": check_location_responsiveness,
 }
 # components whose up-status is the app itself (postgres/anthropic liveness is
 # really "is the app up") get app_up when they have no more specific check.

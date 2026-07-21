@@ -94,7 +94,7 @@ Auth is per-channel and deliberately unequal — the security spine of the syste
 | Email | `ingest` IMAP poll | sender whitelist (`ALLOWED_SENDERS` + `contacts_whitelist`) | strong |
 | SMS | `POST /api/sms/inbound` | Twilio signature + number whitelist | strong |
 | **Voice** | `POST /api/voice/*` | Twilio signature + **caller-ID whitelist** | **weak — spoofable** |
-| Location ping | `POST /api/location` | shared secret header, constant-time compare | strong |
+| Location ping | `POST /api/location` | shared secret header, constant-time compare (the optional `nonce` is a correlator, never a credential) | strong |
 | Outbound calls | worker dialer | hard `ALLOWED_NUMBERS` check at schedule **and** dial time | can only ring the owner |
 
 Because caller-ID is spoofable, voice runs restricted allowlists (`VOICE_TOOLS_PHASE1`,
@@ -305,7 +305,7 @@ Postgres on Fly (SQLite in dev/tests). 30 tables in `backend/app/models.py`:
 | Memory | `persona_profile`, `preferences`, `memories`, `memory_embeddings`, `episodes`, `episode_quotes` |
 | Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` (per-*tool*), `request_log` (per-*request* — one coarse row per top-level request; retention 90d + row cap) |
 | Work | `jobs`, `tasks`, `ideas`, `watches`, `outbound_calls` |
-| Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` |
+| Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings`, `location_requests` (the server-initiated ask a ping answers) |
 | App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below), `scheduler_heartbeat` (briefing-scheduler proof-of-life + catch-up state) |
 | Health | `component` (topology inventory), `remediation` (fault→runbook), `health_result` (transient current status) |
 
@@ -327,8 +327,11 @@ caller — a broken check returns `unknown` with the error in `detail`, so one c
 down. v1 set: **liveness** (derives `last_success`/`last_failure` from `actions_audit` — a
 `confirmed`/`refused` row counts as ok, the gate working; no evidence → `unknown`, never green),
 **heartbeat** (reads `scheduler_heartbeat` vs the seeded `stale_seconds`; disabled → ok-labeled,
-not down), **freshness** (location pings vs the seeded thresholds, suppressed outside the runtime
-active-hours window), and **app up-status**. Secret-age (needs a Fly API token in-container) and
+not down), the **location split** — `location_pull_scheduler` ("is the server asking?", reads
+`location_requests` with `trigger=scheduled`; a failed dispatch gets its own `dispatch_failing`
+fault code because it sends you to the key, not the worker) and `location_responsiveness` ("is the
+phone answering?", scores the trailing 6 completed requests; fewer than 3 → `unknown`, never green)
+— both suppressed outside the runtime active-hours window, and **app up-status**. Secret-age (needs a Fly API token in-container) and
 published-expiry (Google refresh tokens publish none — nothing honest to report) are deliberately
 deferred rather than shipped as perpetual `unknown`. The **`self_whoami`** tool (ungated,
 universal — registered in both registry branches like `get_current_datetime`, voice-reachable)
@@ -347,9 +350,10 @@ is PR-E.*
 
 **Runtime settings overlay** (`app/runtime_settings.py`, health TDD §7): a bounded
 allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the four
-`quiet_hours_*` fields, `outbound_calls_enabled`, `max_outbound_calls_per_hour`, and the
-`location_active_start/end_hour` freshness window — each overridable at runtime without a
-redeploy. `get_effective(db, key)` returns the
+`quiet_hours_*` fields, `outbound_calls_enabled`, `max_outbound_calls_per_hour`, the
+`location_active_start/end_hour` active window, and the location-pull trio
+(`location_pull_enabled`, `location_pull_interval_minutes`, `location_pull_timeout_seconds`) —
+each overridable at runtime without a redeploy. `get_effective(db, key)` returns the
 `runtime_settings` override if present, else the env/`Settings` default (never mutating the
 `@lru_cache` singleton). Every runtime reader of one of these keys reads through
 `get_effective`, not `settings.X`. The allow-list is the enforcement boundary: **a secret
@@ -387,6 +391,23 @@ restart**. Every tick writes `scheduler_heartbeat` (`beat_at`, `next_run_at`, `e
 the proof-of-life the §5.2 health check reads to tell a live scheduler from a dead one. A
 scheduled brief that composes empty is **emailed** (visible), never silently dropped.
 
+**Location pull (`docs/TDD-location-pull-inversion.md`):** JARVIS asks; the phone answers.
+The phone used to schedule its own 15-minute push, which is dead on this device — Tasker
+cannot hold `SCHEDULE_EXACT_ALARM`, so its timed profiles fall back to inexact alarms that
+Android defers indefinitely in doze (correct config, no fires, empty run log). Rather than
+build a better phone-side schedule, the trigger moved off the phone: the same per-tick
+enqueuer mints a `location_requests` row and dispatches an AutoRemote message
+(`app/providers/autoremote.py` → high-priority FCM, which Android *does* deliver through
+doze), the phone's Tasker **Event** profile answers with a fix carrying the nonce, and
+`POST /api/location` closes the request out. Pull cadence, timeout, and the on/off switch are
+runtime-overridable; `AUTOREMOTE_KEY` is a Fly secret and is never on that allow-list. The
+request row is committed **before** dispatch and unanswered rows are swept to `timeout` on
+every tick — without the sweep the responsiveness check could never read false. The payoff
+beyond repair is **attribution**: a request with no answer is the phone's fault, no request at
+all is the scheduler's, and those two now have separate health checks with runbooks pointing
+at different machines. A ping with no nonce (manual force-run, legacy push) is still recorded,
+unlinked — unsolicited data is data, not an error.
+
 ---
 
 ## 10. UI & API
@@ -422,3 +443,4 @@ All env-driven via pydantic `Settings` (`backend/app/config.py`):
 - **Kill switches**: `enable_trading=False`, `booking_enabled=False`, `voice_enabled`, `outbound_calls_enabled`, `briefing_enabled`, `enable_reflector`, `episodes_enabled`
 - **Identity**: `OWNER_*` block — Tier-1 ground truth and Duffel passenger data
 - **Whitelists**: `ALLOWED_SENDERS`, `ALLOWED_NUMBERS` — the only identities that may command JARVIS
+- **Location**: `LOCATION_TOKEN` (phone→server shared secret), `AUTOREMOTE_KEY` (server→phone pull dispatch; both are secrets and neither is runtime-overridable), `location_pull_enabled/interval_minutes/timeout_seconds`, `location_active_start/end_hour`
