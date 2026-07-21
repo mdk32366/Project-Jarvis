@@ -371,6 +371,12 @@ class LocationPing(Base):
     request_id: Mapped[int | None] = mapped_column(
         ForeignKey("location_requests.id"), nullable=True, index=True, default=None
     )
+    # How the fix arrived: "pull" (answered a request) or "manual" (the owner
+    # pressed the shortcut). Echoed from the client, so DESCRIPTIVE ONLY — no
+    # health check reads it. Attribution lives on `location_requests`, because a
+    # client-supplied field must never be load-bearing for health when the client
+    # is the very thing whose reliability is in question.
+    trigger: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
 
 
 class LocationRequest(Base):

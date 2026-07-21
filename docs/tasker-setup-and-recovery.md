@@ -23,6 +23,15 @@
 > **What in this file is still good:** the permissions/battery section, the
 > export → scrub-token → commit → paste-token-back workflow, and the recovery
 > notes. Those apply unchanged to the new Event profile.
+>
+> **The task itself is retained — only the Time profile is dead.** Keep a
+> *manually run* version (no profile, home-screen shortcut) that posts with no
+> nonce and `"trigger":"manual"`, for pre-seeding position before a conversation.
+> What was rejected was the false guarantee, not the phone-side task: a timed
+> profile claimed to fire and silently didn't, whereas a manual task claims
+> nothing and fails visibly to the person pressing it. It cannot mask a broken
+> phone either — the responsiveness health check scores request fulfilment, not
+> ping recency. See TDD §6.6.
 
 **File:** `jarvis-location-15min.prj.xml` (a Tasker **Project** export)
 **What it does:** every 15 minutes → get a GPS fix → HTTP POST it to

@@ -487,12 +487,20 @@ async def location_ingest(request: Request, db: Session = Depends(get_db)):
         if req is None:
             log.info("location ping carried an unknown nonce; recording it unlinked")
 
+    # How the fix arrived, as the client describes it. Descriptive only — nothing
+    # in the health path reads it, because a client-supplied field must never be
+    # load-bearing for health when the client is the thing being judged.
+    trigger = str(body.get("trigger") or "").strip()
+    if not trigger or trigger.startswith("%"):
+        trigger = None
+
     p = record_ping(
         db, lat=lat, lon=lon,
         accuracy_m=accuracy,
         source=str(body.get("source") or "phone"),
         label=str(body.get("label") or ""),
         request_id=req.id if req else None,
+        trigger=trigger,
     )
     log.info("location ping: %.4f,%.4f (%s)%s", lat, lon, p.label or "no label",
              f" [request {req.id} {req.status}]" if req else "")

@@ -43,11 +43,14 @@ def _tz() -> ZoneInfo:
 
 def record_ping(db, lat: float, lon: float, accuracy_m: float = 0.0,
                 source: str = "phone", label: str = "",
-                request_id: int | None = None) -> LocationPing:
+                request_id: int | None = None,
+                trigger: str | None = None) -> LocationPing:
     """Store a position report. Called by the /api/location route.
 
     `request_id` links the fix to the ask it answers, when there was one. None is
-    normal and not an error — a manual force-run is still a real position.
+    normal and not an error — a manual push is still a real position.
+
+    `trigger` records how the fix arrived ("pull" / "manual"). Descriptive only.
     """
     p = LocationPing(
         lat=lat, lon=lon,
@@ -55,6 +58,7 @@ def record_ping(db, lat: float, lon: float, accuracy_m: float = 0.0,
         source=source[:32],
         label=label[:120],
         request_id=request_id,
+        trigger=(trigger[:16] if trigger else None),
     )
     db.add(p)
     db.commit()
