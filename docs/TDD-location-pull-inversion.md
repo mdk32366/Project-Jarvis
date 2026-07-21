@@ -119,8 +119,8 @@ server can initiate.
 | `responded_at` | timestamptz, null | |
 | `status` | enum | `pending` / `fulfilled` / `timeout` |
 | `trigger` | enum | `scheduled` / `on_demand` |
-| `dispatch_ok` | bool | did the AutoRemote POST return 200 |
-| `dispatch_error` | text, null | transport failure detail, no key material |
+| `relay_accepted` | bool | did the relay return HTTP 200 **and a body of `OK`** (§6.1). Named for what it measures: the relay accepted the message. It is **not** evidence of delivery to the phone. |
+| `relay_error` | text, null | transport or relay failure detail (e.g. `NotRegistered`), **scrubbed of key material including percent-encoded forms** — this column is stored and rendered on the status page. Renamed alongside `relay_accepted`: pairing `relay_accepted` with a `dispatch_error` would leave half the pair still naming a leg it cannot see. |
 
 ### 5.2 Modified table — `location_ping`
 
@@ -146,14 +146,62 @@ No backfill. Historical pings keep a null `request_id` honestly.
 
 ## 6. Server changes
 
-### 6.1 AutoRemote client — `backend/integrations/autoremote.py`
+### 6.1 AutoRemote client — `app/providers/autoremote.py`
+
+*(Path corrected from `backend/integrations/`, which does not exist in this repo.
+`app/providers/sms.py` sets the convention.)*
 
 `send(message: str) -> tuple[bool, str | None]`
 
 - POST form-encoded to the AutoRemote sendmessage endpoint.
-- 10s timeout. Single retry on connection error only, not on non-200.
-- **Never log the key.** Log the message payload and the response status.
-- Returns `(dispatch_ok, error)`. The caller records both.
+- 10s timeout. Single retry on connection error only, not on a non-OK response.
+- **Success is determined by the response BODY, not the status code.** AutoRemote
+  returns HTTP 200 for rejected sends and reports the actual outcome in the body:
+  `OK` on success, `NotRegistered` when the key resolves to no device, other
+  strings for other faults. **A 200 with a non-`OK` body is a dispatch failure**
+  and must be recorded as one.
+- **Never log or store the key.** The scrubber must handle **percent-encoded**
+  values as well as literal ones — the request body is form-encoded, so a literal
+  match alone will not fire. This matters beyond logging: an unscrubbed value can
+  reach `relay_error`, which is stored in the DB and rendered on the status
+  page.
+- **A `key=` prefix on the configured token is NORMALIZED, not rejected.** §11
+  leaves the choice to the client; the client strips a leading `key=` and logs a
+  warning naming the fix. Rejecting would fail closed but turn a paste error into
+  a dead feature; stripping makes the common mistake harmless and still says so
+  out loud. The Fly secret should still hold the bare token — see §9.
+- Returns `(relay_accepted, error)`. The caller records both.
+
+#### 6.1.1 Why this section is written this way — 2026-07-21
+
+The first implementation checked `r.status_code == 200` and nothing else. In
+parallel, `AUTOREMOTE_KEY` had been set to the value **`key=<token>`** — the
+token copied out of the personal URL's query string with the parameter name still
+attached, an error this document's own §9 wording invited by describing the value
+as "the `key=` parameter."
+
+The relay answered every dispatch with **HTTP 200 and a body of
+`NotRegistered`**. `dispatch_ok` therefore read `True` for **every dispatch over
+the entire life of the feature**, while not one message was ever delivered.
+`location_pull_scheduler` read `ok` throughout a total delivery failure.
+
+Diagnosis was slow because the visible evidence fit a more interesting theory:
+one manual send from the web console succeeded at 16:21 and a scheduled dispatch
+two minutes later did not, which looked like a payload-encoding difference —
+suspicion fell on the `=:=` command separator. It was not the separator; the
+manual send simply used a correctly-formed key. **The separator question was
+never actually tested, because nothing was ever arriving.**
+
+Two durable lessons:
+
+1. **A transport that reports failure in-band must be read in-band.** Status-code
+   checking against such an API is not a shortcut, it is a blind spot with a
+   green light on it.
+2. **This is the third instance of one recurring error: a signal riding on a
+   proxy instead of the real property.** Quiet-hours exemption keyed on `kind`
+   rather than provenance (R22). "Destructive" riding on notional value rather
+   than its own flag (`netstatus.py`). Delivery riding on status code rather than
+   the body. Named here so it is findable a fourth time.
 
 ### 6.2 Scheduler job — `location_pull`
 
@@ -249,14 +297,20 @@ Reads: most recent `location_request` with `trigger=scheduled`.
 - `unknown` — no requests at all, ever
 
 Remediation: check `location_pull_enabled`, check scheduler heartbeat, check
-`dispatch_error` on the most recent row.
+`relay_error` on the most recent row.
 
 > **Scope limit — read this before trusting a green here.** This check's
-> `dispatch_failing` fault keys on `dispatch_ok`, which records only that the
-> AutoRemote relay returned 200. It cannot see the relay→FCM→phone leg. A silent
-> delivery failure reads **green** on this check while §7.2 correctly goes `down`.
+> `relay_rejected` fault keys on `relay_accepted`, which records that the
+> AutoRemote relay accepted the message (HTTP 200 **and** body `OK`, per §6.1).
+> It cannot see the relay→FCM→phone leg. A delivery failure past the relay reads
+> **green** on this check while §7.2 correctly goes `down`.
+>
 > When responsiveness is `down` and this check is `ok`, the phone-side runbook is
-> **not** automatically the right place to look. See §12.
+> **not** automatically the right place to look. Check, in order: (1) the most
+> recent `relay_error` — a relay-level rejection like `NotRegistered` means
+> the key is wrong, not the phone; (2) whether the Event profile fires on a
+> manual send from the AutoRemote web console — if it does, the phone is fine and
+> the fault is in delivery. See §6.1.1 for the incident that produced this note.
 
 ### 7.2 `location_responsiveness` — *is the phone answering?*
 
@@ -338,10 +392,20 @@ the same day's diagnosis; that is the meta-lesson and it costs nothing to honor.
 
 **New Fly secret:** `AUTOREMOTE_KEY`.
 
+**Set the token ONLY.** The AutoRemote personal URL looks like
+`https://autoremotejoaomgcd.appspot.com/?key=<token>`. The value of the secret is
+`<token>` — **not** `key=<token>`. Including the parameter name produces a relay
+response of HTTP 200 with body `NotRegistered` on every send, which is invisible
+to any client that checks only the status code. This has already happened once;
+see §6.1.1.
+
 Generate on desktop, paste on desktop. Never transcribe from a phone screen —
 standing lesson on visually ambiguous character sets (`0/O/1/l`). Fly secrets are
 write-only after being set; the original is unrecoverable, so record it in the
 password manager at creation time, not later.
+
+**Verification after setting:** send one message and confirm the response body is
+`OK`. A 200 alone proves nothing.
 
 **New runtime settings** (DB, read via `get_effective`, seeded not hardcoded):
 
@@ -388,44 +452,58 @@ owner action.
   reads `ok` not `down` during that window.
 - **Responsiveness thresholds** — 6/6, 4/6, 1/6, and 2-completed each map to
   `ok` / `degraded` / `down` / `unknown`.
-- **Dispatch failure** — AutoRemote returns 500; `dispatch_ok=false`, error
+- **Dispatch failure** — AutoRemote returns 500; `relay_accepted=false`, error
   recorded, request still sweeps to `timeout`, scheduler check surfaces it.
-- **No key in logs** — assert the secret never appears in log output or in
-  `dispatch_error`. Asserted in test, not left as an implementation property —
-  same standard as the evidence/tool-arguments exclusion.
+- **200 with `NotRegistered` body is a FAILURE** — the regression test for the
+  2026-07-21 incident (§6.1.1). Relay returns HTTP 200 with body `NotRegistered`;
+  assert `relay_accepted=false`, `relay_error` records it, and
+  `location_pull_scheduler` reads the `relay_rejected` fault. A 200 must never
+  be sufficient on its own.
+- **200 with `OK` body is a success** — the positive counterpart, so the check
+  above cannot be satisfied by rejecting everything.
+- **Key with a `key=` prefix is NORMALIZED** — the choice made (§6.1): the client
+  strips it and warns. Assert the bare token reaches the wire, and that a bare
+  token is left untouched.
+- **No key in logs, DB, or status page** — assert the secret never appears in log
+  output, in `relay_error`, or in any status payload, **including in
+  percent-encoded form**. The original scrubber matched only the literal value
+  while the request body was form-encoded, so it never fired. Asserted in test,
+  not left as an implementation property.
 
 ---
 
 ## 12. Open questions
 
-- **`dispatch_ok` cannot see the leg it appears to describe.** It records that the
-  AutoRemote relay returned 200 — nothing about whether FCM delivered, whether the
-  phone was reachable, or whether Tasker ever saw the message. This is what §5.1
-  asked to be recorded, not an implementation gap, but the spec asked for the
-  wrong thing.
+- **RESOLVED 2026-07-21 — instrumentation could not see the leg it named.**
+  `dispatch_ok` recorded only the HTTP status, and AutoRemote reports failure
+  in-band with a 200. It read green through a total delivery failure caused by a
+  malformed key. Fixed: body-reading in §6.1, renamed to `relay_accepted`,
+  regression tests in §11. **Kept here rather than deleted** — the resolution is
+  the useful artifact, and the failure shape (a green light on a blind spot)
+  generalizes. Full account in §6.1.1.
 
-  **Consequence, precisely.** `location_responsiveness` is unaffected: it scores
-  request *fulfilment*, never dispatch, so a phone that never receives the nudge
-  still produces `timeout` rows and the check goes `down` within six requests.
-  Nothing goes undetected. But `location_pull_scheduler` keys its
-  `dispatch_failing` fault on `dispatch_ok`, so during a delivery failure it reads
-  **green**, and the operator is sent to the phone-side runbook — AutoRemote
-  installed? profile enabled? battery unrestricted? — for a fault in the
-  relay→FCM leg, which is neither the server nor the phone. **This is the
-  misattribution the inversion was built to eliminate, reappearing one layer
-  down.**
+  **Still open beneath it:** even a correct `relay_accepted` cannot see
+  relay→FCM→phone. That leg is measured only by §7.2 fulfilment. Closing it
+  properly needs an AutoRemote delivery receipt, if one is exposed.
 
-  **Not yet distinguishable in production.** All requests currently read `timeout`
-  with `dispatch_ok=True`, which is equally consistent with "no Event profile
-  exists yet" (the expected explanation) and "delivery is silently failing." Only
-  a fulfilled request separates them. **If responsiveness stays `down` after the
-  phone is configured and the Event profile is confirmed firing on a manual
-  AutoRemote send, suspect this first, not last.**
+- **The close-out path has never executed in production.** As of 2026-07-21
+  17:10Z: 13 `location_requests`, **all `timeout`, none ever `fulfilled`**; 14
+  `location_pings`, **none carrying a `request_id`**. So §6.4's nonce→fulfilment
+  branch — and with it the whole attribution mechanism — is *untested rather than
+  proven*, whatever the unit tests say.
 
-  **Honest fixes, in order of preference:** rename to `relay_accepted`, which
-  claims exactly what is known and stops the scheduler check from overclaiming;
-  or close the loop with an AutoRemote delivery receipt, if one is exposed.
-  Do not leave a column named for delivery that measures acceptance.
+  Sharpening the picture: the recent pings arrive with `trigger=pull` and
+  `source=tasker`, i.e. the phone **is** running the pull task, but the nonce is
+  not arriving with it. `%arpar1` unresolved is recorded as unlinked by design
+  (§6.4 treats a literal `%`-prefixed value as absent), which is the correct
+  handling of a manually-run task and indistinguishable, in the data, from an
+  AutoRemote-triggered run whose parameter never populated. **A ping with
+  `trigger=pull` and a null `request_id` is therefore not evidence the pull loop
+  works** — it is evidence the task ran, by some route.
+
+  What will settle it: the first ping carrying a real nonce. Until then treat
+  `location_responsiveness: down` as accurate and unexplained-by-elimination —
+  the key fix (§6.1.1) removed one cause, it did not demonstrate the path.
 - **AutoRemote reliability under prolonged doze.** FCM high-priority should
   deliver, but this device has already violated one reasonable expectation.
   Mitigation: the responsiveness check measures exactly this, so if the

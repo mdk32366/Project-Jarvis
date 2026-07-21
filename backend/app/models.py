@@ -408,9 +408,14 @@ class LocationRequest(Base):
     responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="pending")       # pending|fulfilled|timeout
     trigger: Mapped[str] = mapped_column(String(16), default="scheduled")    # scheduled|on_demand
-    dispatch_ok: Mapped[bool] = mapped_column(Boolean, default=False)
-    # Transport failure detail only. NEVER key material — asserted in test.
-    dispatch_error: Mapped[str] = mapped_column(String(300), default="")
+    # The RELAY TOOK IT — not that the phone received it. Nothing on this leg can
+    # observe delivery, so the name claims only what is known (TDD §12). It was
+    # called `dispatch_ok`, which named a leg it could not see: the relay answers
+    # 200 to everything and reports the real outcome in the body, so a total
+    # delivery failure read green until 2026-07-21.
+    relay_accepted: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Rejection or transport detail only. NEVER key material — asserted in test.
+    relay_error: Mapped[str] = mapped_column(String(300), default="")
 
 
 class Episode(Base):

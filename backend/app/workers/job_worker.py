@@ -79,8 +79,8 @@ def _location_pull_tick(db) -> None:
 
         if due_for_pull(db):
             req = new_request(db, trigger="scheduled")
-            log.info("location pull requested (request %s, dispatch_ok=%s)",
-                     req.id, req.dispatch_ok)
+            log.info("location pull requested (request %s, relay_accepted=%s)",
+                     req.id, req.relay_accepted)
         sweep_timeouts(db)
     except Exception as e:  # noqa: BLE001
         log.error("location pull tick error: %s", e)
