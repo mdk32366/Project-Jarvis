@@ -475,13 +475,27 @@ async def location_ingest(request: Request, db: Session = Depends(get_db)):
     except (TypeError, ValueError):
         accuracy = 0.0
 
+    # Close out the ask this answers, if it names one. The nonce is a CORRELATOR,
+    # never a credential — the token above already did all the authenticating, so an
+    # unknown or stale nonce loses the correlation, never the fix.
+    from app.handlers.location import close_request
+
+    nonce = str(body.get("nonce") or "").strip()
+    req = None
+    if nonce and not nonce.startswith("%"):     # Tasker sends a literal %arpar1 when unset
+        req = close_request(db, nonce)
+        if req is None:
+            log.info("location ping carried an unknown nonce; recording it unlinked")
+
     p = record_ping(
         db, lat=lat, lon=lon,
         accuracy_m=accuracy,
         source=str(body.get("source") or "phone"),
         label=str(body.get("label") or ""),
+        request_id=req.id if req else None,
     )
-    log.info("location ping: %.4f,%.4f (%s)", lat, lon, p.label or "no label")
+    log.info("location ping: %.4f,%.4f (%s)%s", lat, lon, p.label or "no label",
+             f" [request {req.id} {req.status}]" if req else "")
     return {"ok": True, "id": p.id}
 
 

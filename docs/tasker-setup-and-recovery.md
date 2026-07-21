@@ -1,5 +1,29 @@
 # Tasker: JARVIS Location Push — setup, recovery & version control
 
+> ## ⛔ SUPERSEDED — the timed-profile approach in this document does not work
+>
+> **Do not rebuild the 15-minute Time profile described below.** It was established
+> on 2026-07-19 that Tasker on this device (Pixel 9) does not appear under
+> Settings → Apps → Special app access → **Alarms & reminders**, so it cannot hold
+> `SCHEDULE_EXACT_ALARM`. Its scheduled profiles therefore degrade to inexact
+> alarms, which Android defers indefinitely while the device is idle.
+>
+> The symptom shape is worth memorizing, because nothing visible is wrong:
+> correct config, correct 15-minute context, **no fires, no errors, empty run log,
+> and manual runs perfect.**
+>
+> Ruled out and not to be relitigated: the per-profile toggle, battery
+> optimization, Monitor check intervals, and Tasker version. All four are real
+> gotchas; none was the cause.
+>
+> **The replacement is `docs/TDD-location-pull-inversion.md`:** the server asks and
+> the phone answers, over an AutoRemote **Event** profile. There is no schedule on
+> the phone anymore — that is the entire point.
+>
+> **What in this file is still good:** the permissions/battery section, the
+> export → scrub-token → commit → paste-token-back workflow, and the recovery
+> notes. Those apply unchanged to the new Event profile.
+
 **File:** `jarvis-location-15min.prj.xml` (a Tasker **Project** export)
 **What it does:** every 15 minutes → get a GPS fix → HTTP POST it to
 `https://jarvis-mdk.fly.dev/api/location` with your shared token.

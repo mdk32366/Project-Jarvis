@@ -19,9 +19,10 @@ def test_seed_inventory_covers_the_topology(db):
     for a in ("researcher", "finance", "archivist", "infra", "secretary",
               "travel", "navigator", "netstatus", "scheduling"):
         assert a in names
-    # external APIs + the trunk subsystems + the data feed
+    # external APIs + the trunk subsystems + both halves of the location split
     for x in ("tavily", "duffel", "google_oauth", "google_calendar_svcacct", "twilio",
-              "anthropic_api", "postgres", "worker_scheduler", "location_pings"):
+              "anthropic_api", "postgres", "worker_scheduler",
+              "location_pull_scheduler", "location_responsiveness"):
         assert x in names
 
 

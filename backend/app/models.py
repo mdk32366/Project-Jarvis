@@ -1,5 +1,5 @@
 from datetime import date, datetime
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.database import Base
 
@@ -365,6 +365,46 @@ class LocationPing(Base):
     source: Mapped[str] = mapped_column(String(32), default="phone")
     label: Mapped[str] = mapped_column(String(120), default="")   # e.g. "leaving home"
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Which server-initiated ask this answers. NULLABLE on purpose: a manual force-run
+    # or any legacy push is still a real fix, it just carries no correlation. An
+    # unsolicited ping is data, not an error.
+    request_id: Mapped[int | None] = mapped_column(
+        ForeignKey("location_requests.id"), nullable=True, index=True, default=None
+    )
+
+
+class LocationRequest(Base):
+    """A server-initiated ASK for a position fix (TDD: location schedule inversion).
+
+    The phone no longer has to remember to report — JARVIS asks, the phone answers.
+    This row is the ask, and it exists to make a missing fix ATTRIBUTABLE: a request
+    sent with no response means the phone is at fault; no request sent at all means
+    the scheduler is. Those are different problems with different fixes, and they
+    should never again share one signal.
+
+    The trust direction from `LocationPing` is unchanged. This dispatches a content-
+    free "send me a fix" message to a device that already opted in; it cannot make
+    the phone do anything else.
+    """
+
+    __tablename__ = "location_requests"
+    __table_args__ = (
+        # The timeout sweep and the responsiveness check both scan recent rows by
+        # status — the pair is the access pattern, so it's the index.
+        Index("ix_location_requests_status_requested", "status", "requested_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # A CORRELATOR, never a credential: X-Jarvis-Token still does all the
+    # authenticating. Opaque only so a guess can't close someone else's request.
+    nonce: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")       # pending|fulfilled|timeout
+    trigger: Mapped[str] = mapped_column(String(16), default="scheduled")    # scheduled|on_demand
+    dispatch_ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Transport failure detail only. NEVER key material — asserted in test.
+    dispatch_error: Mapped[str] = mapped_column(String(300), default="")
 
 
 class Episode(Base):

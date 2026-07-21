@@ -11,9 +11,12 @@ from datetime import datetime, timedelta, timezone
 from app.config import settings
 from app.health import seed_health_topology
 from app.health_checks import (
-    check_app_up, check_freshness, check_heartbeat, check_liveness, run_all_checks, run_check,
+    check_app_up, check_heartbeat, check_liveness, check_location_responsiveness,
+    check_location_scheduler, run_all_checks, run_check,
 )
-from app.models import ActionAudit, Component, HealthResult, LocationPing, SchedulerHeartbeat
+from app.models import (
+    ActionAudit, Component, HealthResult, LocationRequest, SchedulerHeartbeat,
+)
 
 
 def _now():
@@ -116,39 +119,126 @@ def test_heartbeat_disabled_is_ok_not_down(db):
     assert r.status == "ok" and "disabled" in r.detail                # disabled != down
 
 
-# ── freshness (§5.3) + active-hours window ──────────────────────────────────
+# ── the location split (TDD location-pull §7) ────────────────────────────────
+#
+# The point of these two checks is ATTRIBUTION: the same visible symptom ("no
+# fresh position") must resolve to a different component depending on whether the
+# server stopped asking or the phone stopped answering. The retired single
+# freshness check could not tell those apart.
 
-def test_freshness_degraded_when_stale_in_active_hours(db, monkeypatch):
-    seed_health_topology(db)
-    monkeypatch.setattr(settings, "location_active_start_hour", 0)
-    monkeypatch.setattr(settings, "location_active_end_hour", 24)     # always active
-    db.add(LocationPing(lat=1, lon=1, created_at=_now() - timedelta(minutes=40)))
-    db.commit()
-    assert check_freshness(db, _c(db, "location_pings")).status == "degraded"   # 20<40<=60
-
-
-def test_freshness_down_when_very_stale(db, monkeypatch):
-    seed_health_topology(db)
+def _always_active(monkeypatch):
     monkeypatch.setattr(settings, "location_active_start_hour", 0)
     monkeypatch.setattr(settings, "location_active_end_hour", 24)
-    db.add(LocationPing(lat=1, lon=1, created_at=_now() - timedelta(hours=3)))
+
+
+def _req(db, *, status="fulfilled", trigger="scheduled", age_min=0.0,
+         dispatch_ok=True, error=""):
+    r = LocationRequest(
+        nonce=f"n{db.query(LocationRequest).count()}-{status}-{age_min}",
+        trigger=trigger, status=status, dispatch_ok=dispatch_ok, dispatch_error=error,
+        requested_at=_now() - timedelta(minutes=age_min),
+        responded_at=_now() - timedelta(minutes=age_min) if status == "fulfilled" else None,
+    )
+    db.add(r)
     db.commit()
-    assert check_freshness(db, _c(db, "location_pings")).status == "down"
+    return r
 
 
-def test_freshness_suppressed_outside_active_hours(db, monkeypatch):
+def test_scheduler_unknown_when_never_asked(db):
+    """No evidence is not health — a fresh deploy has no basis for a green."""
+    seed_health_topology(db)
+    r = check_location_scheduler(db, _c(db, "location_pull_scheduler"))
+    assert r.status == "unknown" and r.fault_code == "no_requests"
+
+
+def test_scheduler_ok_when_asking_on_time(db, monkeypatch):
+    seed_health_topology(db)
+    _always_active(monkeypatch)
+    _req(db, age_min=5)                                    # interval 15 -> ok <= 20
+    assert check_location_scheduler(db, _c(db, "location_pull_scheduler")).status == "ok"
+
+
+def test_scheduler_down_when_not_asking(db, monkeypatch):
+    seed_health_topology(db)
+    _always_active(monkeypatch)
+    _req(db, age_min=45)                                   # > interval*2 (30)
+    r = check_location_scheduler(db, _c(db, "location_pull_scheduler"))
+    assert r.status == "down" and r.fault_code == "not_asking"
+
+
+def test_scheduler_ok_outside_active_hours(db, monkeypatch):
+    """An overnight gap is not a fault — nothing is asking because nothing should."""
     seed_health_topology(db)
     monkeypatch.setattr(settings, "location_active_start_hour", 3)
-    monkeypatch.setattr(settings, "location_active_end_hour", 3)      # empty window -> always outside
-    db.add(LocationPing(lat=1, lon=1, created_at=_now() - timedelta(hours=6)))
-    db.commit()
-    r = check_freshness(db, _c(db, "location_pings"))
+    monkeypatch.setattr(settings, "location_active_end_hour", 3)   # empty -> always outside
+    _req(db, age_min=600)
+    r = check_location_scheduler(db, _c(db, "location_pull_scheduler"))
     assert r.status == "ok" and "outside active hours" in r.detail
 
 
-def test_freshness_unknown_with_no_pings(db):
+def test_scheduler_dispatch_failure_is_its_own_fault_code(db, monkeypatch):
+    """Minting requests that never leave the building is a DIFFERENT fault from not
+    minting them, and it sends you to the key rather than the worker."""
     seed_health_topology(db)
-    assert check_freshness(db, _c(db, "location_pings")).status == "unknown"
+    _always_active(monkeypatch)
+    _req(db, age_min=1, dispatch_ok=False, error="HTTP 401: bad key")
+    r = check_location_scheduler(db, _c(db, "location_pull_scheduler"))
+    assert r.status == "down" and r.fault_code == "dispatch_failing"
+
+
+def test_scheduler_ignores_on_demand_requests(db, monkeypatch):
+    """An on-demand pull is not evidence the SCHEDULE is running."""
+    seed_health_topology(db)
+    _always_active(monkeypatch)
+    _req(db, trigger="on_demand", age_min=1)
+    assert check_location_scheduler(db, _c(db, "location_pull_scheduler")).status == "unknown"
+
+
+def test_responsiveness_unknown_below_evidence_floor(db):
+    """Two answered requests is not enough to call the phone healthy."""
+    seed_health_topology(db)
+    _req(db, status="fulfilled")
+    _req(db, status="fulfilled")
+    r = check_location_responsiveness(db, _c(db, "location_responsiveness"))
+    assert r.status == "unknown" and r.fault_code == "no_evidence"
+
+
+def test_responsiveness_ok_degraded_down_thresholds(db):
+    seed_health_topology(db)
+    for _ in range(6):
+        _req(db, status="fulfilled")
+    assert check_location_responsiveness(db, _c(db, "location_responsiveness")).status == "ok"
+
+    for _ in range(2):                                     # window slides: 4 of last 6
+        _req(db, status="timeout")
+    assert check_location_responsiveness(db, _c(db, "location_responsiveness")).status == "degraded"
+
+    for _ in range(4):                                     # 0 of last 6
+        _req(db, status="timeout")
+    r = check_location_responsiveness(db, _c(db, "location_responsiveness"))
+    assert r.status == "down" and r.fault_code == "not_answering"
+
+
+def test_responsiveness_ignores_pending(db):
+    """A pull in flight has not failed yet; counting it would read red on every tick."""
+    seed_health_topology(db)
+    for _ in range(6):
+        _req(db, status="fulfilled")
+    for _ in range(6):
+        _req(db, status="pending")
+    assert check_location_responsiveness(db, _c(db, "location_responsiveness")).status == "ok"
+
+
+def test_old_location_pings_component_is_retired(db):
+    """Retirement must actually delete: the seed reconciles fields but does not
+    remove rows, so a dropped component would otherwise keep running its old check."""
+    seed_health_topology(db)
+    db.add(Component(name="location_pings", kind="data_feed", check_type="freshness"))
+    db.add(HealthResult(component="location_pings", status="down"))
+    db.commit()
+    seed_health_topology(db)
+    assert db.get(Component, "location_pings") is None
+    assert db.get(HealthResult, "location_pings") is None
 
 
 # ── never-raise (§4.4) ───────────────────────────────────────────────────────

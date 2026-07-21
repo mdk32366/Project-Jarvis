@@ -19,7 +19,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.models import Component, Remediation
+from app.models import Component, HealthResult, Remediation
 
 log = logging.getLogger(__name__)
 
@@ -62,9 +62,25 @@ _COMPONENTS: list[dict] = [
     {"name": "email_ingest",    "kind": "internal_subsystem", "depends_on": "",                  "check_type": "none",      "description": "Inbound email ingestion."},
 
     # ── Data feeds ──
-    {"name": "location_pings",  "kind": "data_feed", "depends_on": "",                "check_type": "freshness",
-     "check_config": {"ok_minutes": 20, "degraded_minutes": 60}, "description": "Phone location pings (Tasker)."},
+    # Location is TWO components on purpose. The old single `location_pings`
+    # freshness check read one signal for two different faults — a dead scheduler
+    # and a dead phone were indistinguishable, and 07-19 was spent finding out
+    # which. Splitting them makes a missing fix attributable from stored state
+    # rather than inferred.
+    {"name": "location_pull_scheduler", "kind": "data_feed", "depends_on": "worker_scheduler,autoremote",
+     "check_type": "location_scheduler", "description": "Is JARVIS asking the phone for a fix?"},
+    {"name": "location_responsiveness", "kind": "data_feed", "depends_on": "",
+     "check_type": "location_responsiveness", "check_config": {"window": 6, "ok_min": 5, "degraded_min": 3},
+     "description": "Is the phone answering when asked?"},
 ]
+
+# Components removed from _COMPONENTS above. The seed RECONCILES but does not
+# delete, so a row dropped from the list would otherwise linger in the database
+# still carrying its old check_type — and keep being run and reported. Retiring
+# has to be explicit or it doesn't happen.
+#
+# `location_pings` (freshness-only) is superseded by the two components above.
+_RETIRED: set[str] = {"location_pings"}
 
 # (component, fault_code) -> runbook. The "place to start" (TDD §4.2 / build §2.1).
 _REMEDIATIONS: list[dict] = [
@@ -87,11 +103,23 @@ _REMEDIATIONS: list[dict] = [
      "runbook": "Worker not reporting (no heartbeat in the staleness window). "
                 "`fly apps restart jarvis-mdk`; confirm the log line "
                 "`briefing scheduled daily at HH:MM`."},
-    {"component": "location_pings", "fault_code": "stale", "severity": "warn",
-     "runbook": "No location pings in the freshness window. Phone-side — see "
-                "docs/tasker-setup-and-recovery.md; confirm the Tasker project is enabled with "
-                "background-location + battery-unrestricted. The server cannot see or fix Tasker; "
-                "this reports the symptom only."},
+    # Location, split by fault owner: the two runbooks below point at different
+    # machines on purpose. Sending someone to the phone for a server fault is how
+    # 07-19 was lost.
+    {"component": "location_pull_scheduler", "fault_code": "not_asking", "severity": "warn",
+     "runbook": "The server is not requesting location fixes. SERVER-SIDE, not the phone. "
+                "Check `location_pull_enabled` on the /status runtime-settings panel; confirm the "
+                "worker heartbeat is alive (a dead worker stops pulls too); check `dispatch_error` "
+                "on the most recent location_requests row."},
+    {"component": "location_pull_scheduler", "fault_code": "dispatch_failing", "severity": "warn",
+     "runbook": "Requests are being minted but AutoRemote refuses them. Verify the AUTOREMOTE_KEY "
+                "Fly secret against the key in the AutoRemote app (Fly secrets are write-only — "
+                "re-set it rather than trying to read it back). A 4xx means the key is wrong."},
+    {"component": "location_responsiveness", "fault_code": "not_answering", "severity": "warn",
+     "runbook": "The server is asking and the phone is not answering. PHONE-SIDE. Confirm AutoRemote "
+                "is installed and receiving (send a test from the AutoRemote web console); the Tasker "
+                "Event profile 'jarvis_locreq' is enabled; Tasker location permission is 'Allow all the "
+                "time'; Tasker battery is Unrestricted. See docs/tasker-setup-and-recovery.md."},
     {"component": "twilio", "fault_code": "a2p_rejected", "severity": "warn",
      "runbook": "SMS blocked by A2P. Re-register the brand under the EIN as a business and resubmit "
                 "the campaign with business framing. Voice is unaffected."},
@@ -165,6 +193,20 @@ def seed_health_topology(db: Session) -> int:
         row.blast_radius = "multi" if spec["name"] in _TRUNK else "single"
         row.check_config = cfg
         touched += 1
+
+    # Retire superseded components. Their health_result rows go too — a stale result
+    # for a component that no longer exists would keep reporting on the status page
+    # long after the check that produced it was deleted.
+    for name in _RETIRED:
+        row = db.get(Component, name)
+        if row is not None:
+            db.delete(row)
+            log.info("retired health component %r", name)
+        stale = db.get(HealthResult, name)
+        if stale is not None:
+            db.delete(stale)
+        for rem_row in db.query(Remediation).filter(Remediation.component == name).all():
+            db.delete(rem_row)
 
     for rem in _REMEDIATIONS:
         row = (
