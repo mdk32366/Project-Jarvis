@@ -107,11 +107,11 @@ def new_request(db, trigger: str = "scheduled") -> LocationRequest:
     db.refresh(req)
 
     ok, err = autoremote.request_location(req.nonce)
-    req.dispatch_ok = ok
-    req.dispatch_error = (err or "")[:300]
+    req.relay_accepted = ok
+    req.relay_error = (err or "")[:300]
     db.commit()
     if not ok:
-        log.warning("location pull dispatch failed (request %s): %s", req.id, err)
+        log.warning("location pull relay rejected (request %s): %s", req.id, err)
     return req
 
 

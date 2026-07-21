@@ -132,10 +132,10 @@ def _always_active(monkeypatch):
 
 
 def _req(db, *, status="fulfilled", trigger="scheduled", age_min=0.0,
-         dispatch_ok=True, error=""):
+         relay_accepted=True, error=""):
     r = LocationRequest(
         nonce=f"n{db.query(LocationRequest).count()}-{status}-{age_min}",
-        trigger=trigger, status=status, dispatch_ok=dispatch_ok, dispatch_error=error,
+        trigger=trigger, status=status, relay_accepted=relay_accepted, relay_error=error,
         requested_at=_now() - timedelta(minutes=age_min),
         responded_at=_now() - timedelta(minutes=age_min) if status == "fulfilled" else None,
     )
@@ -176,14 +176,32 @@ def test_scheduler_ok_outside_active_hours(db, monkeypatch):
     assert r.status == "ok" and "outside active hours" in r.detail
 
 
-def test_scheduler_dispatch_failure_is_its_own_fault_code(db, monkeypatch):
-    """Minting requests that never leave the building is a DIFFERENT fault from not
+def test_scheduler_relay_rejection_is_its_own_fault_code(db, monkeypatch):
+    """Minting requests the relay then refuses is a DIFFERENT fault from not
     minting them, and it sends you to the key rather than the worker."""
     seed_health_topology(db)
     _always_active(monkeypatch)
-    _req(db, age_min=1, dispatch_ok=False, error="HTTP 401: bad key")
+    _req(db, age_min=1, relay_accepted=False, error="relay rejected: NotRegistered")
     r = check_location_scheduler(db, _c(db, "location_pull_scheduler"))
-    assert r.status == "down" and r.fault_code == "dispatch_failing"
+    assert r.status == "down" and r.fault_code == "relay_rejected"
+
+
+def test_retired_dispatch_failing_runbook_is_removed(db):
+    """A renamed fault code must not leave its old runbook joinable — that runbook
+    sent the reader somewhere the fault no longer lives."""
+    from app.models import Remediation
+
+    seed_health_topology(db)
+    db.add(Remediation(component="location_pull_scheduler", fault_code="dispatch_failing",
+                       runbook="stale", severity="warn"))
+    db.commit()
+    seed_health_topology(db)
+    assert db.query(Remediation).filter(
+        Remediation.component == "location_pull_scheduler",
+        Remediation.fault_code == "dispatch_failing").first() is None
+    assert db.query(Remediation).filter(
+        Remediation.component == "location_pull_scheduler",
+        Remediation.fault_code == "relay_rejected").first() is not None
 
 
 def test_scheduler_ignores_on_demand_requests(db, monkeypatch):

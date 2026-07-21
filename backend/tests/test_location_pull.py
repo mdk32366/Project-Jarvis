@@ -245,9 +245,110 @@ def test_dispatch_failure_is_recorded_on_the_request(db, monkeypatch):
     monkeypatch.setattr("app.providers.autoremote.request_location",
                         lambda nonce: (False, "HTTP 401: bad key"))
     req = new_request(db)
-    assert req.dispatch_ok is False
-    assert "401" in req.dispatch_error
+    assert req.relay_accepted is False
+    assert "401" in req.relay_error
     assert req.status == "pending"                          # still sweeps normally
+
+
+# ── the relay answers 200 to everything; the BODY is the outcome ─────────────
+
+def _fake_transport(monkeypatch, *, status=200, body="OK"):
+    """Stand in for the relay. Returns whatever body the test asks for."""
+    import httpx
+
+    class _Resp:
+        status_code = status
+        text = body
+
+    class _Client:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def post(self, url, data=None):
+            _Client.sent = data
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "Client", _Client)
+    return _Client
+
+
+def test_not_registered_body_is_a_failure_despite_http_200(db, monkeypatch):
+    """THE regression. From the PR #36 deploy until 2026-07-21 the relay answered
+    `NotRegistered` to every single send while the code recorded success, because
+    it read the status code and not the body. A total delivery failure that read
+    green for the whole life of the feature."""
+    from app.providers import autoremote
+
+    monkeypatch.setattr(settings, "autoremote_key", "tok")
+    _fake_transport(monkeypatch, status=200, body="NotRegistered")
+
+    ok, err = autoremote.send("jarvis_locreq")
+    assert ok is False
+    assert "NotRegistered" in err
+
+    monkeypatch.setattr("app.providers.autoremote.request_location",
+                        lambda nonce: autoremote.send("x"))
+    req = new_request(db)
+    assert req.relay_accepted is False
+    assert "NotRegistered" in req.relay_error
+
+
+def test_ok_body_is_the_only_success(monkeypatch):
+    from app.providers import autoremote
+
+    monkeypatch.setattr(settings, "autoremote_key", "tok")
+    _fake_transport(monkeypatch, body="OK")
+    assert autoremote.send("m") == (True, None)
+
+    for body in ("NotRegistered", "", "error", "Bad Request"):
+        _fake_transport(monkeypatch, body=body)
+        ok, err = autoremote.send("m")
+        assert ok is False, body
+        assert err
+
+
+def test_leading_key_prefix_is_stripped_before_sending(monkeypatch):
+    """The AutoRemote web page shows the key inside a URL, so `key=<token>` is the
+    natural thing to copy — and it is what was stored in Fly, producing
+    `key=key%3D<token>` on the wire and a NotRegistered on every send. A config
+    typo must not be able to silently disable the feature."""
+    from app.providers import autoremote
+
+    monkeypatch.setattr(settings, "autoremote_key", "key=abc123")
+    client = _fake_transport(monkeypatch, body="OK")
+
+    ok, _ = autoremote.send("m")
+    assert ok is True
+    assert client.sent["key"] == "abc123"            # prefix gone
+
+
+def test_bare_key_is_left_alone(monkeypatch):
+    from app.providers import autoremote
+
+    monkeypatch.setattr(settings, "autoremote_key", "abc123")
+    client = _fake_transport(monkeypatch, body="OK")
+    autoremote.send("m")
+    assert client.sent["key"] == "abc123"
+
+
+def test_separator_survives_form_encoding(monkeypatch):
+    """`=:=` percent-encodes to %3D%3A%3D and the relay decodes it back. Verified
+    against production 2026-07-21 — the separator was never the problem, and this
+    pins that so the hypothesis doesn't get relitigated."""
+    from urllib.parse import parse_qs, urlencode
+
+    from app.providers import autoremote
+
+    monkeypatch.setattr(settings, "autoremote_key", "tok")
+    client = _fake_transport(monkeypatch, body="OK")
+    # `send`, not `request_location` — the autouse fixture stubs the latter, and
+    # this test is about what actually reaches the wire.
+    autoremote.send(f"{autoremote.MESSAGE_PREFIX}=:=NONCE123")
+
+    on_the_wire = urlencode(client.sent)
+    assert "%3D%3A%3D" in on_the_wire                       # encoded in transit...
+    decoded = parse_qs(on_the_wire)["message"][0]
+    assert decoded == "jarvis_locreq=:=NONCE123"            # ...and decodes back
 
 
 def test_failed_dispatch_still_sweeps_to_timeout(db, monkeypatch):
@@ -273,8 +374,28 @@ def test_request_row_exists_even_if_dispatch_raises(db, monkeypatch):
 
 # ── the key is a secret ──────────────────────────────────────────────────────
 
-def test_key_never_reaches_the_dispatch_error(db, monkeypatch, caplog):
-    """`dispatch_error` is stored in the database AND rendered on the status page,
+def test_scrubber_catches_the_percent_encoded_key(monkeypatch):
+    """THE leak that actually happened. The key travels in a form-encoded body, so
+    a scrubber that only knows the literal passes `key%3Dej3j...` straight through.
+    On 2026-07-21 that put the real key in a transcript. Scrub every encoding it
+    can appear in, and assert it — this is not something to leave to care."""
+    from urllib.parse import quote, quote_plus
+
+    from app.providers.autoremote import _scrub
+
+    secret = "ej3jRj4Ss_c:APA91bG-xY_z/test+value"
+    monkeypatch.setattr(settings, "autoremote_key", secret)
+
+    for form in (secret, quote(secret, safe=""), quote_plus(secret)):
+        body = f"key={form}&message=jarvis_locreq"
+        cleaned = _scrub(body)
+        assert secret not in cleaned
+        assert form not in cleaned
+        assert "***" in cleaned
+
+
+def test_key_never_reaches_the_relay_error(db, monkeypatch, caplog):
+    """`relay_error` is stored in the database AND rendered on the status page,
     so a key that leaked into it would leak twice. Asserted, not assumed."""
     import httpx
 
@@ -307,8 +428,8 @@ def test_key_never_reaches_the_dispatch_error(db, monkeypatch, caplog):
     monkeypatch.setattr("app.providers.autoremote.request_location",
                         lambda nonce: autoremote.send(f"{autoremote.MESSAGE_PREFIX}=:={nonce}"))
     req = new_request(db)
-    assert req.dispatch_ok is False
-    assert req.dispatch_error and secret not in req.dispatch_error
+    assert req.relay_accepted is False
+    assert req.relay_error and secret not in req.relay_error
 
 
 def test_transport_error_message_is_scrubbed(monkeypatch):

@@ -170,13 +170,19 @@ def check_location_scheduler(db: Session, c: Component) -> CheckResult:
                            f"outside active hours; last pull {int(age_min)}m ago",
                            checked_at=_now(), last_success_at=at)
 
-    # A failing dispatch is a distinct fault from a scheduler that never ran, and it
-    # sends you to a different place (the key, not the worker), so it gets its own
-    # code even while requests are being minted on time.
-    if not last.dispatch_ok:
-        return CheckResult(c.name, "down", "dispatch_failing",
-                           f"last pull {int(age_min)}m ago did not dispatch: "
-                           f"{last.dispatch_error or 'unknown error'}",
+    # A relay rejection is a distinct fault from a scheduler that never ran, and it
+    # sends you somewhere else entirely (the key, not the worker), so it gets its
+    # own code even while requests are being minted on time.
+    #
+    # SCOPE, stated because the previous version overclaimed it: this sees only
+    # whether the RELAY accepted the message. It cannot see the relay→FCM→phone
+    # leg. A message accepted and then never delivered reads ok here while
+    # `location_responsiveness` correctly goes down — so when responsiveness is
+    # down and this is ok, the phone-side runbook is not automatically right.
+    if not last.relay_accepted:
+        return CheckResult(c.name, "down", "relay_rejected",
+                           f"last pull {int(age_min)}m ago was not accepted by the relay: "
+                           f"{last.relay_error or 'unknown error'}",
                            checked_at=_now(), last_failure_at=at)
 
     if age_min <= interval + 5:

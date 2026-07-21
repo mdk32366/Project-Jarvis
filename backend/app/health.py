@@ -82,6 +82,17 @@ _COMPONENTS: list[dict] = [
 # `location_pings` (freshness-only) is superseded by the two components above.
 _RETIRED: set[str] = {"location_pings"}
 
+# (component, fault_code) pairs no longer produced by any check. Same lesson as
+# _RETIRED: the seed reconciles runbook TEXT but never removes rows, so a renamed
+# fault code would leave its old runbook joinable forever — and that runbook sent
+# the reader somewhere the fault no longer lives.
+#
+# `dispatch_failing` became `relay_rejected` when the column stopped claiming to
+# measure delivery (TDD §12).
+_RETIRED_REMEDIATIONS: set[tuple[str, str]] = {
+    ("location_pull_scheduler", "dispatch_failing"),
+}
+
 # (component, fault_code) -> runbook. The "place to start" (TDD §4.2 / build §2.1).
 _REMEDIATIONS: list[dict] = [
     {"component": "google_oauth", "fault_code": "token_missing_scope", "severity": "critical",
@@ -109,12 +120,16 @@ _REMEDIATIONS: list[dict] = [
     {"component": "location_pull_scheduler", "fault_code": "not_asking", "severity": "warn",
      "runbook": "The server is not requesting location fixes. SERVER-SIDE, not the phone. "
                 "Check `location_pull_enabled` on the /status runtime-settings panel; confirm the "
-                "worker heartbeat is alive (a dead worker stops pulls too); check `dispatch_error` "
+                "worker heartbeat is alive (a dead worker stops pulls too); check `relay_error` "
                 "on the most recent location_requests row."},
-    {"component": "location_pull_scheduler", "fault_code": "dispatch_failing", "severity": "warn",
-     "runbook": "Requests are being minted but AutoRemote refuses them. Verify the AUTOREMOTE_KEY "
-                "Fly secret against the key in the AutoRemote app (Fly secrets are write-only — "
-                "re-set it rather than trying to read it back). A 4xx means the key is wrong."},
+    {"component": "location_pull_scheduler", "fault_code": "relay_rejected", "severity": "warn",
+     "runbook": "Requests are being minted but the AutoRemote relay is refusing them. Read "
+                "`relay_error` on the most recent location_requests row — the relay answers HTTP "
+                "200 to everything and puts the real outcome in the body. `NotRegistered` means "
+                "the key does not match a registered device: re-set AUTOREMOTE_KEY to the BARE "
+                "TOKEN (the AutoRemote web page shows it inside a URL, so it is easy to paste the "
+                "leading `key=` by mistake — that exact typo disabled the feature silently from "
+                "2026-07-19 to 07-21). Fly secrets are write-only; re-set rather than read back."},
     {"component": "location_responsiveness", "fault_code": "not_answering", "severity": "warn",
      "runbook": "The server is asking and the phone is not answering. PHONE-SIDE. Confirm AutoRemote "
                 "is installed and receiving (send a test from the AutoRemote web console); the Tasker "
@@ -207,6 +222,16 @@ def seed_health_topology(db: Session) -> int:
             db.delete(stale)
         for rem_row in db.query(Remediation).filter(Remediation.component == name).all():
             db.delete(rem_row)
+
+    for comp, fault in _RETIRED_REMEDIATIONS:
+        stale_rem = (
+            db.query(Remediation)
+            .filter(Remediation.component == comp, Remediation.fault_code == fault)
+            .first()
+        )
+        if stale_rem is not None:
+            db.delete(stale_rem)
+            log.info("retired remediation %s/%s", comp, fault)
 
     for rem in _REMEDIATIONS:
         row = (

@@ -174,7 +174,9 @@ class Settings(BaseSettings):
     # becomes external to the phone and the whole failure class goes away.
     #
     # AutoRemote personal key — a SECRET. Never on the runtime-settings allow-list,
-    # never logged, never echoed into dispatch_error.
+    # never logged, never echoed into relay_error. Set it to the BARE TOKEN — the
+    # AutoRemote web page shows the key inside a URL, and a pasted `key=` prefix
+    # makes the relay answer NotRegistered to every send (silently, behind a 200).
     autoremote_key: str = ""
     location_pull_enabled: bool = True
     location_pull_interval_minutes: int = 15

@@ -328,9 +328,9 @@ down. v1 set: **liveness** (derives `last_success`/`last_failure` from `actions_
 `confirmed`/`refused` row counts as ok, the gate working; no evidence → `unknown`, never green),
 **heartbeat** (reads `scheduler_heartbeat` vs the seeded `stale_seconds`; disabled → ok-labeled,
 not down), the **location split** — `location_pull_scheduler` ("is the server asking?", reads
-`location_requests` with `trigger=scheduled`; a failed dispatch gets its own `dispatch_failing`
+`location_requests` with `trigger=scheduled`; a refused send gets its own `relay_rejected`
 fault code because it sends you to the key, not the worker — **but see the scope limit below,
-`dispatch_ok` only proves the relay accepted the message, not that it reached the phone**) and
+`relay_accepted` only proves the relay took the message, not that it reached the phone**) and
 `location_responsiveness` ("is the
 phone answering?", scores the trailing 6 completed requests; fewer than 3 → `unknown`, never green)
 — both suppressed outside the runtime active-hours window, and **app up-status**. Secret-age (needs a Fly API token in-container) and
@@ -410,20 +410,28 @@ all is the scheduler's, and those two now have separate health checks with runbo
 at different machines. A ping with no nonce is still recorded, unlinked — unsolicited data is
 data, not an error.
 
-**KNOWN INSTRUMENTATION GAP — `dispatch_ok` measures acceptance, not delivery** (TDD §7.1 scope
-limit, §12). The column records only that the AutoRemote relay returned 200. It says nothing
-about whether FCM delivered, whether the phone was reachable, or whether Tasker ever saw the
-message. `location_responsiveness` is unaffected — it scores request *fulfilment*, so a phone
-that never receives the nudge still produces `timeout` rows and goes `down` within six requests,
-and nothing goes undetected. But `location_pull_scheduler` keys `dispatch_failing` on
-`dispatch_ok`, so during a silent delivery failure it reads **green** and sends the operator to
-the phone-side runbook for a fault in the relay→FCM leg — which is neither the server nor the
-phone. That is the misattribution this whole inversion was built to eliminate, reappearing one
-layer down. **If responsiveness stays `down` after the phone is configured and the Event profile
-is confirmed firing on a manual AutoRemote send, suspect this first, not last.** The honest fix
-is to rename the column `relay_accepted` (claiming exactly what is known) or to close the loop
-with a delivery receipt if AutoRemote exposes one — not to leave a column named for delivery
-that measures acceptance.
+**THE RELAY ANSWERS 200 TO EVERYTHING — the body is the outcome.** `OK` means it accepted the
+message for a registered device; `NotRegistered` means there is no device to deliver to. The
+first version of `send()` checked only the status code, so it recorded success on every send
+while the relay was answering `NotRegistered` — a **total delivery failure that read green for
+the entire life of the feature** (PR #36 deploy → 2026-07-21). Root cause: `AUTOREMOTE_KEY` was
+stored with a literal `key=` prefix, copied from the URL the AutoRemote web page displays it in.
+`send()` now reads the body, treats anything but `OK` as a failure, and defensively strips a
+leading `key=` — a config typo must not be able to disable the feature silently.
+
+**Scope limit that remains** (TDD §7.1, §12). `relay_accepted` is named for what it can actually
+observe: the relay took the message. Nothing on this leg sees whether FCM delivered, whether the
+phone was reachable, or whether Tasker saw it. `location_responsiveness` is unaffected — it
+scores request *fulfilment*, so a phone that never receives the nudge still produces `timeout`
+rows and goes `down` within six requests, and nothing goes undetected. But
+`location_pull_scheduler` keys `relay_rejected` on `relay_accepted`, so a message accepted and
+then never delivered still reads **ok** there. **When responsiveness is `down` and the scheduler
+check is `ok`, the phone-side runbook is not automatically the right place to look.** Closing
+that remaining gap needs a delivery receipt, if AutoRemote exposes one.
+
+The key is scrubbed from logs and from `relay_error` (which is stored in the DB *and* rendered on
+the status page) in its **raw and percent-encoded forms** — it travels in a form-encoded body, so
+a scrubber that knows only the literal misses it entirely, which is how the key leaked once.
 
 A **manual push** task (no profile, run from a home-screen shortcut) is deliberately retained
 as a fallback for pre-seeding position before a conversation. It posts no nonce and
