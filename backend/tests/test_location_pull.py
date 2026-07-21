@@ -95,6 +95,65 @@ def test_unsolicited_ping_is_data_not_an_error(client, db, _token):
     assert db.get(LocationPing, r.json()["id"]).request_id is None
 
 
+def test_manual_push_is_recorded_and_creates_no_request(client, db, _token):
+    """The retained fallback (§6.6): a task with no profile, run by hand. It posts
+    no nonce and claims nothing, which is exactly why it survived the cull that
+    removed the timed profile."""
+    r = client.post("/api/location",
+                    json={"lat": 48.5, "lon": -122.6, "source": "tasker", "trigger": "manual"},
+                    headers={"X-Jarvis-Token": "s3cret"})
+    assert r.status_code == 200
+
+    ping = db.get(LocationPing, r.json()["id"])
+    assert ping.request_id is None
+    assert ping.trigger == "manual"
+    assert db.query(LocationRequest).count() == 0      # a manual push asks nothing
+
+
+def test_manual_push_cannot_mask_an_unresponsive_phone(client, db, _token):
+    """THE containment property, and the whole basis on which the fallback was
+    retained (§6.6). Responsiveness scores REQUEST FULFILMENT, never ping recency —
+    so a fresh manual push, however recent, cannot paint a phone green while it is
+    ignoring every pull. This is the payoff of retiring the freshness-only check
+    rather than merely supplementing it."""
+    from app.health import seed_health_topology
+    from app.health_checks import check_location_responsiveness
+    from app.models import Component
+
+    seed_health_topology(db)
+    for i in range(6):
+        db.add(LocationRequest(nonce=f"ignored-{i}", trigger="scheduled", status="timeout"))
+    db.commit()
+
+    c = db.get(Component, "location_responsiveness")
+    assert check_location_responsiveness(db, c).status == "down"
+
+    r = client.post("/api/location",
+                    json={"lat": 48.5, "lon": -122.6, "trigger": "manual"},
+                    headers={"X-Jarvis-Token": "s3cret"})
+    assert r.status_code == 200                        # the fix is accepted...
+
+    db.expire_all()
+    assert check_location_responsiveness(db, c).status == "down"   # ...and changes nothing
+
+
+def test_legacy_ping_without_trigger_is_still_accepted(client, db, _token):
+    """A client that has never heard of `trigger` still reports real positions."""
+    r = client.post("/api/location", json={"lat": 48.5, "lon": -122.6},
+                    headers={"X-Jarvis-Token": "s3cret"})
+    assert r.status_code == 200
+    assert db.get(LocationPing, r.json()["id"]).trigger is None
+
+
+def test_pull_answer_records_its_trigger(client, db, _token):
+    req = new_request(db)
+    r = client.post("/api/location",
+                    json={"lat": 48.5, "lon": -122.6, "nonce": req.nonce, "trigger": "pull"},
+                    headers={"X-Jarvis-Token": "s3cret"})
+    assert r.status_code == 200
+    assert db.get(LocationPing, r.json()["id"]).trigger == "pull"
+
+
 def test_unknown_nonce_loses_the_link_never_the_fix(client, db, _token):
     r = _post_ping(client, {"lat": 48.5, "lon": -122.6, "nonce": "no-such-nonce"})
     assert r.status_code == 200

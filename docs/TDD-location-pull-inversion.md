@@ -46,8 +46,10 @@ better phone-side schedule. It is to stop asking the phone to remember.
 - Building a companion Android app. AutoRemote already is one.
 - Continuous / high-frequency tracking. 15 minutes during active hours is the
   requirement; nothing here should make a tighter cadence tempting.
-- Retaining the phone-side timed profile as a fallback. It does not work; keeping
-  it would produce ambiguous pings and reintroduce the failure class.
+- Retaining the phone-side **timed** profile. It does not work; keeping it would
+  produce ambiguous pings and reintroduce the failure class. (A **manually run**
+  task is explicitly *not* covered by this non-goal — see §6.6. It cannot silently
+  fail, because it only runs when pressed.)
 - Push alerting on location faults. (R19 remains deferred; v1 is pull-only.)
 
 ---
@@ -126,10 +128,17 @@ Add `request_id` int FK → `location_request.id`, **nullable**. Nullable is
 deliberate: manual force-runs and any legacy push remain valid pings, they simply
 carry no correlation. An unsolicited ping is data, not an error.
 
+Add `trigger` text, nullable — `pull` / `manual`, echoed from the client. This is
+descriptive only: it records how a fix arrived. **No health check reads it.**
+Attribution lives on `location_request` (§7), which is the point of the
+inversion; a client-supplied field must never be load-bearing for health, because
+the client is the thing whose reliability is in question.
+
 ### 5.3 Migration
 
-`0021_location_request.py` — create table, add nullable FK, add index on
-`location_request.nonce` and on `(status, requested_at)`.
+`0021_location_request.py` — create table, add nullable FK and nullable `trigger`
+to `location_ping`, add index on `location_request.nonce` and on
+`(status, requested_at)`.
 
 No backfill. Historical pings keep a null `request_id` honestly.
 
@@ -181,7 +190,9 @@ without it, `pending` rows accumulate and nothing is ever false.
   ping**, log at info, do not error. A late answer is a real location fix. It
   stays linked so a chronically-late phone shows up as `timeout` in
   responsiveness while the fix itself is still usable.
-- If `nonce` absent: record the ping with null `request_id`. Unchanged behavior.
+- If `nonce` absent: record the ping with null `request_id`, storing `trigger` as
+  supplied (`manual`, or null for legacy clients). Unchanged behavior otherwise.
+  An unsolicited ping is always accepted — it is a real fix.
 - Token auth (`X-Jarvis-Token`) unchanged and still the only authentication. The
   nonce is a correlator, never a credential.
 
@@ -197,6 +208,29 @@ without it, `pending` rows accumulate and nothing is ever false.
   no invented freshness.
 - Not gated. It is a read, it is idempotent-ish, and its only cost is one FCM
   message and a GPS fix.
+
+### 6.6 Manual push (retained fallback)
+
+A Tasker task with **no profile** — run by hand or from a home-screen shortcut.
+Posts a fix with **no nonce** and `trigger: "manual"`.
+
+**Use case:** pre-seeding position before initiating a conversation, so JARVIS
+already knows where Matt is rather than spending the ~20s round trip of §6.5
+finding out. Cheap, deliberate, and under direct control.
+
+**Why this is retained where the timed profile is not.** The timed profile's
+defect was silent non-firing: it claimed a guarantee it could not keep, and its
+pings were indistinguishable from healthy ones. A manually run task claims
+nothing. It fires when pressed or not at all, and the failure is immediately
+visible to the person pressing it. The rejected thing was the false guarantee,
+not the phone-side task.
+
+**Containment — the property that makes it safe:** responsiveness (§7.2) reads
+`location_request` fulfilment, **not** ping recency. A manual push creates no
+request. It is therefore structurally incapable of masking a phone that has
+stopped answering pulls. This is the direct payoff of retiring the freshness-only
+check rather than merely supplementing it, and it must be asserted in test (§11),
+not left as an implementation property.
 
 ---
 
@@ -260,11 +294,19 @@ with a stub, and yesterday's cost was largely phone-side blind debugging.
      - Header `X-Jarvis-Token: <token>`
      - JSON body:
        `{"lat":%LOC_LAT,"lon":%LOC_LON,"accuracy":%LOC_ACC,"source":"tasker","nonce":"%arpar1","trigger":"pull"}`
-5. Delete the old timed profile and its task. Do not keep it as a fallback — it
-   does not work and its pings would be indistinguishable from real ones.
-6. Verify: trigger a pull from the server, watch for `location ping` in
-   `fly logs`, confirm the request row goes `fulfilled`.
-7. **Export the project**, scrub the token to `REPLACE_WITH_LOCATION_TOKEN`,
+5. **Task JARVIS Push Location (manual)** — no profile attached. Same two actions
+   as above, but the body carries **no nonce** and `"trigger":"manual"`:
+   `{"lat":%LOC_LAT,"lon":%LOC_LON,"accuracy":%LOC_ACC,"source":"tasker","trigger":"manual"}`
+   Add a home-screen shortcut/widget for it. Duplicate the task rather than
+   sharing one with a conditional — less clever, and readable in six months.
+6. **Delete the old timed profile and its task.** The manual task above replaces
+   its only useful property. Nothing that claims to fire on a schedule and
+   doesn't stays on the phone.
+7. Verify **both paths**: trigger a pull from the server → watch for
+   `location ping` in `fly logs`, confirm the request row goes `fulfilled`. Then
+   run the manual task → confirm a ping lands with null `request_id` and
+   `trigger=manual`, and that no `location_request` row was created.
+8. **Export the project**, scrub the token to `REPLACE_WITH_LOCATION_TOKEN`,
    commit as `devices/jarvis-location-pull.prj.xml`, then **paste the real token
    back into Tasker after the commit.** Order matters. This is the same sequence
    that was pending from the previous Tasker work.
@@ -327,6 +369,12 @@ owner action.
 - **Late answer** — nonce arrives after `timeout`; ping is recorded, request stays
   `timeout`, no 4xx.
 - **Unsolicited ping** — no nonce; recorded with null `request_id`.
+- **Manual push is recorded** — no nonce, `trigger=manual`; ping stored, null
+  `request_id`, **no `location_request` row created**.
+- **Manual push cannot mask an unresponsive phone** — seed 6 `timeout` requests,
+  then post a manual ping; assert `location_responsiveness` still reads `down`.
+  This is the containment property from §6.6 and the whole basis on which the
+  fallback was retained. Assert it explicitly.
 - **Catch-up is not a burst** — simulate a 3-slot outage; assert exactly one
   make-up request.
 - **Active hours** — no scheduled requests outside the window; scheduler check

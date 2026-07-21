@@ -305,7 +305,7 @@ Postgres on Fly (SQLite in dev/tests). 30 tables in `backend/app/models.py`:
 | Memory | `persona_profile`, `preferences`, `memories`, `memory_embeddings`, `episodes`, `episode_quotes` |
 | Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` (per-*tool*), `request_log` (per-*request* — one coarse row per top-level request; retention 90d + row cap) |
 | Work | `jobs`, `tasks`, `ideas`, `watches`, `outbound_calls` |
-| Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings`, `location_requests` (the server-initiated ask a ping answers) |
+| Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` (+ `request_id`, and a descriptive `trigger` that no health check reads), `location_requests` (the server-initiated ask a ping answers) |
 | App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below), `scheduler_heartbeat` (briefing-scheduler proof-of-life + catch-up state) |
 | Health | `component` (topology inventory), `remediation` (fault→runbook), `health_result` (transient current status) |
 
@@ -405,8 +405,19 @@ request row is committed **before** dispatch and unanswered rows are swept to `t
 every tick — without the sweep the responsiveness check could never read false. The payoff
 beyond repair is **attribution**: a request with no answer is the phone's fault, no request at
 all is the scheduler's, and those two now have separate health checks with runbooks pointing
-at different machines. A ping with no nonce (manual force-run, legacy push) is still recorded,
-unlinked — unsolicited data is data, not an error.
+at different machines. A ping with no nonce is still recorded, unlinked — unsolicited data is
+data, not an error.
+
+A **manual push** task (no profile, run from a home-screen shortcut) is deliberately retained
+as a fallback for pre-seeding position before a conversation. It posts no nonce and
+`trigger=manual`. It survived the cull that removed the timed profile because what was
+rejected was the *false guarantee*, not the phone-side task: a timed profile claimed to fire
+and silently didn't, while a manual task claims nothing and fails visibly to the person
+pressing it. Its containment property is structural and asserted in test — `location_
+responsiveness` scores **request fulfilment, never ping recency**, so a manual push cannot
+paint a green over a phone that is ignoring every pull. `location_pings.trigger` is
+descriptive only; no health check reads it, because a client-supplied field must never be
+load-bearing for health when the client is the thing whose reliability is in question.
 
 ---
 
