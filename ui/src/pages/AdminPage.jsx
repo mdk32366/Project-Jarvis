@@ -118,6 +118,125 @@ function SettingsPanel() {
   );
 }
 
+// Projects & milestones (TDD project-tracking §8). Every write goes through
+// /projects/action — the same tool path a phone call uses. One write path, one
+// set of tests; a separate UI-only endpoint would be a second thing to keep
+// correct.
+function ProjectRow({ p, act, busy }) {
+  const [open, setOpen] = useState(false);
+  const live = p.documents.filter((d) => d.tier === "live");
+  const other = p.documents.filter((d) => d.tier !== "live");
+
+  return (
+    <div className="project">
+      <div className="row project-head">
+        <button className="link-btn" onClick={() => setOpen((o) => !o)}>{open ? "−" : "+"}</button>
+        <strong>{p.name}</strong>
+        <span className={`tag ${p.status === "active" ? "override" : ""}`}>{p.status}</span>
+        {p.total > 0 && <span className="hint">{p.done}/{p.total}</span>}
+        {p.next && <span className="hint">next: {p.next}</span>}
+      </div>
+      {p.status === "parked" && p.parked_reason && (
+        <p className="hint">Parked: {p.parked_reason}</p>
+      )}
+      {/* Exception-first: only ever rendered when something is actually wrong. */}
+      {p.anomalies.length > 0 && (
+        <p className="error">Needs attention: {p.anomalies.join("; ")}.</p>
+      )}
+      {open && (
+        <div className="project-body">
+          {p.summary && <p className="hint">{p.summary}</p>}
+          <ul className="milestones">
+            {p.milestones.map((m) => (
+              <li key={m.id} className={`ms-${m.status}`}>
+                <span>{m.title}</span>
+                {m.status === "open" ? (
+                  <button className="link-btn" disabled={busy}
+                    onClick={() => act({ tool: "complete_milestone",
+                                         args: { project: String(p.id), milestone: String(m.id) } })}>
+                    mark done
+                  </button>
+                ) : (
+                  <span className="tag">{m.status}</span>
+                )}
+              </li>
+            ))}
+            {p.milestones.length === 0 && <li className="hint">No milestones yet.</li>}
+          </ul>
+          {live.length > 0 && (
+            <p className="hint">Live: {live.map((d) => `${d.title} (${d.kind})`).join(", ")}</p>
+          )}
+          {other.length > 0 && (
+            <p className="hint">Other: {other.map((d) => `${d.title} [${d.tier}]`).join(", ")}</p>
+          )}
+          {p.repo_url && <p className="hint">Repo: {p.repo_url}</p>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectsPanel() {
+  const qc = useQueryClient();
+  const projects = useQuery({ queryKey: ["projects"], queryFn: () => api.get("/projects") });
+  const [showDone, setShowDone] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  const act = useMutation({
+    mutationFn: (body) => api.post("/projects/action", body),
+    onSuccess: (r) => {
+      setMsg({ ok: r.status === "ok", text: r.result });
+      qc.invalidateQueries({ queryKey: ["projects"] });
+    },
+    onError: (e) => setMsg({ ok: false, text: String(e.message) }),
+  });
+
+  const all = projects.data?.projects ?? [];
+  const active = all.filter((p) => p.status === "active");
+  const parked = all.filter((p) => p.status === "parked");
+  const closed = all.filter((p) => p.status === "done" || p.status === "abandoned");
+
+  return (
+    <div className="card">
+      <h2>Projects</h2>
+      <p className="hint">
+        Multi-session arcs and their milestones — the durable answer to "where am I on this?"
+        A one-off action with a due date is a task, not a project.
+      </p>
+      {projects.isError && <p className="error">Could not load projects.</p>}
+      {msg && <p className={msg.ok ? "hint" : "error"}>{msg.text}</p>}
+
+      {all.length === 0 && !projects.isLoading && (
+        <p className="hint">No projects tracked yet.</p>
+      )}
+
+      {active.map((p) => (
+        <ProjectRow key={p.id} p={p} busy={act.isPending} act={act.mutate} />
+      ))}
+
+      {parked.length > 0 && (
+        <details className="parked">
+          <summary>Parked ({parked.length})</summary>
+          {parked.map((p) => (
+            <ProjectRow key={p.id} p={p} busy={act.isPending} act={act.mutate} />
+          ))}
+        </details>
+      )}
+
+      {closed.length > 0 && (
+        <>
+          <button className="link-btn" onClick={() => setShowDone((s) => !s)}>
+            {showDone ? "hide" : "show"} done/abandoned ({closed.length})
+          </button>
+          {showDone && closed.map((p) => (
+            <ProjectRow key={p.id} p={p} busy={act.isPending} act={act.mutate} />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function AdminPage() {
   const qc = useQueryClient();
   const agents = useQuery({ queryKey: ["agents"], queryFn: () => api.get("/agents") });
@@ -208,6 +327,8 @@ export default function AdminPage() {
         {briefing && <pre className="cal-result">{briefing}</pre>}
         <p className="hint">Daily send time is set below under Runtime settings (briefing_enabled / briefing_hour / briefing_minute) — live, no redeploy.</p>
       </div>
+
+      <ProjectsPanel />
 
       <SettingsPanel />
 

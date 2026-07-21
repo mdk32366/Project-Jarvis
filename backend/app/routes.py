@@ -11,7 +11,7 @@ from app.database import get_db
 from app.models import ActionAudit, AgentConfig, Conversation, Job, Memory, Message, PersonaProfile, Preference, User
 from app.schemas import (AgentIn, AgentOut, AuditOut, ChangePasswordIn, ChatRequest, ChatResponse,
     ConversationOut, HealthResponse, JobOut, MemoryIn, MemoryOut, MessageOut, PersonaOut, PreferenceOut,
-    SettingIn, Token, UserOut)
+    ProjectActionIn, SettingIn, Token, UserOut)
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -651,6 +651,70 @@ def put_setting(key: str, item: SettingIn, user: User = Depends(get_current_user
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     return {"key": key, "value": value, "source": "override"}
+
+
+@router.get("/projects", tags=["admin"])
+def list_projects_api(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Read model for the Admin projects panel: every project with its milestones,
+    documents by tier, progress, and the anomalies `project_status` would report.
+
+    Read-only. All writes go through `/projects/action` so the UI and a phone call
+    share one write path (TDD §8)."""
+    from app.handlers.projects import _anomalies, _milestones, _progress
+    from app.models import Project, ProjectDocument
+
+    out = []
+    for p in db.execute(select(Project).order_by(Project.updated_at.desc())).scalars().all():
+        done, total, nxt = _progress(db, p)
+        docs = db.execute(
+            select(ProjectDocument).where(ProjectDocument.project_id == p.id)
+        ).scalars().all()
+        out.append({
+            "id": p.id,
+            "name": p.name,
+            "summary": p.summary,
+            "status": p.status,
+            "parked_reason": p.parked_reason,
+            "repo_url": p.repo_url,
+            "idea_id": p.idea_id,
+            "done": done,
+            "total": total,
+            "next": nxt.title if nxt else None,
+            "updated_at": p.updated_at.isoformat() if p.updated_at else None,
+            "anomalies": _anomalies(db, p),
+            "milestones": [
+                {"id": m.id, "title": m.title, "detail": m.detail,
+                 "status": m.status, "position": m.position}
+                for m in _milestones(db, p)
+            ],
+            "documents": [
+                {"id": d.id, "kind": d.kind, "tier": d.tier, "title": d.title,
+                 "path": d.path, "url": d.url,
+                 "superseded_by_id": d.superseded_by_id}
+                for d in docs
+            ],
+        })
+    return {"projects": out}
+
+
+@router.post("/projects/action", tags=["admin"])
+def project_action(item: ProjectActionIn, user: User = Depends(get_current_user),
+                   db: Session = Depends(get_db)):
+    """Run one project tool. The UI deliberately has NO write endpoints of its own:
+    milestone completion from a browser takes the same path as from a phone call,
+    so there is one write path and one set of tests behind it (TDD §8).
+
+    Fails closed — only the project tools are reachable here, never the wider
+    registry."""
+    from app.handlers.base import Context, build_registry
+    from app.handlers.projects import TOOL_NAMES
+
+    if item.tool not in TOOL_NAMES:
+        raise HTTPException(status_code=404, detail=f"{item.tool} is not a project tool")
+    reg = build_registry()
+    ctx = Context(db=db, channel="web", actor=user.username, thread_key="admin-projects")
+    result, status = reg.run_tool(item.tool, item.args or {}, ctx)
+    return {"tool": item.tool, "result": result, "status": status}
 
 
 @router.get("/calendar/health", tags=["admin"])

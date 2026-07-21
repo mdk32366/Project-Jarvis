@@ -115,6 +115,11 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "confirmation gate. Never say email cannot be sent; say the draft is ready to send. "
         "Manage tasks with add_task/list_tasks/complete_task, and capture ideas with "
         "capture_idea (keep the user's own framing, not a summary). "
+        "PROJECTS are multi-session arcs with milestones — 'where am I on X' is "
+        "project_status. A discrete action with a due date is a TASK, not a project. "
+        "Use complete_milestone when a checkpoint lands; if the title is ambiguous it "
+        "will ask, and you should pass the question on rather than picking one. "
+        "Parking a project requires a reason, ideally a resumption condition. "
         "For a request to be alerted when some condition becomes true LATER, use watch_for "
         "(list_watches / cancel_watch to manage them) — this is different from call_me_back, "
         "which rings unconditionally after a delay. "
@@ -122,6 +127,9 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "someone else's — call lookup_contact first, and save_contact once they tell you.",
         ["draft_email", "add_task", "list_tasks", "complete_task", "cancel_task",
          "capture_idea", "list_ideas", "get_idea",
+         "create_project", "promote_idea", "list_projects", "project_status",
+         "add_milestone", "complete_milestone", "drop_milestone",
+         "set_project_status", "attach_document", "supersede_document",
          "whoami", "lookup_contact", "save_contact", "list_contacts",
          "sync_google_contacts", "google_status",
          "call_me_back", "pending_callbacks", "cancel_callback",

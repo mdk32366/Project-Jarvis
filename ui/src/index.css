@@ -165,3 +165,17 @@ table.audit td.truncate { max-width: 340px; overflow: hidden; text-overflow: ell
 table.settings { width: 100%; border-collapse: collapse; font-size: .85rem; }
 table.settings th, table.settings td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid var(--border); vertical-align: middle; }
 table.settings .row { display: inline-flex; gap: .5rem; align-items: center; }
+
+/* Projects panel (TDD project-tracking §8) */
+.project { border-top: 1px solid var(--border); padding: .55rem 0; }
+.project:first-of-type { border-top: none; }
+.project-head { align-items: center; gap: .5rem; }
+.project-body { padding: .3rem 0 .2rem 1.5rem; }
+.milestones { list-style: none; padding: 0; margin: .3rem 0; display: flex; flex-direction: column; gap: .25rem; }
+.milestones li { display: flex; align-items: center; gap: .6rem; font-size: .88rem; }
+/* Done and dropped read DIFFERENTLY on purpose: a dropped milestone was not
+   achieved, and styling them alike would overstate progress at a glance. */
+.milestones li.ms-done > span:first-child { color: #7bd88f; }
+.milestones li.ms-dropped > span:first-child { color: var(--muted); text-decoration: line-through; }
+details.parked { margin: .5rem 0; }
+details.parked > summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
