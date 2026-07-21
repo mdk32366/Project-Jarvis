@@ -55,6 +55,7 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "delegate",  # required — the only route to any tool
     # ungated, universal, no side effects — available everywhere (TDD #11 §4.1)
     "get_current_datetime",
+    "self_whoami",  # JARVIS's own provenance + health ("how are you feeling")
     # netstatus
     "get_node_status",
     "get_service_health",
@@ -109,6 +110,11 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "cancel_task",
     "capture_idea",
     "list_ideas",
+    "get_idea",
+    # create_project_from_idea: GATED + top-level (creates a GitHub repo). Voice-
+    # reachable behind the confirmation gate, same posture as send_email — it's an
+    # outward action, not money, and a private repo is easily undone.
+    "create_project_from_idea",
     # travel — read, booking, and document creation.
     "list_trips",
     "search_flights",

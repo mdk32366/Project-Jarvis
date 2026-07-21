@@ -208,6 +208,9 @@ class Idea(Base):
     source: Mapped[str] = mapped_column(String(32), default="")  # channel
     committed_sha: Mapped[str] = mapped_column(String(64), default="")
     commit_error: Mapped[str] = mapped_column(Text, default="")
+    # Set when the idea is promoted into its own GitHub project repo — the repo
+    # html_url. Non-empty means "already a project"; a second promotion is refused.
+    promoted_url: Mapped[str] = mapped_column(String(300), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -448,3 +451,124 @@ class GoogleDocument(Base):
     url: Mapped[str] = mapped_column(String(512), default="")
     thread_key: Mapped[str] = mapped_column(String(255), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RequestLog(Base):
+    """One coarse row per top-level request — "what was JARVIS *asked*" (health
+    TDD §9 Phase 2). Grain: per-request (a single "book me a flight" is ONE row),
+    vs `actions_audit` which is per-*tool* (search + gate + book = several). The
+    receipt is written at request start and committed independently, so a crashed
+    request still leaves a row (an `in_progress` row that never resolved is itself
+    the signal). Retention is time-based (§11) with a row-count safety valve.
+    """
+
+    __tablename__ = "request_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True)
+    channel: Mapped[str] = mapped_column(String(32), default="")
+    actor: Mapped[str] = mapped_column(String(255), default="")
+    thread_key: Mapped[str] = mapped_column(String(255), default="", index=True)
+    trigger: Mapped[str] = mapped_column(String(300), default="")   # first ~200 chars of the ask
+    disposition: Mapped[str] = mapped_column(String(16), default="in_progress")  # in_progress|ok|error
+    duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error_detail: Mapped[str] = mapped_column(Text, default="")
+
+
+class Component(Base):
+    """The deterministic system topology — one row per agent, external API, or
+    subsystem (health TDD §4.1). Stable reference data, seeded from the topology
+    and reconciled on startup (like the agent roster), editable at runtime.
+
+    `check_type` selects which health check applies; `check_config` (JSON) carries
+    that check's thresholds (e.g. the heartbeat staleness seconds), so PR-B reads
+    them from here rather than hardcoding. `blast_radius=multi` marks the trunk
+    (a failure there takes down many limbs) so it surfaces first.
+    """
+
+    __tablename__ = "component"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32))          # agent|external_api|internal_subsystem|data_feed
+    description: Mapped[str] = mapped_column(String(300), default="")
+    depends_on: Mapped[str] = mapped_column(Text, default="")   # comma list of component names / secret names
+    check_type: Mapped[str] = mapped_column(String(32), default="none")  # liveness|secret_age|published_expiry|heartbeat|freshness|none
+    blast_radius: Mapped[str] = mapped_column(String(16), default="single")  # single|multi
+    check_config: Mapped[str] = mapped_column(Text, default="")  # JSON thresholds for the check
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class Remediation(Base):
+    """The fault -> fix mapping (health TDD §4.2). A tripped check emits a
+    `fault_code` against a `component`; the surfacing layer JOINS to the matching
+    row for the "place to start". Seeded, runtime-editable (edit a row when a
+    consent flow changes — no redeploy)."""
+
+    __tablename__ = "remediation"
+    __table_args__ = (UniqueConstraint("component", "fault_code", name="uq_remediation_component_fault"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    component: Mapped[str] = mapped_column(String(64), index=True)
+    fault_code: Mapped[str] = mapped_column(String(64))
+    runbook: Mapped[str] = mapped_column(Text)
+    severity: Mapped[str] = mapped_column(String(16), default="warn")   # info|warn|critical
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class HealthResult(Base):
+    """Transient current status — latest per component, overwritten each check
+    (health TDD §4.3). NOT history and NOT reference data: kept separate from
+    `component`/`remediation` on purpose. `fault_code` (when not ok) joins to
+    `remediation` for the runbook."""
+
+    __tablename__ = "health_result"
+
+    component: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(16), default="unknown")  # ok|degraded|down|unknown
+    fault_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[str] = mapped_column(Text, default="")
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    age_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_failure_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SchedulerHeartbeat(Base):
+    """Proof-of-life for the worker's briefing scheduler (health TDD §5.2, §6).
+
+    A single row (id=1), upserted on every worker tick. `beat_at` is how the §5.2
+    health check tells a live scheduler from a dead one (a stale beat = the worker
+    died). `last_briefing_date` (owner-tz) is the missed-run catch-up guard — it
+    fires the brief once even if the worker was down at the scheduled minute, and
+    never twice the same day. `next_run_at`/`enabled` let the check report the next
+    run or say "disabled" instead of "down".
+    """
+
+    __tablename__ = "scheduler_heartbeat"
+
+    id: Mapped[int] = mapped_column(primary_key=True)          # always 1
+    beat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_run_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_briefing_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+class RuntimeSetting(Base):
+    """A runtime override for a bounded allow-list of behavioral settings
+    (briefing time, quiet hours, outbound-call toggles). The overlay accessor
+    `app.runtime_settings.get_effective` returns this row's value when present,
+    else the env/`Settings` default — so behavior is visible and changeable
+    without a redeploy (health TDD §7). Value is stored as text and coerced to
+    the key's declared type on read. NEVER holds a secret: the allow-list in
+    `runtime_settings.ALLOWED_KEYS` is the enforcement boundary.
+    """
+
+    __tablename__ = "runtime_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

@@ -35,7 +35,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 
 from app.config import settings
-from app.handlers.base import Context, Registry
+from app.handlers.base import Context, Registry, ToolFault
 from app.models import FlightOffer, Trip
 from app.timefmt import clock, daytime
 
@@ -309,7 +309,7 @@ def _search_flights(args: dict, ctx: Context) -> str:
                 json=payload,
             )
         if r.status_code == 401:
-            return "Duffel rejected the API key. Check DUFFEL_API_KEY."
+            raise ToolFault("Duffel rejected the API key. Check DUFFEL_API_KEY.")
         if r.status_code >= 400:
             detail = ""
             try:
@@ -317,11 +317,13 @@ def _search_flights(args: dict, ctx: Context) -> str:
                 detail = "; ".join(e.get("message", "") for e in errs)
             except Exception:  # noqa: BLE001
                 detail = r.text[:200]
-            return f"Flight search failed ({r.status_code}): {detail}"
+            raise ToolFault(f"Flight search failed ({r.status_code}): {detail}")
         offers = ((r.json().get("data") or {}).get("offers")) or []
+    except ToolFault:
+        raise  # a deliberate fault (401, 4xx) keeps its own message — don't rewrap
     except Exception as e:  # noqa: BLE001 — tools must never crash the loop
         log.error("duffel search failed: %s", e)
-        return f"Couldn't reach the flight search service: {e}"
+        raise ToolFault(f"Couldn't reach the flight search service: {e}")
 
     if not offers:
         return (f"No flights found for {origin} to {dest} on {date}. "
@@ -564,18 +566,18 @@ def explain_duffel_error(status: int, body: dict | str) -> str:
     if code in ("offer_no_longer_available", "offer_expired") or "expired" in detail.lower():
         return "That fare expired before I could book it — let me re-search."
     if status == 401:
-        return "Duffel rejected the booking API key. Check DUFFEL_LIVE_API_KEY."
+        raise ToolFault("Duffel rejected the booking API key. Check DUFFEL_LIVE_API_KEY.")
     if status == 402 or "insufficient" in detail.lower() or "balance" in detail.lower():
-        return "Duffel declined the booking — the account balance may be too low."
+        raise ToolFault("Duffel declined the booking — the account balance may be too low.")
     if status == 422 and "payment" in detail.lower():
-        return "Duffel rejected the payment details for this order."
+        raise ToolFault("Duffel rejected the payment details for this order.")
     if "identity_document" in code or "passport" in detail.lower() or "identity document" in detail.lower():
         return (
             "The airline needs a valid passport to ticket this international "
             "flight. Check OWNER_PASSPORT, OWNER_PASSPORT_EXPIRY (YYYY-MM-DD), and "
             "OWNER_PASSPORT_COUNTRY — one may be missing, mistyped, or expired."
         )
-    return f"Booking failed ({status}): {detail or 'no further detail from Duffel'}"
+    raise ToolFault(f"Booking failed ({status}): {detail or 'no further detail from Duffel'}")
 
 
 def _book_flight_pregate(args: dict, ctx: Context) -> str | None:
@@ -696,7 +698,7 @@ def _book_flight(args: dict, ctx: Context) -> str:
             r = client.post(f"{_DUFFEL_API}/air/orders", headers=_duffel_order_headers(), json=payload)
     except Exception as e:  # noqa: BLE001 — tools must never crash the loop
         log.error("duffel order failed: %s", e)
-        return f"Couldn't reach Duffel to place the order: {e}"
+        raise ToolFault(f"Couldn't reach Duffel to place the order: {e}")
 
     if r.status_code >= 400:
         try:

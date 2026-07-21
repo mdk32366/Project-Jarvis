@@ -190,13 +190,22 @@ def test_is_speakable_briefing_rejects_degraded_output():
     assert briefing.is_speakable_briefing("(briefing failed) boom\n\nHere is the raw data: <dump>") is False
 
 
-def test_briefing_call_does_not_ring_on_compose_failure(db, monkeypatch):
-    """The old guard only caught '(no briefing'; the exception fallback slipped
-    through and JARVIS phoned and read the error + raw dump aloud (audit M3)."""
+def test_briefing_call_emails_instead_of_ringing_on_compose_failure(db, monkeypatch):
+    """The call path must never read an error + raw dump aloud (audit M3) — but a
+    scheduled brief that comes up empty must still be VISIBLE, not silently dropped
+    (health TDD §6). So it emails the owner instead of ringing."""
     from app.models import OutboundCall
+    import app.notifier as notifier
 
+    sent = []
+    monkeypatch.setattr(notifier, "send_email",
+                        lambda to, subj, body: sent.append((to, subj, body)))
+    monkeypatch.setattr(settings, "owner_email", "me@example.com")
     monkeypatch.setattr(briefing, "compose_briefing",
                         lambda db: "(briefing failed) boom\n\nHere is the raw data:\n\n<dump>")
+
     result = jobs._handle_briefing_call(db, {})
-    assert result == "nothing to brief"
-    assert db.query(OutboundCall).count() == 0   # no call placed with the error text
+
+    assert db.query(OutboundCall).count() == 0        # still does NOT ring
+    assert len(sent) == 1 and "boom" in sent[0][2]    # but the owner is notified
+    assert "emailed" in result

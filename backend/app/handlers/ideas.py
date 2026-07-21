@@ -22,11 +22,12 @@ import base64
 import logging
 import re
 from datetime import datetime
+from typing import Optional
 
 from sqlalchemy import select
 
 from app.config import settings
-from app.handlers.base import Context, Registry
+from app.handlers.base import Context, Registry, ToolFault
 from app.models import Idea
 
 log = logging.getLogger(__name__)
@@ -84,9 +85,145 @@ def _list_ideas(args: dict, ctx: Context) -> str:
         return "No ideas captured yet."
     lines = []
     for i in rows:
-        mark = "" if i.committed_sha else " (not yet committed)"
+        if i.promoted_url:
+            mark = f" (promoted → {i.promoted_url})"
+        elif i.committed_sha:
+            mark = ""
+        else:
+            mark = " (not yet committed)"
         lines.append(f"#{i.id}: {i.title}{mark}")
     return f"{len(rows)} recent idea(s):\n" + "\n".join(lines)
+
+
+def _get_idea(args: dict, ctx: Context) -> str:
+    """Read one captured idea in full, so it can be reviewed before promoting."""
+    idea = ctx.db.get(Idea, int(args.get("idea_id") or 0))
+    if idea is None:
+        return f"No idea #{args.get('idea_id')}."
+    tags = f"\nTags: {idea.tags}" if idea.tags else ""
+    promoted = f"\nPromoted to: {idea.promoted_url}" if idea.promoted_url else ""
+    return f"Idea #{idea.id}: {idea.title}{tags}{promoted}\n\n{idea.body or '(no detail captured)'}"
+
+
+# ── create_project_from_idea (GATED, top-level) ──────────────────────────────
+def _readme_md(project_name: str, idea: Idea) -> str:
+    return "\n".join([
+        f"# {project_name}",
+        "",
+        idea.body or "_(no detail captured)_",
+        "",
+        "---",
+        f"_Seeded from JARVIS idea #{idea.id} ({idea.title}), "
+        f"{(idea.created_at or datetime.utcnow()).strftime('%Y-%m-%d')}._",
+        "",
+    ])
+
+
+def _idea_md(idea: Idea) -> str:
+    tags = [t.strip() for t in (idea.tags or "").split(",") if t.strip()]
+    return "\n".join([
+        "---", f"title: {idea.title}",
+        f"captured: {(idea.created_at or datetime.utcnow()).isoformat()}",
+        f"source: {idea.source or 'unknown'}", f"tags: [{', '.join(tags)}]", "---", "",
+        f"# {idea.title}", "", idea.body or "_(no detail captured)_", "",
+    ])
+
+
+def _explain_repo_error(status: int, text: str) -> str:
+    low = (text or "").lower()
+    if status == 422 and ("already exists" in low or "name already" in low):
+        return ("A repo with that name already exists on the account — pick a different "
+                "project name and I'll try again.")
+    if status == 401:
+        raise ToolFault("GitHub rejected the token. Check GITHUB_TOKEN (needs `repo` scope).")
+    if status == 403:
+        return "GitHub refused the request (permissions or rate limit). Try again shortly."
+    return f"GitHub wouldn't create the repo ({status}): {text[:200]}"
+
+
+def _github_headers() -> dict:
+    return {
+        "Authorization": f"Bearer {settings.github_token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def _promote_pregate(args: dict, ctx: Context) -> Optional[str]:
+    """Refuse-outright checks BEFORE the confirmation gate (nothing to confirm)."""
+    idea = ctx.db.get(Idea, int(args.get("idea_id") or 0))
+    if idea is None:
+        return (f"I don't have an idea #{args.get('idea_id')} to promote. "
+                f"Say 'list my ideas' to see what's there.")
+    if idea.promoted_url:
+        return f"Idea #{idea.id} ('{idea.title}') is already a project: {idea.promoted_url}."
+    if not settings.github_token:
+        return "I can't create a GitHub repo — GITHUB_TOKEN isn't configured."
+    if not (args.get("project_name") or "").strip():
+        return "I need a name for the project repo — what should I call it?"
+    return None
+
+
+def _summarize_promote(args: dict) -> str:
+    vis = "private" if args.get("private", True) else "public"
+    name = (args.get("project_name") or "?").strip()
+    return f"create a new {vis} GitHub repo '{name}' from idea #{args.get('idea_id')}"
+
+
+def _create_project_from_idea(args: dict, ctx: Context) -> str:
+    """GATED — runs only after the confirmation gate clears. Create a new GitHub
+    repo from the idea, seed README.md + docs/idea.md, mark the idea promoted,
+    and return the repo URL."""
+    import httpx
+
+    idea = ctx.db.get(Idea, int(args.get("idea_id") or 0))
+    if idea is None:
+        return f"No idea #{args.get('idea_id')}."
+    if idea.promoted_url:                          # defensive: pregate already checks
+        return f"Idea #{idea.id} is already a project: {idea.promoted_url}"
+    if not settings.github_token:
+        return "Can't create a repo — GITHUB_TOKEN isn't set."
+    name = (args.get("project_name") or "").strip()
+    if not name:
+        return "I need a project name to create the repo."
+    private = bool(args.get("private", True))
+    description = (args.get("description") or f"Seeded from JARVIS idea #{idea.id}: {idea.title}")[:350]
+
+    headers = _github_headers()
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            r = client.post(f"{_API}/user/repos", headers=headers,
+                            json={"name": name, "private": private,
+                                  "description": description, "auto_init": False})
+            if r.status_code not in (200, 201):
+                return _explain_repo_error(r.status_code, r.text)
+            repo = r.json() or {}
+            full = repo.get("full_name")
+            html_url = repo.get("html_url", "")
+            if not full:
+                return "GitHub created something unexpected — no repo name came back."
+
+            # Seed the repo. The first PUT creates the default branch.
+            for path, content, msg in (
+                ("README.md", _readme_md(name, idea), f"seed: {name}"),
+                ("docs/idea.md", _idea_md(idea), "seed: original idea"),
+            ):
+                pr = client.put(
+                    f"{_API}/repos/{full}/contents/{path}", headers=headers,
+                    json={"message": msg,
+                          "content": base64.b64encode(content.encode("utf-8")).decode("ascii")},
+                )
+                if pr.status_code not in (200, 201):
+                    log.warning("seed PUT %s failed (%s): %s", path, pr.status_code, pr.text[:200])
+    except ToolFault:
+        raise  # a deliberate fault (e.g. 401) keeps its own message — don't rewrap
+    except Exception as e:  # noqa: BLE001 — a tool must never crash the turn
+        log.error("create_project_from_idea #%s failed: %s", idea.id, e)
+        raise ToolFault(f"Couldn't create the project repo: {e}")
+
+    idea.promoted_url = html_url
+    ctx.db.commit()
+    return f"Created the project repo: {html_url}"
 
 
 # ── The commit job (registered in app/jobs.py) ───────────────────────────────
@@ -185,11 +322,57 @@ def register(reg: Registry) -> None:
     reg.register(
         {
             "name": "list_ideas",
-            "description": "List recently captured ideas.",
+            "description": "List recently captured ideas (shows which are committed or "
+                           "already promoted to a project repo).",
             "input_schema": {
                 "type": "object",
                 "properties": {"limit": {"type": "integer", "description": "How many (default 10)."}},
             },
         },
         _list_ideas,
+    )
+    reg.register(
+        {
+            "name": "get_idea",
+            "description": "Read one captured idea in FULL (title, body, tags). Use before "
+                           "promoting an idea to a project, or when the user asks to hear a "
+                           "specific idea back.",
+            "input_schema": {
+                "type": "object",
+                "properties": {"idea_id": {"type": "integer", "description": "Idea number from list_ideas."}},
+                "required": ["idea_id"],
+            },
+        },
+        _get_idea,
+    )
+
+
+def register_gated(reg: Registry) -> None:
+    """Gated tools — top-level registry only (the confirmation gate runs in
+    orchestrator.run; sub-agents refuse gated tools). Creating a named GitHub
+    repo is irreversible and outward-facing, so it is gated like send_email."""
+    reg.register(
+        {
+            "name": "create_project_from_idea",
+            "description": (
+                "Promote a captured idea into a NEW GitHub repository: creates the repo, "
+                "seeds a README and the idea, and returns the link. IRREVERSIBLE — the "
+                "system requires the user's explicit confirmation first. ASK the user for "
+                "the project name if they didn't give one; never invent it."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "idea_id": {"type": "integer", "description": "Which idea (from list_ideas)."},
+                    "project_name": {"type": "string", "description": "Repo name the user chose."},
+                    "private": {"type": "boolean", "description": "Default true (private repo)."},
+                    "description": {"type": "string", "description": "Optional repo description."},
+                },
+                "required": ["idea_id", "project_name"],
+            },
+        },
+        _create_project_from_idea,
+        gated=True,                 # notional None -> always confirm
+        summarize=_summarize_promote,
+        pregate=_promote_pregate,
     )

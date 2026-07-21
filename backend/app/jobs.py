@@ -310,10 +310,20 @@ def _handle_briefing_call(db: Session, payload: dict) -> str:
     from app.channels.outbound_voice import schedule_call
 
     text = compose_briefing(db)
-    # Only ring with a real briefing. A compose failure returns an error + raw
-    # data dump; reading that aloud is worse than staying silent (audit M3).
+    # Only RING with a real briefing — reading an error + raw data dump aloud is
+    # worse than silence (audit M3). But a scheduled brief that came up empty must
+    # still be VISIBLE, not silently dropped (health TDD §6): email the owner the
+    # (degraded) brief so they know it ran and why it couldn't be spoken.
     if not is_speakable_briefing(text):
-        log.warning("briefing not speakable (compose failed or empty) — not ringing")
+        from app.config import settings
+        from app.notifier import send_email
+
+        to = settings.owner_email_resolved
+        if to:
+            send_email(to, "Your JARVIS morning briefing (couldn't be read aloud)", text)
+            log.warning("briefing not speakable — emailed the owner instead of ringing")
+            return "briefing not speakable; emailed instead of ringing"
+        log.warning("briefing not speakable and no owner email configured — nothing to brief")
         return "nothing to brief"
 
     opening = f"Good morning. Here's your brief. {text}"

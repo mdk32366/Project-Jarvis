@@ -78,6 +78,18 @@ def _seed_agents() -> None:
         db.close()
 
 
+def _seed_health_topology() -> None:
+    """Seed + reconcile the component/remediation health inventory (TDD §4)."""
+    from app.health import seed_health_topology
+    db = SessionLocal()
+    try:
+        seed_health_topology(db)
+    except Exception as e:  # pragma: no cover
+        logger.warning("health topology seeding skipped: %s", e)
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Starting %s (%s)", settings.app_name, settings.environment)
@@ -85,6 +97,7 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     _seed_first_user()
     _seed_agents()
+    _seed_health_topology()
     try:
         from app.database import SessionLocal as _SL
         from app import vectorstore

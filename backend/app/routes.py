@@ -10,7 +10,8 @@ from app.config import settings
 from app.database import get_db
 from app.models import ActionAudit, AgentConfig, Conversation, Job, Memory, Message, PersonaProfile, Preference, User
 from app.schemas import (AgentIn, AgentOut, AuditOut, ChangePasswordIn, ChatRequest, ChatResponse,
-    ConversationOut, HealthResponse, JobOut, MemoryIn, MemoryOut, MessageOut, PersonaOut, PreferenceOut, Token, UserOut)
+    ConversationOut, HealthResponse, JobOut, MemoryIn, MemoryOut, MessageOut, PersonaOut, PreferenceOut,
+    SettingIn, Token, UserOut)
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
@@ -590,6 +591,44 @@ def delete_agent(agent_id: int, _: User = Depends(get_current_user), db: Session
 def list_audit(limit: int = 100, _: User = Depends(get_current_user), db: Session = Depends(get_db)):
     rows = db.execute(select(ActionAudit).order_by(ActionAudit.created_at.desc()).limit(limit)).scalars().all()
     return rows
+
+
+@router.get("/status/full", tags=["admin"])
+def status_full(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """The true status surface: runs every health check fresh, upserts
+    `health_result`, and returns each component's status with (when not ok) its
+    stored runbook + the recent failing audit rows as evidence. Auth-gated; no
+    secrets. Backs the exception-first status page (PR-E)."""
+    from app.health_checks import status_payload
+    return status_payload(db)
+
+
+@router.get("/settings", tags=["admin"])
+def get_settings(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """Effective value + source (override/default) for every runtime-overridable
+    behavioral key. Reads the overlay so a set override is reflected here — the
+    fix for the brief-time-shows-env-default defect (health TDD §7)."""
+    from app.runtime_settings import get_all_effective
+    return {"settings": get_all_effective(db)}
+
+
+@router.put("/settings/{key}", tags=["admin"])
+def put_setting(key: str, item: SettingIn, user: User = Depends(get_current_user),
+                db: Session = Depends(get_db)):
+    """Set a runtime override. Unknown key -> 404 (fail closed, never a secret);
+    safety-critical key without confirm -> 403; out-of-range value -> 422. Every
+    successful change is written to the audit trail."""
+    from app.runtime_settings import ALLOWED_KEYS, set_effective
+    if key not in ALLOWED_KEYS:
+        raise HTTPException(status_code=404, detail=f"{key} is not a runtime-overridable setting")
+    try:
+        value = set_effective(db, key, item.value, confirm=item.confirm,
+                              actor=user.username, channel="web")
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    return {"key": key, "value": value, "source": "override"}
 
 
 @router.get("/calendar/health", tags=["admin"])

@@ -8,7 +8,7 @@ sub-agent registry.
 
 import pytest
 
-from app.handlers.base import Context, build_registry
+from app.handlers.base import Context, ToolFault, build_registry
 from app.models import AgentConfig, Contact, Idea, Task, Trip
 
 
@@ -373,16 +373,19 @@ def test_search_flights_reports_a_bad_key_plainly(ctx, monkeypatch):
         def post(self, *a, **kw): return R()
 
     monkeypatch.setattr(httpx, "Client", C)
-    out = travel._search_flights(
-        {"origin": "SEA", "destination": "SFO", "date": "2026-08-04"}, ctx)
-    assert "DUFFEL_API_KEY" in out
+    # A rejected key now RAISES ToolFault (structured fault signal, PR-0) so the
+    # duffel component's health can go red — the message still names the fix.
+    with pytest.raises(ToolFault, match="DUFFEL_API_KEY"):
+        travel._search_flights(
+            {"origin": "SEA", "destination": "SFO", "date": "2026-08-04"}, ctx)
 
 
 def test_search_flights_never_crashes_the_loop(ctx, monkeypatch):
-    """A tool that raises would kill the whole turn. It must degrade to a string."""
+    """A tool that raises would kill the whole turn. The handler signals failure by
+    raising ToolFault (PR-0); the run_tool / execute seam catches it and hands the
+    loop a string + status='error' — never an exception into the caller."""
     import httpx
     from app.config import settings
-    from app.handlers import travel
 
     monkeypatch.setattr(settings, "duffel_api_key", "x")
 
@@ -393,9 +396,12 @@ def test_search_flights_never_crashes_the_loop(ctx, monkeypatch):
         def post(self, *a, **kw): raise RuntimeError("network is on fire")
 
     monkeypatch.setattr(httpx, "Client", C)
-    out = travel._search_flights(
+    reg = build_registry()  # sub-agent registry — where search_flights lives
+    result, status = reg.run_tool(
+        "search_flights",
         {"origin": "SEA", "destination": "SFO", "date": "2026-08-04"}, ctx)
-    assert "couldn't reach" in out.lower()
+    assert status == "error"
+    assert "couldn't reach" in result.lower()
 
 
 # ── Contacts + identity ──────────────────────────────────────────────────────

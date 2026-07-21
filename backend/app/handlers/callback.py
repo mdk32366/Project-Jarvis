@@ -95,7 +95,7 @@ def _call_me_back(args: dict, ctx: Context) -> str:
 
     if when:
         return f"I'll call you back around {clock(when.astimezone(_tz()))}."
-    if in_quiet_hours():
+    if in_quiet_hours(ctx.db):
         # Callbacks are exempt from quiet hours — the user asked. But say so, so
         # a 2am ring isn't a surprise.
         return "I'll call you right back — note it's late, so this'll ring shortly."

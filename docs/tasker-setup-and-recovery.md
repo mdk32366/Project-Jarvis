@@ -47,6 +47,53 @@ This is almost certainly why it died before. Do all of these:
 - Make sure Tasker itself is **On** (top toggle) and the profile is **enabled**
   (green).
 
+## ⚠️ Monitor settings — the invisible silent-killers (learned 2026-07-19)
+
+Today's recovery burned hours on four Tasker behaviors that are **invisible from
+the UI**: the profile looks enabled, the run log is empty, and there is **no
+error**. If a timed profile that should be firing isn't, check these in order
+*before* rebuilding anything — the failure is almost always here, not in the task.
+
+1. **Per-profile enabled toggle ≠ the Profiles-tab "enabled" count.** A profile
+   has its own individual on/off, separate from the aggregate count the Profiles
+   tab shows. The tab can report profiles enabled while *this one* is individually
+   off. Long-press the profile and confirm its own toggle — don't trust the count.
+
+2. **The Monitor check interval must be WELL BELOW the shortest profile interval.**
+   Tasker → Preferences → **Monitor** governs how often the background service
+   evaluates contexts. Set too high, a timed profile **silently never fires** —
+   empty run log, no error, nothing. A 15-minute profile needs a check interval
+   far tighter than 15 minutes. This is the single most likely cause of "it just
+   stopped and nothing looks wrong."
+
+3. **The Monitor preferences are INTERLOCKED — you can't revert one alone.** Tasker
+   enforces relationships between the Monitor settings, roughly:
+   - `Wifi scan min ≤ (timeout − 15)`
+   - `check interval ≥ timeout`
+
+   So if you changed one during a diagnostic, Tasker will silently clamp or refuse
+   your value until you also undo the others in the right order. A half-undone
+   session leaves you **stuck** — the field rejects the value you type with no
+   explanation. Revert all three together, largest-scope first.
+
+4. **Diagnostic settings are themselves a failure mode — revert them as a
+   checklist.** The aggressive values you set to *debug* (tight timeouts, forced
+   GPS, loosened wifi minimums, a fast check interval) will quietly degrade normal
+   operation and battery if left in place. Before calling the session done,
+   deliberately walk back every setting you touched:
+   - [ ] Monitor check interval → back to normal (but still below the profile interval)
+   - [ ] GPS / monitor timeout → back to default
+   - [ ] Wifi scan min → back to default (respecting the `≤ timeout − 15` interlock)
+   - [ ] Per-profile toggle → confirmed on
+   - [ ] Battery / permission exemptions → still in place (§ above)
+
+> The through-line: **none of these throw an error.** The profile *looks* fine and
+> the log is *empty* — which reads as "nothing happened" when the truth is "the
+> Monitor never looked." When location goes stale with no obvious cause, suspect
+> the Monitor settings before the task itself. (The server-side freshness check
+> only sees the *symptom* — no pings arriving — so this doc is the only place the
+> real cause is written down.)
+
 ## Verify it's pushing
 
 - Force-run the task once (Tasker → task → play button). Then ask JARVIS

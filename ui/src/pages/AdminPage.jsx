@@ -48,6 +48,76 @@ function AgentForm({ initial, tools, onSubmit, onCancel, submitting, submitLabel
   );
 }
 
+function SettingsPanel() {
+  const qc = useQueryClient();
+  const settings = useQuery({ queryKey: ["settings"], queryFn: () => api.get("/settings") });
+  const [drafts, setDrafts] = useState({});   // key -> pending value (editing)
+  const [confirms, setConfirms] = useState({}); // key -> confirm checkbox (safety-critical)
+  const [msg, setMsg] = useState(null);
+  const save = useMutation({
+    mutationFn: ({ key, value, confirm }) => api.put(`/settings/${key}`, { value, confirm }),
+    onSuccess: (_r, v) => {
+      setMsg({ ok: true, text: `${v.key} updated` });
+      setDrafts((d) => { const n = { ...d }; delete n[v.key]; return n; });
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+    onError: (e) => setMsg({ ok: false, text: String(e.message) }),
+  });
+  const entries = Object.entries(settings.data?.settings ?? {});
+
+  return (
+    <div className="card">
+      <h2>Runtime settings</h2>
+      <p className="hint">
+        Behavioral settings — the effective value in force now, and whether it's an override or the
+        env default. Changeable without a redeploy. Safety-critical keys need an explicit confirm.
+        Never secrets.
+      </p>
+      {settings.isError && <p className="error">Could not load settings.</p>}
+      {msg && <p className={msg.ok ? "hint" : "error"}>{msg.text}</p>}
+      <table className="settings">
+        <thead><tr><th>Setting</th><th>Value</th><th>Source</th><th></th></tr></thead>
+        <tbody>
+          {entries.map(([key, s]) => {
+            const editing = key in drafts;
+            const shown = editing ? drafts[key] : s.value;
+            const needsConfirm = s.safety_critical && !confirms[key];
+            return (
+              <tr key={key}>
+                <td>{key}{s.safety_critical && <span className="tag warn"> safety</span>}</td>
+                <td>
+                  {s.type === "bool" ? (
+                    <input type="checkbox" checked={!!shown}
+                      onChange={(e) => setDrafts((d) => ({ ...d, [key]: e.target.checked }))} />
+                  ) : (
+                    <input type="number" value={shown} style={{ width: 72 }}
+                      onChange={(e) => setDrafts((d) => ({ ...d, [key]: Number(e.target.value) }))} />
+                  )}
+                </td>
+                <td><span className={`tag ${s.source === "override" ? "override" : ""}`}>{s.source}</span></td>
+                <td>
+                  {editing && (
+                    <span className="row">
+                      {s.safety_critical && (
+                        <label className="tool-check">
+                          <input type="checkbox" checked={!!confirms[key]}
+                            onChange={(e) => setConfirms((c) => ({ ...c, [key]: e.target.checked }))} /> confirm
+                        </label>
+                      )}
+                      <button className="link-btn" disabled={save.isPending || needsConfirm}
+                        onClick={() => save.mutate({ key, value: drafts[key], confirm: !!confirms[key] })}>set</button>
+                    </span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function AdminPage() {
   const qc = useQueryClient();
   const agents = useQuery({ queryKey: ["agents"], queryFn: () => api.get("/agents") });
@@ -136,8 +206,10 @@ export default function AdminPage() {
         </div>
         {briefStatus && <p className="hint">{briefStatus}</p>}
         {briefing && <pre className="cal-result">{briefing}</pre>}
-        <p className="hint">Daily send is controlled by BRIEFING_ENABLED / BRIEFING_HOUR on the server.</p>
+        <p className="hint">Daily send time is set below under Runtime settings (briefing_enabled / briefing_hour / briefing_minute) — live, no redeploy.</p>
       </div>
+
+      <SettingsPanel />
 
       <div className="card">
         <div className="row space">

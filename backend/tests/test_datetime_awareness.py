@@ -205,17 +205,19 @@ def test_stale_result_is_flagged_not_silently_passed_through(db):
     assert annotated != text, "stale date passed through without annotation"
 
 
-def test_date_outside_explicit_window_is_flagged(db):
-    """A result dated past window_end gets [outside window: ...], not silently kept."""
+def test_future_dates_are_left_unflagged(db):
+    """SCOPE (audit M7): only PAST dates are flagged. The never-wired
+    'outside the request window' check was removed, so a future date — however
+    far out — is left untouched rather than annotated."""
     from app.handlers.datetime_tools import flag_stale_dates
 
     ref = datetime(2026, 7, 14, 12, 0, tzinfo=timezone.utc)
-    window_end = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)  # 7-day window
-    text = "The sale runs through 2026-08-15."  # future but outside window
-    annotated, flags = flag_stale_dates(text, ref, window_end=window_end)
+    text = "The sale runs through 2026-08-15."  # future
+    annotated, flags = flag_stale_dates(text, ref)
 
-    assert "[outside window:" in annotated
-    assert flags
+    assert annotated == text          # unchanged
+    assert flags == []
+    assert "[outside window:" not in annotated
 
 
 def test_date_extraction_handles_relative_phrasing_in_source_content(db):

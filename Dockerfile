@@ -29,6 +29,13 @@ COPY --from=frontend /static ./static
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
+# Build provenance — baked at build time so self_whoami reports exactly what it's
+# running (commit + build time) with no live git shell-out. Late layer: the SHA
+# changes every build, so keeping it here doesn't bust earlier caches.
+ARG GIT_SHA=dev
+ARG BUILD_TIME=unknown
+ENV APP_COMMIT=$GIT_SHA APP_BUILD_TIME=$BUILD_TIME
+
 ENV PYTHONUNBUFFERED=1 ENVIRONMENT=production PORT=8000
 EXPOSE 8000
 

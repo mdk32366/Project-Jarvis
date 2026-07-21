@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.config import settings
-from app.handlers.base import Context, Registry
+from app.handlers.base import Context, Registry, ToolFault
 from app.timefmt import daytime, weekday_clock
 
 log = logging.getLogger(__name__)
@@ -144,7 +144,7 @@ def _calendar_lookup(args: dict, ctx: Context) -> str:
     try:
         items = _fetch_events(service, settings.google_calendar_id, start, end)
     except Exception as e:  # never crash the loop
-        return f"Error reading calendar: {e}"
+        raise ToolFault(f"Error reading calendar: {e}")
     if not items:
         return f"No events {label}."
     return f"Events {label}:\n" + "\n".join(_fmt_event(e) for e in items)
@@ -273,7 +273,7 @@ def _create_event(args: dict, ctx: Context) -> str:
             return (f"Google refused: {e}\n"
                     f"Check the calendar is shared with the service account as 'Make "
                     f"changes to events', or connect Google via OAuth.")
-        return f"Could not create the event: {e}"
+        raise ToolFault(f"Could not create the event: {e}")
 
     when = daytime(start.astimezone(tz))
     return f"Created: {title} — {when} ({minutes} min). {ev.get('htmlLink', '')}"

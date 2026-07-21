@@ -98,3 +98,9 @@ class AuditOut(BaseModel):
 class ChangePasswordIn(BaseModel):
     current_password: str
     new_password: str
+
+class SettingIn(BaseModel):
+    # bool or int, coerced/validated against the key's allow-list spec.
+    value: bool | int | str
+    # Required to change a safety-critical key (outbound-call toggles).
+    confirm: bool = False

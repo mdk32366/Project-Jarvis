@@ -156,6 +156,7 @@ flowchart TD
 | `create_event` | confirms **only with attendees** (an invite emails people); solo events run immediately |
 | `place_stock_order` | notional threshold ($50); also hard-disabled unless `ENABLE_TRADING` |
 | `book_flight` | confirm **+ TOTP code** + pregate (offer must come from this thread's own search, ≤ `max_booking_usd`) |
+| `create_project_from_idea` | confirm + pregate (idea exists, not already promoted, GitHub configured, name given) — creates a new GitHub repo from a captured idea |
 
 Everything else executes immediately — the prompt explicitly forbids preemptive
 "shall I?" asking for ungated actions.
@@ -209,6 +210,18 @@ returns a real answer, never an empty `(no result)` that surfaces as "the agent 
 Sub-agents with date-sensitive tools get real "now" injected and stale-date flagging on
 their output. Every sub-agent tool call is audited as `agent:tool` in `actions_audit`.
 
+**Audit status is outcome-derived, not assumed.** Tool execution runs through the single
+seam `Registry.run_tool()`, which returns `(result, status)`: a handler that raises
+`ToolFault` (or any exception) — e.g. a Calendar 401, a Duffel key rejection, an
+unreachable Tavily — is recorded as `status="error"`, a healthy call as `ok`. Handlers
+raise `ToolFault` (message preserved verbatim, so the user still sees the guidance)
+*instead of* returning a hand-worded error string; the registry catches it so a failure
+still never crashes the loop. Gate decisions are written literally, not derived:
+`confirmed` (the user approved) and `refused` (a sub-agent hit the top-level-only gate, or
+a pre-gate refusal) both stay in the ok-family — a refused booking is a healthy system.
+This makes `actions_audit` a truthful substrate that credential/liveness health checks can
+read to tell a real failure from silence.
+
 The division of labor is intentional: specialists **prepare** (draft, search, look up),
 the orchestrator **commits** (send, book, create with invites) — under the gate.
 
@@ -230,7 +243,7 @@ the orchestrator **commits** (send, book, create with invites) — under the gat
 | Travel | search_flights, list_trips, **book_flight** | Duffel |
 | Navigation | get_traffic, find_place, where_am_i | Google Maps, `location_pings` |
 | Contacts | whoami, lookup_contact, save_contact, list_contacts, sync_google_contacts, google_status | Google People |
-| Ideas | capture_idea, list_ideas | GitHub Contents API |
+| Ideas | capture_idea, list_ideas, get_idea, **create_project_from_idea** (gated) | GitHub Contents API + `POST /user/repos` |
 | Callbacks | call_me_back, pending_callbacks, cancel_callback | Twilio (via worker) |
 | Watches | watch_for, list_watches, cancel_watch | LLM judge (worker) |
 | Infra | fleet_health, fleet_spend | Fly Machines + GraphQL |
@@ -241,6 +254,13 @@ Injection defenses: web content is fenced as UNTRUSTED before the model sees it;
 written from web-fenced content get a provenance footer; `book_flight` and
 `append_to_google_doc` require an ownership row (`flight_offers` / `google_documents`)
 created by JARVIS herself — an ID the model invents or was told about simply doesn't book.
+
+**Ideas → projects.** A captured idea (`capture_idea`, committed to the fixed `jarvis-ideas`
+repo) can be read back in full (`get_idea`) and promoted into a brand-new GitHub repo:
+`create_project_from_idea` (gated) creates the repo via `POST /user/repos`, seeds a README +
+the idea, and records `Idea.promoted_url`. The orchestrator asks for the repo name if the user
+didn't give one; the gate confirms before anything is created. See
+`docs/TDD-idea-to-project.md`.
 
 ---
 
@@ -277,16 +297,65 @@ flowchart LR
 
 ## 8. Database
 
-Postgres on Fly (SQLite in dev/tests). 24 tables in `backend/app/models.py`:
+Postgres on Fly (SQLite in dev/tests). 30 tables in `backend/app/models.py`:
 
 | Group | Tables |
 |---|---|
 | Conversation | `conversations`, `messages`, `voice_turns` |
 | Memory | `persona_profile`, `preferences`, `memories`, `memory_embeddings`, `episodes`, `episode_quotes` |
-| Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` |
+| Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` (per-*tool*), `request_log` (per-*request* — one coarse row per top-level request; retention 90d + row cap) |
 | Work | `jobs`, `tasks`, `ideas`, `watches`, `outbound_calls` |
 | Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` |
-| App | `users`, `agent_configs` |
+| App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below), `scheduler_heartbeat` (briefing-scheduler proof-of-life + catch-up state) |
+| Health | `component` (topology inventory), `remediation` (fault→runbook), `health_result` (transient current status) |
+
+**Health model** (`app/health.py`, TDD §4): a relational map of the deterministic topology.
+`component` is the inventory — every agent, external API, subsystem, and data feed — each row
+carrying its `kind`, `depends_on`, `check_type`, `blast_radius` (trunk subsystems are `multi`),
+and `check_config` (JSON thresholds, e.g. the worker-scheduler heartbeat staleness = 300s, so
+checks read the number from data, not code). `remediation` maps `(component, fault_code)` → a
+stored runbook (the "place to start"), joined at surface time — detection and fix are decoupled.
+`health_result` is transient (latest status per component, overwritten each check). Seeded +
+**reconciled** on startup (`seed_health_topology`, the `seed_agents` lesson — kind/description/
+check fields are refreshed from code so stale reference data can't persist). `component_for_tool`
+is the tool→component lookup that groups `actions_audit` rows by the component they belong to
+(the evidence bridge).
+
+**Health checks** (`app/health_checks.py`, TDD §5): `run_all_checks(db)` runs each component's
+check (by `check_type`) and upserts `health_result` (trunk first). A check NEVER raises into its
+caller — a broken check returns `unknown` with the error in `detail`, so one can't take the page
+down. v1 set: **liveness** (derives `last_success`/`last_failure` from `actions_audit` — a
+`confirmed`/`refused` row counts as ok, the gate working; no evidence → `unknown`, never green),
+**heartbeat** (reads `scheduler_heartbeat` vs the seeded `stale_seconds`; disabled → ok-labeled,
+not down), **freshness** (location pings vs the seeded thresholds, suppressed outside the runtime
+active-hours window), and **app up-status**. Secret-age (needs a Fly API token in-container) and
+published-expiry (Google refresh tokens publish none — nothing honest to report) are deliberately
+deferred rather than shipped as perpetual `unknown`. The **`self_whoami`** tool (ungated,
+universal — registered in both registry branches like `get_current_datetime`, voice-reachable)
+answers "what am I running / how are you feeling" in chat from `app/provenance.py` (commit + build
+time **baked** via Dockerfile ARG, Fly deploy metadata, `in_service_days` anchored on the first
+user row), a live `run_all_checks` rollup — the same state the page shows, so chat and page can't
+disagree — and a **request-log** rollup ("what have I done recently"). `app/request_log.py` writes
+one coarse row per top-level `orchestrator.run()` on an INDEPENDENT session (committed before the
+work, resolved in `finally` on another) so a crashed request still leaves a row recorded `error`
+(~4ms on the VM, off the voice critical path which orchestrates in a background task). Retention is
+time-primary (90d) with a row-count safety valve, swept hourly by the worker. Liveness only counts audit rows from the
+PR-0 truthful-audit epoch onward — pre-epoch rows are `ok` by construction and would be false
+evidence. `status_payload(db)` (behind `GET /api/status/full`) runs the checks, upserts
+`health_result`, and joins the runbook + evidence for anything not-ok. *The exception-first page
+is PR-E.*
+
+**Runtime settings overlay** (`app/runtime_settings.py`, health TDD §7): a bounded
+allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the four
+`quiet_hours_*` fields, `outbound_calls_enabled`, `max_outbound_calls_per_hour`, and the
+`location_active_start/end_hour` freshness window — each overridable at runtime without a
+redeploy. `get_effective(db, key)` returns the
+`runtime_settings` override if present, else the env/`Settings` default (never mutating the
+`@lru_cache` singleton). Every runtime reader of one of these keys reads through
+`get_effective`, not `settings.X`. The allow-list is the enforcement boundary: **a secret
+can never be read or written through this path.** `outbound_calls_enabled` and
+`max_outbound_calls_per_hour` are safety-critical — changing them needs an explicit confirm
+and is always audited.
 
 ---
 
@@ -303,10 +372,20 @@ died or Fly redeployed mid-job) is re-queued rather than lost, or failed if past
 `distill_episode`, `commit_idea`, `sync_contacts`, `push_task`, `complete_task_google`.
 
 The worker loop (5 s) also runs the **outbound dialer** (due `outbound_calls`, quiet hours
-21:00–07:00 except callbacks/briefings, max 6/hr), the **watch engine** (LLM-judged
-conditions that ring the owner when they fire), and an APScheduler cron for the **morning
-briefing** — calendar + portfolio + weather/marine + traffic + news gathered concurrently,
-composed in the principal's voice, delivered by email or phone call.
+defaulting 21:00–07:00 except callbacks/briefings, max 6/hr — window and cap both runtime-
+overridable via the settings overlay), the **watch engine** (LLM-judged
+conditions that ring the owner when they fire), and the **morning briefing** — calendar +
+portfolio + weather/marine + traffic + news gathered concurrently, composed in the
+principal's voice, delivered by email or phone call.
+
+**Briefing scheduler (health TDD §6):** a per-tick enqueuer, not an APScheduler cron. Each
+tick reads the effective briefing time (runtime overlay) and fires when that minute has
+**passed** today and nothing has briefed today — so a missed run (worker was down at the
+minute) still catches up once, guarded against double-fire by `scheduler_heartbeat.last_
+briefing_date` (owner tz), and a runtime time change takes effect within a tick with **no
+restart**. Every tick writes `scheduler_heartbeat` (`beat_at`, `next_run_at`, `enabled`) —
+the proof-of-life the §5.2 health check reads to tell a live scheduler from a dead one. A
+scheduled brief that composes empty is **emailed** (visible), never silently dropped.
 
 ---
 
@@ -320,13 +399,17 @@ by FastAPI itself — one origin, no separate frontend deploy.
 | `/login` | JWT login |
 | `/` | Chat with JARVIS |
 | `/memory` | Browse/audit/correct memories |
-| `/status` | Health dashboard |
-| `/admin` | **Live agent-roster editor** — tools, prompts, enable/disable per agent |
+| `/status` | **Exception-first health page** — polls `/api/status/full` every 30s; shows only non-ok components (detail + joined runbook + evidence), healthy collapses to one line, `unknown` rendered distinctly (never green), stale-poll indicator |
+| `/admin` | **Live agent-roster editor** — tools, prompts, enable/disable per agent — plus a **Runtime settings** panel (effective value + source; edit with confirm for safety-critical keys) |
 
 REST surface (`/api/...`): auth (`/auth/login`, `/auth/me`, `/auth/change-password`),
 chat + history, memory CRUD + audit, agent-config CRUD, action audit, briefing on demand,
-health probes — plus the unauthenticated-but-signed channel webhooks (`/sms/inbound`,
-`/voice/*`, `/location`). Public `/`, `/privacy`, `/terms` are carrier-compliance pages.
+runtime settings (`GET /settings` effective-value+source, `PUT /settings/{key}` — 403 for a
+safety-critical key without confirm, 404 for a non-allow-list key), the true status surface
+(`GET /status/full` — runs every health check fresh, joins each not-ok component's stored
+runbook + recent failing audit rows as evidence; auth-gated, no secrets), health probes — plus
+the unauthenticated-but-signed channel webhooks (`/sms/inbound`, `/voice/*`, `/location`).
+Public `/`, `/privacy`, `/terms` are carrier-compliance pages.
 
 ---
 

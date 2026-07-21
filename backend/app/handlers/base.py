@@ -12,6 +12,27 @@ from typing import Any, Callable, Optional
 from sqlalchemy.orm import Session
 
 
+class ToolFault(Exception):
+    """Raised by a handler to signal that a tool call genuinely failed —
+    upstream auth rejected, a 401, an unreachable service, a bad key.
+
+    This is the structured fault signal the audit/health substrate keys off
+    (health TDD §5.1). A handler raises it INSTEAD of returning a hand-worded
+    error string; the registry catches it at the single execution seam, records
+    `status="error"` in the audit trail, and still surfaces the message to the
+    caller verbatim — so the user keeps the handler's carefully-worded guidance
+    while liveness gains a real failure it can see.
+
+    `fault_code` is forward-looking metadata for the remediation join
+    (`(component, fault_code) -> runbook`, health TDD §4.2); the audit write in
+    this build does not consume it yet.
+    """
+
+    def __init__(self, message: str, fault_code: str = "error") -> None:
+        super().__init__(message)
+        self.fault_code = fault_code
+
+
 @dataclass
 class Context:
     """Everything a tool needs to run, plus who/where the request came from."""
@@ -101,13 +122,30 @@ class Registry:
         """Keep only allow-listed tools. Fail closed."""
         self._tools = {k: v for k, v in self._tools.items() if k in allow}
 
-    def execute(self, name: str, args: dict, ctx: Context) -> str:
+    def run_tool(self, name: str, args: dict, ctx: Context) -> tuple[str, str]:
+        """Execute a tool and report its outcome: returns `(result, status)`
+        where `status` is `"ok"` or `"error"`.
+
+        This is the single execution seam that knows whether a call succeeded,
+        so it is where audit status is DERIVED rather than assumed. A handler
+        that raises `ToolFault` (or any exception) is recorded as `error`; the
+        `ToolFault` message is surfaced verbatim so the user keeps the handler's
+        wording. A tool must still never crash the loop — every failure comes
+        back as a string, never a raise into the caller.
+        """
         if name not in self._tools:
-            return f"Unknown tool: {name}"
+            return f"Unknown tool: {name}", "error"
         try:
-            return self._tools[name].fn(args, ctx)
-        except Exception as e:  # tools must never crash the loop
-            return f"Error in {name}: {e}"
+            return str(self._tools[name].fn(args, ctx)), "ok"
+        except ToolFault as e:
+            return str(e), "error"
+        except Exception as e:  # unexpected — still must not crash the loop
+            return f"Error in {name}: {e}", "error"
+
+    def execute(self, name: str, args: dict, ctx: Context) -> str:
+        """Back-compat: run a tool and return just its result string. Callers
+        that also record audit should prefer `run_tool` to get the status."""
+        return self.run_tool(name, args, ctx)[0]
 
 
 def build_registry(include_delegate: bool = False, db=None, allow: set[str] | None = None) -> Registry:
@@ -123,7 +161,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # (delegate) and governs the one irreversible action (trading) behind the
         # confirmation gate. All read-only/domain tools live in specialist agents.
         from app import agents
-        from app.handlers import datetime_tools, finance, scheduling, secretary, travel
+        from app.handlers import datetime_tools, finance, ideas, scheduling, secretary, selfstatus, travel
 
         agents.register_delegate(reg, db)
         finance.register_trading(reg)
@@ -134,9 +172,14 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         secretary.register_gated(reg)     # send_email
         scheduling.register_gated(reg)    # create_event
         travel.register_gated(reg)        # book_flight (+ TOTP second factor)
+        ideas.register_gated(reg)         # create_project_from_idea (creates a repo)
         # get_current_datetime is ungated and universal — registered at top level
         # AND in the sub-agent branch (TDD §4.1: both branches).
         datetime_tools.register(reg)
+        # self_whoami: JARVIS's own provenance + health. Universal + ungated, so
+        # the orchestrator (a pure delegator) can answer "how are you feeling"
+        # directly instead of delegating it (health TDD §9).
+        selfstatus.register(reg)
         if allow is not None:
             reg.restrict(allow)
         return reg
@@ -145,7 +188,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
     # no gated trading -> no recursion, no ungoverned money actions).
     from app.handlers import (audit, callback, contacts, datetime_tools, episodes,
                               finance, general, googledocs, ideas, infra, location,
-                              maps, netstatus, scheduling, secretary, tailscale,
+                              maps, netstatus, scheduling, secretary, selfstatus, tailscale,
                               tasks, travel, watches, websearch)
 
     finance.register(reg)
@@ -167,6 +210,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
     tailscale.register(reg)
     watches.register(reg)
     googledocs.register(reg)
+    selfstatus.register(reg)   # self_whoami — universal, ungated (both branches)
     # get_current_datetime: ungated, universal, no side effects.
     # Registered in BOTH branches (TDD §4.1). Sub-agents can always call it;
     # run_agent() also auto-injects it into every agent's effective tool list
