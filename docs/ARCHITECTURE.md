@@ -329,7 +329,9 @@ down. v1 set: **liveness** (derives `last_success`/`last_failure` from `actions_
 **heartbeat** (reads `scheduler_heartbeat` vs the seeded `stale_seconds`; disabled → ok-labeled,
 not down), the **location split** — `location_pull_scheduler` ("is the server asking?", reads
 `location_requests` with `trigger=scheduled`; a failed dispatch gets its own `dispatch_failing`
-fault code because it sends you to the key, not the worker) and `location_responsiveness` ("is the
+fault code because it sends you to the key, not the worker — **but see the scope limit below,
+`dispatch_ok` only proves the relay accepted the message, not that it reached the phone**) and
+`location_responsiveness` ("is the
 phone answering?", scores the trailing 6 completed requests; fewer than 3 → `unknown`, never green)
 — both suppressed outside the runtime active-hours window, and **app up-status**. Secret-age (needs a Fly API token in-container) and
 published-expiry (Google refresh tokens publish none — nothing honest to report) are deliberately
@@ -407,6 +409,21 @@ beyond repair is **attribution**: a request with no answer is the phone's fault,
 all is the scheduler's, and those two now have separate health checks with runbooks pointing
 at different machines. A ping with no nonce is still recorded, unlinked — unsolicited data is
 data, not an error.
+
+**KNOWN INSTRUMENTATION GAP — `dispatch_ok` measures acceptance, not delivery** (TDD §7.1 scope
+limit, §12). The column records only that the AutoRemote relay returned 200. It says nothing
+about whether FCM delivered, whether the phone was reachable, or whether Tasker ever saw the
+message. `location_responsiveness` is unaffected — it scores request *fulfilment*, so a phone
+that never receives the nudge still produces `timeout` rows and goes `down` within six requests,
+and nothing goes undetected. But `location_pull_scheduler` keys `dispatch_failing` on
+`dispatch_ok`, so during a silent delivery failure it reads **green** and sends the operator to
+the phone-side runbook for a fault in the relay→FCM leg — which is neither the server nor the
+phone. That is the misattribution this whole inversion was built to eliminate, reappearing one
+layer down. **If responsiveness stays `down` after the phone is configured and the Event profile
+is confirmed firing on a manual AutoRemote send, suspect this first, not last.** The honest fix
+is to rename the column `relay_accepted` (claiming exactly what is known) or to close the loop
+with a delivery receipt if AutoRemote exposes one — not to leave a column named for delivery
+that measures acceptance.
 
 A **manual push** task (no profile, run from a home-screen shortcut) is deliberately retained
 as a fallback for pre-seeding position before a conversation. It posts no nonce and

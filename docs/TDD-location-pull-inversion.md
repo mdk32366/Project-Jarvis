@@ -251,6 +251,13 @@ Reads: most recent `location_request` with `trigger=scheduled`.
 Remediation: check `location_pull_enabled`, check scheduler heartbeat, check
 `dispatch_error` on the most recent row.
 
+> **Scope limit — read this before trusting a green here.** This check's
+> `dispatch_failing` fault keys on `dispatch_ok`, which records only that the
+> AutoRemote relay returned 200. It cannot see the relay→FCM→phone leg. A silent
+> delivery failure reads **green** on this check while §7.2 correctly goes `down`.
+> When responsiveness is `down` and this check is `ok`, the phone-side runbook is
+> **not** automatically the right place to look. See §12.
+
 ### 7.2 `location_responsiveness` — *is the phone answering?*
 
 Reads: trailing 6 requests (scheduled + on_demand), completed only.
@@ -391,11 +398,41 @@ owner action.
 
 ## 12. Open questions
 
+- **`dispatch_ok` cannot see the leg it appears to describe.** It records that the
+  AutoRemote relay returned 200 — nothing about whether FCM delivered, whether the
+  phone was reachable, or whether Tasker ever saw the message. This is what §5.1
+  asked to be recorded, not an implementation gap, but the spec asked for the
+  wrong thing.
+
+  **Consequence, precisely.** `location_responsiveness` is unaffected: it scores
+  request *fulfilment*, never dispatch, so a phone that never receives the nudge
+  still produces `timeout` rows and the check goes `down` within six requests.
+  Nothing goes undetected. But `location_pull_scheduler` keys its
+  `dispatch_failing` fault on `dispatch_ok`, so during a delivery failure it reads
+  **green**, and the operator is sent to the phone-side runbook — AutoRemote
+  installed? profile enabled? battery unrestricted? — for a fault in the
+  relay→FCM leg, which is neither the server nor the phone. **This is the
+  misattribution the inversion was built to eliminate, reappearing one layer
+  down.**
+
+  **Not yet distinguishable in production.** All requests currently read `timeout`
+  with `dispatch_ok=True`, which is equally consistent with "no Event profile
+  exists yet" (the expected explanation) and "delivery is silently failing." Only
+  a fulfilled request separates them. **If responsiveness stays `down` after the
+  phone is configured and the Event profile is confirmed firing on a manual
+  AutoRemote send, suspect this first, not last.**
+
+  **Honest fixes, in order of preference:** rename to `relay_accepted`, which
+  claims exactly what is known and stops the scheduler check from overclaiming;
+  or close the loop with an AutoRemote delivery receipt, if one is exposed.
+  Do not leave a column named for delivery that measures acceptance.
 - **AutoRemote reliability under prolonged doze.** FCM high-priority should
   deliver, but this device has already violated one reasonable expectation.
   Mitigation: the responsiveness check measures exactly this, so if the
   assumption is wrong the system says so within six requests rather than
-  silently. Join is the noted substitute.
+  silently. Join is the noted substitute. Note the entry above: the *instrumentation
+  cannot see this leg*, which is a distinct problem from the leg being unreliable
+  and would mask which half to blame.
 - **Interval during known-stationary periods.** Pulling every 15 minutes
   overnight at a dock costs battery for no information. Candidate follow-up, not
   v1 — and it should be driven by measured battery cost, not assumed.

@@ -36,7 +36,7 @@ Postgres + Claude. Runs on Fly.io; fully testable offline with stubs.
 | Contacts | lookup / save / list; sync from Google Contacts |
 | Travel | list trips, search flights (Duffel); `book_flight` gated + TOTP second factor |
 | Google Docs/Sheets | create / append to documents; provenance-tagged |
-| Navigation | traffic (Google Maps), find place, current location from phone (Tasker GPS reporting) |
+| Navigation | traffic (Google Maps), find place, current location from phone (server-initiated pull → AutoRemote → Tasker) |
 | Research | web search + page fetch (Tavily / httpx) |
 | Tailscale | tailnet status |
 | Infrastructure | Fly fleet health + spend |
