@@ -104,3 +104,9 @@ class SettingIn(BaseModel):
     value: bool | int | str
     # Required to change a safety-critical key (outbound-call toggles).
     confirm: bool = False
+
+class ProjectActionIn(BaseModel):
+    # Name of a PROJECT tool only — the route fails closed against the wider
+    # registry, so this is never a general tool-invocation endpoint.
+    tool: str
+    args: dict = {}

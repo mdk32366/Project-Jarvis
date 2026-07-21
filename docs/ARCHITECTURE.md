@@ -229,7 +229,7 @@ the orchestrator **commits** (send, book, create with invites) — under the gat
 
 ## 6. Tool inventory
 
-~45 tools across `backend/app/handlers/`. Gated tools in **bold**.
+~55 tools across `backend/app/handlers/`. Gated tools in **bold**.
 
 | Domain | Tools | External API |
 |---|---|---|
@@ -244,6 +244,7 @@ the orchestrator **commits** (send, book, create with invites) — under the gat
 | Navigation | get_traffic, find_place, where_am_i | Google Maps, `location_pings` |
 | Contacts | whoami, lookup_contact, save_contact, list_contacts, sync_google_contacts, google_status | Google People |
 | Ideas | capture_idea, list_ideas, get_idea, **create_project_from_idea** (gated) | GitHub Contents API + `POST /user/repos` |
+| Projects | create_project, promote_idea, list_projects, project_status, add_milestone, complete_milestone, drop_milestone, set_project_status, attach_document, supersede_document | DB only |
 | Callbacks | call_me_back, pending_callbacks, cancel_callback | Twilio (via worker) |
 | Watches | watch_for, list_watches, cancel_watch | LLM judge (worker) |
 | Infra | fleet_health, fleet_spend | Fly Machines + GraphQL |
@@ -297,7 +298,7 @@ flowchart LR
 
 ## 8. Database
 
-Postgres on Fly (SQLite in dev/tests). 30 tables in `backend/app/models.py`:
+Postgres on Fly (SQLite in dev/tests). 33 tables in `backend/app/models.py`:
 
 | Group | Tables |
 |---|---|
@@ -305,9 +306,27 @@ Postgres on Fly (SQLite in dev/tests). 30 tables in `backend/app/models.py`:
 | Memory | `persona_profile`, `preferences`, `memories`, `memory_embeddings`, `episodes`, `episode_quotes` |
 | Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` (per-*tool*), `request_log` (per-*request* — one coarse row per top-level request; retention 90d + row cap) |
 | Work | `jobs`, `tasks`, `ideas`, `watches`, `outbound_calls` |
+| Projects | `project`, `milestone`, `project_document` (multi-session arcs — see below) |
 | Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` (+ `request_id`, and a descriptive `trigger` that no health check reads), `location_requests` (the server-initiated ask a ping answers) |
 | App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below), `scheduler_heartbeat` (briefing-scheduler proof-of-life + catch-up state) |
 | Health | `component` (topology inventory), `remediation` (fault→runbook), `health_result` (transient current status) |
+
+**Project tracking** (`app/handlers/projects.py`, `docs/TDD-project-tracking.md`): the durable
+answer to "where am I on this?" Every multi-session arc previously lived in session close-out
+documents and the owner's head — excellent narrative records, terrible state stores. `project`
+holds the arc (`active` / `parked` / `done` / `abandoned`), `milestone` the ordered checkpoints
+(sparse positions so an insertion never renumbers), `project_document` the documents by **tier**
+(`live` / `archive` / `operational`, mirroring the `docs/` repo convention so "what's the design
+for X" returns the live doc, singular). **The boundary against `tasks`:** a task is a discrete
+action with a due date, done in one sitting; a project is a multi-session arc. Nothing enforces
+that in the schema and nothing should. Load-bearing rules: **`parked` requires a reason** (ideally
+a resumption condition — parked-without-one is indistinguishable from abandoned), **`dropped` ≠
+`done`** (a dropped milestone counts toward neither numerator nor denominator, or progress is
+overstated), and **ambiguity asks** (completing the wrong milestone is a silent data error that
+looks like progress). Promotion from an idea is a status change plus a link, never a move or a
+delete — `ideas.status` is orthogonal to the older `ideas.promoted_url`, which records that a
+GitHub *repo* exists. All tools ungated (reversible bookkeeping must not dilute the gate) and all
+voice-reachable, because "where am I" is a question asked from a boat.
 
 **Health model** (`app/health.py`, TDD §4): a relational map of the deterministic topology.
 `component` is the inventory — every agent, external API, subsystem, and data feed — each row
@@ -333,7 +352,11 @@ fault code because it sends you to the key, not the worker — **but see the sco
 `relay_accepted` only proves the relay took the message, not that it reached the phone**) and
 `location_responsiveness` ("is the
 phone answering?", scores the trailing 6 completed requests; fewer than 3 → `unknown`, never green)
-— both suppressed outside the runtime active-hours window, and **app up-status**. Secret-age (needs a Fly API token in-container) and
+— both suppressed outside the runtime active-hours window, **app up-status**, and
+**`project_hygiene`** (are the project records still honest — an active project with no open
+milestones, two live documents of one kind, or nothing touched in 30 days). `project_hygiene` is
+never `down` by design: a bookkeeping problem rendered beside a dead scheduler would train the eye
+to skip both, which is the exact failure the exception-first page exists to prevent. Secret-age (needs a Fly API token in-container) and
 published-expiry (Google refresh tokens publish none — nothing honest to report) are deliberately
 deferred rather than shipped as perpetual `unknown`. The **`self_whoami`** tool (ungated,
 universal — registered in both registry branches like `get_current_datetime`, voice-reachable)
@@ -460,14 +483,17 @@ by FastAPI itself — one origin, no separate frontend deploy.
 | `/` | Chat with JARVIS |
 | `/memory` | Browse/audit/correct memories |
 | `/status` | **Exception-first health page** — polls `/api/status/full` every 30s; shows only non-ok components (detail + joined runbook + evidence), healthy collapses to one line, `unknown` rendered distinctly (never green), stale-poll indicator |
-| `/admin` | **Live agent-roster editor** — tools, prompts, enable/disable per agent — plus a **Runtime settings** panel (effective value + source; edit with confirm for safety-critical keys) |
+| `/admin` | **Live agent-roster editor** — tools, prompts, enable/disable per agent — plus a **Projects** panel (active arcs with milestone progress and next open milestone, parked collapsed with reasons, done/abandoned behind a toggle; anomalies rendered only when present) and a **Runtime settings** panel (effective value + source; edit with confirm for safety-critical keys) |
 
 REST surface (`/api/...`): auth (`/auth/login`, `/auth/me`, `/auth/change-password`),
 chat + history, memory CRUD + audit, agent-config CRUD, action audit, briefing on demand,
 runtime settings (`GET /settings` effective-value+source, `PUT /settings/{key}` — 403 for a
 safety-critical key without confirm, 404 for a non-allow-list key), the true status surface
 (`GET /status/full` — runs every health check fresh, joins each not-ok component's stored
-runbook + recent failing audit rows as evidence; auth-gated, no secrets), health probes — plus
+runbook + recent failing audit rows as evidence; auth-gated, no secrets), projects
+(`GET /projects` read model with progress + anomalies, `POST /projects/action` — the SINGLE write
+path, which runs a project tool through the registry exactly as a phone call would and fails
+closed against the wider registry), health probes — plus
 the unauthenticated-but-signed channel webhooks (`/sms/inbound`, `/voice/*`, `/location`).
 Public `/`, `/privacy`, `/terms` are carrier-compliance pages.
 

@@ -241,6 +241,43 @@ def check_location_responsiveness(db: Session, c: Component) -> CheckResult:
     )
 
 
+def check_project_hygiene(db: Session, c: Component) -> CheckResult:
+    """Are the project records still telling the truth? (project-tracking TDD §7)
+
+    NEVER returns `down`, by design. A stale project record is a bookkeeping
+    problem, not a system fault — reporting it as `down` would put bookkeeping
+    beside a dead scheduler on the status page and train the eye to skip both.
+    That is precisely the failure mode the exception-first page exists to prevent.
+    """
+    from app.handlers.projects import _anomalies
+    from app.models import Project
+
+    stale_days = _cfg(c).get("stale_days", 30)
+    projects = db.query(Project).all()
+    if not projects:
+        return CheckResult(c.name, "unknown", "no_projects",
+                           "no projects tracked yet", checked_at=_now())
+
+    flagged: list[str] = []
+    for p in projects:
+        problems = _anomalies(db, p)
+        if problems:
+            flagged.append(f"{p.name}: {problems[0]}")
+
+    if not flagged:
+        active = sum(1 for p in projects if p.status == "active")
+        return CheckResult(c.name, "ok", None,
+                           f"{len(projects)} project(s), {active} active, records clean",
+                           checked_at=_now(), last_success_at=_now())
+
+    detail = "; ".join(flagged[:4])
+    if len(flagged) > 4:
+        detail += f" (+{len(flagged) - 4} more)"
+    return CheckResult(c.name, "degraded", "record_stale",
+                       f"{len(flagged)} project(s) need attention — {detail}",
+                       checked_at=_now(), last_failure_at=_now())
+
+
 def check_app_up(db: Session, c: Component) -> CheckResult:
     """App up-status: if this code is running and the DB answers, the app + its
     Postgres are up. A trivially-true check by construction — but it makes 'the
@@ -255,6 +292,7 @@ _CHECKS = {
     "heartbeat": check_heartbeat,
     "location_scheduler": check_location_scheduler,
     "location_responsiveness": check_location_responsiveness,
+    "project_hygiene": check_project_hygiene,
 }
 # components whose up-status is the app itself (postgres/anthropic liveness is
 # really "is the app up") get app_up when they have no more specific check.

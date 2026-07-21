@@ -72,6 +72,15 @@ _COMPONENTS: list[dict] = [
     {"name": "location_responsiveness", "kind": "data_feed", "depends_on": "",
      "check_type": "location_responsiveness", "check_config": {"window": 6, "ok_min": 5, "degraded_min": 3},
      "description": "Is the phone answering when asked?"},
+
+    # ── Bookkeeping ──
+    # Informational only, and NEVER `down` (see check_project_hygiene): a stale
+    # project record is a bookkeeping problem, not a system fault, and inflating
+    # it would train the eye to ignore the status page — the exact failure mode
+    # the exception-first design exists to prevent.
+    {"name": "project_hygiene", "kind": "internal_subsystem", "depends_on": "postgres",
+     "check_type": "project_hygiene", "check_config": {"stale_days": 30},
+     "description": "Are the project records honest — milestones open, one live doc, recently touched?"},
 ]
 
 # Components removed from _COMPONENTS above. The seed RECONCILES but does not
@@ -130,6 +139,12 @@ _REMEDIATIONS: list[dict] = [
                 "TOKEN (the AutoRemote web page shows it inside a URL, so it is easy to paste the "
                 "leading `key=` by mistake — that exact typo disabled the feature silently from "
                 "2026-07-19 to 07-21). Fly secrets are write-only; re-set rather than read back."},
+    {"component": "project_hygiene", "fault_code": "record_stale", "severity": "info",
+     "runbook": "A tracked project's record is drifting from reality. Ask JARVIS "
+                "'where am I on <project>' — project_status names the specific problem "
+                "(no open milestones, two live docs of one kind, or untouched for 30+ days). "
+                "Fix it by completing/adding a milestone, superseding the duplicate document, "
+                "or parking the project with a reason."},
     {"component": "location_responsiveness", "fault_code": "not_answering", "severity": "warn",
      "runbook": "The server is asking and the phone is not answering. PHONE-SIDE. Confirm AutoRemote "
                 "is installed and receiving (send a test from the AutoRemote web console); the Tasker "

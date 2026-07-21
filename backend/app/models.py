@@ -211,7 +211,125 @@ class Idea(Base):
     # Set when the idea is promoted into its own GitHub project repo — the repo
     # html_url. Non-empty means "already a project"; a second promotion is refused.
     promoted_url: Mapped[str] = mapped_column(String(300), default="")
+    # Tracking lifecycle: idea | promoted | dropped. ORTHOGONAL to `promoted_url`
+    # above, which records that a GitHub REPO was created (PR #26). An idea can be
+    # tracked as a `project` row with no repo, or have a repo with no tracking.
+    # Two different questions; conflating them would make "promoted" ambiguous.
+    status: Mapped[str] = mapped_column(String(16), default="idea")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Project(Base):
+    """A multi-session arc — the durable answer to "where am I on this?"
+
+    THE BOUNDARY AGAINST `tasks`, stated once because ambiguity here is how you
+    end up trusting neither store: a **task** is a discrete action with a due
+    date ("call the marina") that is done in one sitting and then gone. A
+    **project** is a multi-session arc with milestones that survives close-outs,
+    accumulates documents, and has a state beyond done/not-done.
+
+    Nothing enforces that at the schema level and nothing should — it is a
+    judgment call, and the cost of getting it wrong once is trivial.
+    """
+
+    __tablename__ = "project"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    # active | parked | done | abandoned
+    status: Mapped[str] = mapped_column(String(16), default="active", index=True)
+    # REQUIRED when status='parked'. Parked-with-a-reason is a completely
+    # different thing from stalled: a resumption condition ("until the
+    # false-positive rate is known") lets the project tell you when to look at it
+    # again instead of quietly rotting.
+    parked_reason: Mapped[str] = mapped_column(Text, default="")
+    repo_url: Mapped[str] = mapped_column(String(400), default="")
+    idea_id: Mapped[int | None] = mapped_column(
+        ForeignKey("ideas.id"), nullable=True, index=True, default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Set on `done` OR `abandoned`. Both are terminal: a project that was tried
+    # and rejected is a real outcome worth keeping.
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    milestones: Mapped[list["Milestone"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+    documents: Mapped[list["ProjectDocument"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan"
+    )
+
+
+class Milestone(Base):
+    """A checkpoint within a project — NOT a task.
+
+    If something wants a due date and a reminder, it is a task. If it wants to be
+    a line in "where am I", it is a milestone.
+    """
+
+    __tablename__ = "milestone"
+    __table_args__ = (
+        Index("ix_milestone_project_position", "project_id", "position"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), index=True
+    )
+    title: Mapped[str] = mapped_column(String(300))
+    detail: Mapped[str] = mapped_column(Text, default="")
+    # Sparse (10, 20, 30…) so inserting between two milestones never renumbers
+    # the rest.
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    # open | done | dropped. `dropped` exists for the same reason `abandoned`
+    # does: a milestone that stopped being relevant is not one that was achieved,
+    # and collapsing them overstates progress.
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    project: Mapped["Project"] = relationship(back_populates="milestones")
+
+
+class ProjectDocument(Base):
+    """A document belonging to a project, sorted by TIER not topic.
+
+    The three tiers mirror the `docs/` repo convention deliberately, because that
+    convention already encodes the right idea: files are sorted by whether they
+    are **live**, **superseded**, or **spent**. That is what prevents two sources
+    of truth for one design. Listing documents without the distinction would
+    reintroduce exactly the ambiguity the convention was invented to kill.
+
+    Consequence: "what's the design for X" returns the `live` doc, SINGULAR. Two
+    live documents of the same kind on one project is a defect, and
+    `project_hygiene` surfaces it.
+    """
+
+    __tablename__ = "project_document"
+    __table_args__ = (
+        Index("ix_project_document_project_tier", "project_id", "tier"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), index=True
+    )
+    # Free text with conventional values (tdd | test-plan | ui-plan | closeout |
+    # readme | other) rather than a hard enum — kinds will grow, and a migration
+    # per new kind is friction with no benefit.
+    kind: Mapped[str] = mapped_column(String(32), default="other")
+    tier: Mapped[str] = mapped_column(String(16), default="live")   # live|archive|operational
+    title: Mapped[str] = mapped_column(String(300))
+    path: Mapped[str] = mapped_column(String(400), default="")      # repo-relative
+    url: Mapped[str] = mapped_column(String(400), default="")
+    superseded_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_document.id"), nullable=True, default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    project: Mapped["Project"] = relationship(back_populates="documents")
 
 
 class Trip(Base):

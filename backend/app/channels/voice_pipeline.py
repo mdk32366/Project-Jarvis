@@ -115,6 +115,22 @@ VOICE_TOOLS_PHASE1: set[str] = {
     # reachable behind the confirmation gate, same posture as send_email — it's an
     # outward action, not money, and a private repo is easily undone.
     "create_project_from_idea",
+    # Project tracking (TDD project-tracking §2 goal 5): "where am I on X" is a
+    # question asked from a boat, so it has to work on a phone call. All ungated
+    # and reversible bookkeeping — no money, no outward message, nothing that
+    # can't be corrected by saying the opposite. NOTE: every secretary tool must
+    # appear here or the roster-subset check silently drops the WHOLE agent from
+    # voice.
+    "create_project",
+    "promote_idea",
+    "list_projects",
+    "project_status",
+    "add_milestone",
+    "complete_milestone",
+    "drop_milestone",
+    "set_project_status",
+    "attach_document",
+    "supersede_document",
     # travel — read, booking, and document creation.
     "list_trips",
     "search_flights",
