@@ -17,6 +17,12 @@ from app.handlers.location import (
     close_request, due_for_pull, new_request, sweep_timeouts,
 )
 from app.models import LocationPing, LocationRequest
+from app.providers import autoremote as _autoremote
+
+# Captured at import, BEFORE the autouse stub below replaces the module
+# attribute. Tests that need to assert what `request_location` actually puts on
+# the wire must call this, or they assert the behaviour of the stub instead.
+_REAL_REQUEST_LOCATION = _autoremote.request_location
 
 
 def _now():
@@ -331,24 +337,38 @@ def test_bare_key_is_left_alone(monkeypatch):
     assert client.sent["key"] == "abc123"
 
 
-def test_separator_survives_form_encoding(monkeypatch):
-    """`=:=` percent-encodes to %3D%3A%3D and the relay decodes it back. Verified
-    against production 2026-07-21 — the separator was never the problem, and this
-    pins that so the hypothesis doesn't get relitigated."""
-    from urllib.parse import parse_qs, urlencode
+def test_the_message_is_the_bare_nonce(monkeypatch):
+    """No command word, no `=:=` separator — the message IS the nonce.
 
+    Ground truth from the device (2026-07-21): with `jarvis_locreq=:=<nonce>` the
+    phone showed `%arpar1 = jarvis_locreq` and `%arpar2` unresolved. The split
+    produced ONE field, so the nonce never reached a variable the task could read.
+    `%arpar1` populates with whatever is in first position, so the nonce goes
+    there alone.
+    """
     from app.providers import autoremote
 
     monkeypatch.setattr(settings, "autoremote_key", "tok")
     client = _fake_transport(monkeypatch, body="OK")
-    # `send`, not `request_location` — the autouse fixture stubs the latter, and
-    # this test is about what actually reaches the wire.
-    autoremote.send(f"{autoremote.MESSAGE_PREFIX}=:=NONCE123")
+    _REAL_REQUEST_LOCATION("sZKSkt03goMfmcX5si2suQ")   # not the autouse stub
 
-    on_the_wire = urlencode(client.sent)
-    assert "%3D%3A%3D" in on_the_wire                       # encoded in transit...
-    decoded = parse_qs(on_the_wire)["message"][0]
-    assert decoded == "jarvis_locreq=:=NONCE123"            # ...and decodes back
+    assert client.sent["message"] == "sZKSkt03goMfmcX5si2suQ"
+    assert "=:=" not in client.sent["message"]
+    assert "jarvis_locreq" not in client.sent["message"]
+
+
+def test_minted_nonces_match_the_phone_side_filter(db):
+    """The Event profile matches a nonce PATTERN now, not a command word, so the
+    shape of what we mint is load-bearing on the phone. If this ever drifts, the
+    filter silently stops matching and every request times out — the exact failure
+    we just spent an evening on."""
+    import re
+
+    from app.providers.autoremote import NONCE_PATTERN
+
+    for _ in range(20):
+        req = new_request(db)
+        assert re.match(NONCE_PATTERN, req.nonce), req.nonce
 
 
 def test_failed_dispatch_still_sweeps_to_timeout(db, monkeypatch):
@@ -417,7 +437,7 @@ def test_key_never_reaches_the_relay_error(db, monkeypatch, caplog):
     monkeypatch.setattr(httpx, "Client", _Client)
 
     with caplog.at_level("DEBUG"):
-        ok, err = autoremote.send("jarvis_locreq=:=abc")
+        ok, err = autoremote.send("abc")
 
     assert ok is False
     assert secret not in (err or "")
@@ -426,7 +446,7 @@ def test_key_never_reaches_the_relay_error(db, monkeypatch, caplog):
     # ...and the same failure travelling the real path into the database. Restore
     # the genuine request_location so this exercises `send` rather than the stub.
     monkeypatch.setattr("app.providers.autoremote.request_location",
-                        lambda nonce: autoremote.send(f"{autoremote.MESSAGE_PREFIX}=:={nonce}"))
+                        lambda nonce: autoremote.send(nonce))
     req = new_request(db)
     assert req.relay_accepted is False
     assert req.relay_error and secret not in req.relay_error

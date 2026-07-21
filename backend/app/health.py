@@ -133,7 +133,10 @@ _REMEDIATIONS: list[dict] = [
     {"component": "location_responsiveness", "fault_code": "not_answering", "severity": "warn",
      "runbook": "The server is asking and the phone is not answering. PHONE-SIDE. Confirm AutoRemote "
                 "is installed and receiving (send a test from the AutoRemote web console); the Tasker "
-                "Event profile 'jarvis_locreq' is enabled; Tasker location permission is 'Allow all the "
+                "Event profile is enabled and its filter matches the NONCE PATTERN "
+                "^[A-Za-z0-9_-]{22}$ (the message is the bare nonce — there is no 'jarvis_locreq' "
+                "command word and no '=:=' separator); the task reads %arpar1; Tasker location "
+                "permission is 'Allow all the "
                 "time'; Tasker battery is Unrestricted. See docs/tasker-setup-and-recovery.md."},
     {"component": "twilio", "fault_code": "a2p_rejected", "severity": "warn",
      "runbook": "SMS blocked by A2P. Re-register the brand under the EIN as a business and resubmit "

@@ -11,6 +11,11 @@ Placement note: the TDD calls this `backend/integrations/autoremote.py`, but thi
 codebase keeps outbound transports in `app/providers/` (see `sms.py`) and has no
 `integrations` package. Same role, existing convention.
 
+**THE MESSAGE IS THE BARE NONCE.** Not `jarvis_locreq=:=<nonce>`. The device was
+observed populating `%arpar1` with `jarvis_locreq` and leaving `%arpar2`
+unresolved — the `=:=` split yielded one field, so the nonce never reached a
+variable the Tasker task could read. See `NONCE_PATTERN` below.
+
 **THE STATUS CODE IS NOT THE OUTCOME.** This relay answers `200 OK` to everything
 and reports the real result in the BODY: `OK` when it accepted the message for a
 registered device, `NotRegistered` when there is no device to deliver to, and
@@ -41,11 +46,28 @@ log = logging.getLogger(__name__)
 _ENDPOINT = "https://autoremotejoaomgcd.appspot.com/sendmessage"
 _TIMEOUT = 10.0
 
-# The message filter the phone's Tasker Event profile matches on. The payload is
-# `jarvis_locreq=:=<nonce>`; AutoRemote splits on `=:=` and hands the phone the
-# nonce as %arpar1. The separator percent-encodes to %3D%3A%3D in the body and the
-# relay decodes it back — verified 2026-07-21, it is NOT a source of trouble.
-MESSAGE_PREFIX = "jarvis_locreq"
+# THE MESSAGE IS THE BARE NONCE. No command word, no `=:=` separator.
+#
+# The original payload was `jarvis_locreq=:=<nonce>`, on the documented AutoRemote
+# convention that `=:=` splits the message from its parameters. GROUND TRUTH from
+# the device on 2026-07-21 says otherwise: the phone showed
+#
+#     %arpar1 = jarvis_locreq        %arpar2 = (unresolved)
+#
+# The split produced ONE field, not two. The nonce was never delivered to a
+# variable the task could read, which is why every request timed out with pings
+# arriving carrying a null request_id — the task fired, read an unresolved
+# `%arpar1` for its nonce, and posted a fix that could not be correlated.
+#
+# `%arpar1` demonstrably populates with whatever occupies the first position. So
+# put the nonce there and nothing else. The separator was buying a tidy message
+# format and costing an evening; the phone's Event filter can match a nonce
+# PATTERN as precisely as it matched a command word.
+#
+# Nonce shape, for the phone-side filter: `secrets.token_urlsafe(16)` is always
+# 22 characters from [A-Za-z0-9_-], so the Tasker filter is the regex
+#     ^[A-Za-z0-9_-]{22}$
+NONCE_PATTERN = r"^[A-Za-z0-9_-]{22}$"
 
 # The relay's body when it accepted the message. Anything else is a failure,
 # whatever the status code says.
@@ -145,6 +167,10 @@ def send(message: str) -> tuple[bool, str | None]:
 
 
 def request_location(nonce: str) -> tuple[bool, str | None]:
-    """Ask the phone for a fix, tagging the ask with `nonce` so the answer can be
-    matched back to it."""
-    return send(f"{MESSAGE_PREFIX}=:={nonce}")
+    """Ask the phone for a fix. The message IS the nonce — nothing else.
+
+    Sending it bare is what puts it in `%arpar1`, the one variable the device was
+    observed to populate reliably. See NONCE_PATTERN above for the whole story and
+    for the Event-profile filter this implies.
+    """
+    return send(nonce)

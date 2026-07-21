@@ -72,8 +72,9 @@ scheduler minute-tick (existing, PR #29)
        ├─ mint nonce, INSERT location_request (status=pending)
        └─ POST https://autoremotejoaomgcd.appspot.com/sendmessage
             key=<AUTOREMOTE_KEY>
-            message=jarvis_locreq=:=<nonce>
-              └─ [phone] Tasker Event → AutoRemote Message, filter "jarvis_locreq"
+            message=<nonce>                    ← the BARE nonce (§6.1.2)
+              └─ [phone] Tasker Event → AutoRemote Message,
+                         filter regex ^[A-Za-z0-9_-]{22}$
                    ├─ Get Location v2 (timeout 30s)
                    └─ HTTP Request POST /api/location
                         { lat, lon, accuracy, source: "tasker",
@@ -188,9 +189,14 @@ the entire life of the feature**, while not one message was ever delivered.
 Diagnosis was slow because the visible evidence fit a more interesting theory:
 one manual send from the web console succeeded at 16:21 and a scheduled dispatch
 two minutes later did not, which looked like a payload-encoding difference —
-suspicion fell on the `=:=` command separator. It was not the separator; the
-manual send simply used a correctly-formed key. **The separator question was
-never actually tested, because nothing was ever arriving.**
+suspicion fell on the `=:=` command separator. It was not the separator *causing
+the delivery failure*; the manual send simply used a correctly-formed key. **The
+separator question was never actually tested, because nothing was ever arriving.**
+
+It was tested once delivery worked, and it turned out to be a second, independent
+fault — see §6.1.2. Two defects on the same path, one masking the other, is why
+this took an evening: fixing the key made messages arrive and changed nothing
+observable, because the nonce still never reached a readable variable.
 
 Two durable lessons:
 
@@ -202,6 +208,55 @@ Two durable lessons:
    rather than provenance (R22). "Destructive" riding on notional value rather
    than its own flag (`netstatus.py`). Delivery riding on status code rather than
    the body. Named here so it is findable a fourth time.
+
+#### 6.1.2 The message is the BARE NONCE — 2026-07-21, second fault
+
+Once the key was fixed and messages genuinely arrived, nothing changed: requests
+still timed out, pings still landed with a null `request_id`. The device gave the
+answer directly.
+
+**Ground truth from the phone**, with `jarvis_locreq=:=<nonce>` on the wire:
+
+```
+%arpar1 = jarvis_locreq
+%arpar2 = (unresolved)
+```
+
+The `=:=` split produced **one** field, not two. `%arpar1` held the command word
+and the nonce was nowhere — so the Tasker task read an unresolved variable for its
+nonce and posted a fix that could not be correlated. Every symptom follows: the
+task fires, the ping arrives, the request times out, attribution is impossible.
+
+**The fix is to stop splitting.** `%arpar1` demonstrably populates with whatever
+occupies the first position, so the nonce goes there *alone*:
+
+```
+message=<nonce>          not   message=jarvis_locreq=:=<nonce>
+```
+
+One line in `app/providers/autoremote.py`, and a filter change on the phone from a
+literal command word to a **regex on the nonce shape**. `secrets.token_urlsafe(16)`
+is always 22 characters from `[A-Za-z0-9_-]`, so the Event filter is:
+
+```
+^[A-Za-z0-9_-]{22}$
+```
+
+`NONCE_PATTERN` in the client is that same regex, and a test asserts every minted
+nonce matches it — the phone-side filter now depends on the mint's shape, so a
+drift in one silently breaks the other.
+
+**Why the separator went without argument.** It was buying a tidy, self-describing
+message format. It was costing the entire mechanism. A filter can match a nonce
+pattern as precisely as it matches a command word, so the tidiness was never worth
+anything that could not be had another way.
+
+**Known trade-off, accepted:** a bare-nonce message carries no marker identifying
+it as ours, so the Event profile keys on shape alone. Any other 22-character
+`[A-Za-z0-9_-]` AutoRemote message to this device would match. There is no other
+sender today. If one ever appears, the fix is a prefix *without* a separator
+(`jarvis<nonce>`, matched by prefix and sliced on the phone) — which keeps
+everything in `%arpar1` and does not reintroduce the split.
 
 ### 6.2 Scheduler job — `location_pull`
 
@@ -344,17 +399,31 @@ answered rather than merely acknowledged.
 Deliberately last. Steps 1–3 of the build order are fully testable server-side
 with a stub, and yesterday's cost was largely phone-side blind debugging.
 
-1. Install **AutoRemote**, register the device, capture the personal key.
+1. Install **AutoRemote**, register the device, capture the personal key. Store
+   the **bare token** — see §9.
 2. New Tasker project **JARVIS Location Pull**.
-3. **Profile:** Event → Plugin → AutoRemote → Message, filter `jarvis_locreq`.
-   (Event, not Time. There is no schedule on the phone anymore. This is the
-   entire point.)
+3. **Profile:** Event → Plugin → AutoRemote → Message. Set the filter to the
+   **nonce regex** — tick *Regex* / *Exact* per your Tasker version and use:
+
+   ```
+   ^[A-Za-z0-9_-]{22}$
+   ```
+
+   **Not** the literal `jarvis_locreq`. The message is the bare nonce now (§6.1.2);
+   a literal filter will never match again. (Event, not Time. There is no schedule
+   on the phone anymore. This is the entire point.)
 4. **Task JARVIS Answer Location:**
    - Get Location v2, timeout 30s
    - HTTP Request → POST `https://jarvis-mdk.fly.dev/api/location`
      - Header `X-Jarvis-Token: <token>`
      - JSON body:
        `{"lat":%LOC_LAT,"lon":%LOC_LON,"accuracy":%LOC_ACC,"source":"tasker","nonce":"%arpar1","trigger":"pull"}`
+
+   `%arpar1` is now the **whole message**, i.e. the nonce itself — that is the
+   point of §6.1.2. If it ever shows a command word again, something has
+   reintroduced a separator. Server-side, a literal unresolved `%arpar1` is
+   recorded as *no nonce* rather than looked up, so a misconfigured task loses the
+   correlation and never the fix.
 5. **Task JARVIS Push Location (manual)** — no profile attached. Same two actions
    as above, but the body carries **no nonce** and `"trigger":"manual"`:
    `{"lat":%LOC_LAT,"lon":%LOC_LON,"accuracy":%LOC_ACC,"source":"tasker","trigger":"manual"}`

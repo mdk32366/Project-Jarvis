@@ -400,7 +400,10 @@ Android defers indefinitely in doze (correct config, no fires, empty run log). R
 build a better phone-side schedule, the trigger moved off the phone: the same per-tick
 enqueuer mints a `location_requests` row and dispatches an AutoRemote message
 (`app/providers/autoremote.py` → high-priority FCM, which Android *does* deliver through
-doze), the phone's Tasker **Event** profile answers with a fix carrying the nonce, and
+doze) whose entire body is the **bare nonce** — no command word, no `=:=` separator, because
+the device populates `%arpar1` with whatever is in first position and the split was observed
+yielding one field, stranding the nonce (TDD §6.1.2); the phone's Tasker **Event** profile
+matches the nonce regex `^[A-Za-z0-9_-]{22}$` and answers with a fix carrying it, and
 `POST /api/location` closes the request out. Pull cadence, timeout, and the on/off switch are
 runtime-overridable; `AUTOREMOTE_KEY` is a Fly secret and is never on that allow-list. The
 request row is committed **before** dispatch and unanswered rows are swept to `timeout` on
