@@ -248,7 +248,7 @@ the orchestrator **commits** (send, book, create with invites) — under the gat
 | Callbacks | call_me_back, pending_callbacks, cancel_callback | Twilio (via worker) |
 | Watches | watch_for, list_watches, cancel_watch | LLM judge (worker) |
 | Infra | fleet_health, fleet_spend | Fly Machines + GraphQL |
-| Homelab | get_node_status, get_service_health (stubbed), tailscale_status | Tailscale |
+| Homelab | get_node_status, get_service_health (no LAN backend yet — report "not configured", never invented status), tailscale_status | Tailscale |
 | Time | get_current_datetime | system clock + timezonefinder |
 
 Injection defenses: web content is fenced as UNTRUSTED before the model sees it; docs
