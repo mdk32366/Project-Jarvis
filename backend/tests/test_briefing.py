@@ -6,7 +6,7 @@ from fakes import install_llm, say
 
 def test_gather_context_runs_offline(db):
     ctx = briefing.gather_context(db)
-    assert "Today's calendar" in ctx and "Not yet connected" in ctx  # portfolio omitted in demo mode
+    assert "Today's calendar" in ctx and "Not yet connected" in ctx
 
 
 def test_compose_briefing(db, monkeypatch):
@@ -46,12 +46,71 @@ def test_briefing_api(client, auth_headers, monkeypatch):
 
 
 def test_briefing_survives_failing_source(db, monkeypatch):
-    from app.handlers import finance
-    def boom(args, ctx): raise RuntimeError("alpaca down")
-    monkeypatch.setattr(finance, "_get_portfolio", boom)
+    # Retargeted from finance._get_portfolio (no longer gathered) onto a source
+    # that IS gathered, so this keeps testing the survive-a-failing-source contract
+    # rather than a call that no longer happens.
+    from app.handlers import infra
+    def boom(args, ctx): raise RuntimeError("fly api down")
+    monkeypatch.setattr(infra, "_fleet_health", boom)
     ctx = briefing.gather_context(db)
-    # a failing/absent portfolio does not raise and is quietly omitted
-    assert "Today's calendar" in ctx and "alpaca down" not in ctx
+    # a failing source does not raise and is quietly omitted, error text not leaked
+    assert "Today's calendar" in ctx and "fly api down" not in ctx
+
+
+def test_briefing_does_not_gather_portfolio(db, monkeypatch):
+    """Portfolio is not gathered at all — the tool is never called, and neither
+    'Portfolio' nor 'demo mode' appears in the assembled context."""
+    from app.handlers import finance
+    calls = []
+    monkeypatch.setattr(finance, "_get_portfolio",
+                        lambda args, ctx: calls.append(1) or "SHOULD NOT APPEAR")
+    ctx = briefing.gather_context(db)
+    assert calls == []
+    assert "Portfolio" not in ctx
+    assert "demo mode" not in ctx
+
+
+def test_briefing_does_not_claim_project_status_unconnected(db):
+    """Project tracking shipped in PR #40 — the brief must not list it under
+    '## Not yet connected' (the audit-L12 stale-record contradiction, again)."""
+    ctx = briefing.gather_context(db)
+    assert "Project status" not in ctx
+
+
+# ── Local network (Tailscale only; Proxmox/Kuma are Phase-1 stubs) ────────────
+# gather_context imports _tailscale_status inside the function, so patch the
+# handler module — the same pattern the traffic tests use for app.handlers.maps.
+
+def test_briefing_omits_local_network_when_unconfigured(db, monkeypatch):
+    """Tailscale unconfigured → returns the [tailscale not configured] sentinel →
+    no ## Local network section, and no sentinel text leaks."""
+    from app.handlers import tailscale
+    monkeypatch.setattr(tailscale, "_tailscale_status",
+                        lambda args, ctx: tailscale.NOT_CONFIGURED)
+    ctx = briefing.gather_context(db)
+    assert "## Local network" not in ctx
+    assert "tailscale not configured" not in ctx
+
+
+def test_briefing_includes_local_network_when_available(db, monkeypatch):
+    """Tailscale answers → ## Local network present, carrying its content."""
+    from app.handlers import tailscale
+    monkeypatch.setattr(tailscale, "_tailscale_status",
+                        lambda args, ctx: "All 4 devices are on the tailnet.")
+    ctx = briefing.gather_context(db)
+    assert "## Local network" in ctx
+    assert "All 4 devices are on the tailnet." in ctx
+
+
+def test_briefing_local_network_degrades_on_failure(db, monkeypatch):
+    """Tailscale raises → section absent, error text not leaked, brief still built."""
+    from app.handlers import tailscale
+    monkeypatch.setattr(tailscale, "_tailscale_status",
+                        lambda args, ctx: (_ for _ in ()).throw(RuntimeError("tailnet down")))
+    ctx = briefing.gather_context(db)
+    assert "Today's calendar" in ctx
+    assert "## Local network" not in ctx
+    assert "tailnet down" not in ctx
 
 
 # ── Weather ───────────────────────────────────────────────────────────────────

@@ -404,8 +404,11 @@ The worker loop (5 s) also runs the **outbound dialer** (due `outbound_calls`, q
 defaulting 21:00–07:00 except callbacks/briefings, max 6/hr — window and cap both runtime-
 overridable via the settings overlay), the **watch engine** (LLM-judged
 conditions that ring the owner when they fire), and the **morning briefing** — calendar +
-portfolio + weather/marine + traffic + news gathered concurrently, composed in the
-principal's voice, delivered by email or phone call.
+weather/marine + traffic + tasks + travel + news + hosted-app health/spend (Fly) + local
+network (Tailscale) gathered concurrently, composed in the principal's voice, delivered by
+email or phone call. Section order is pinned; unconfigured sources are omitted, not
+announced. (Proxmox/Kuma are not gathered here — they are Phase-1 stubs; see
+`app/handlers/netstatus.py`.)
 
 **Briefing scheduler (health TDD §6):** a per-tick enqueuer, not an APScheduler cron. Each
 tick reads the effective briefing time (runtime overlay) and fires when that minute has
