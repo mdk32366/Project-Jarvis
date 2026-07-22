@@ -243,16 +243,21 @@ def test_voice_agent_allowlist_matches_default_rosters():
 
 
 # ── Status tools speak like humans (TDD 7.1) ─────────────────────────────────
-def test_node_status_summarizes_rather_than_reading_the_table(db):
+# The LAN isn't reachable from Fly, so _fetch_nodes/_fetch_monitors return None
+# live (an honest "not configured" notice — see the honesty tests below). These
+# rendering tests inject the fixtures by patching that seam, exactly as a real
+# Proxmox/Kuma client will feed the same-shaped rows at LAN migration.
+def test_node_status_summarizes_rather_than_reading_the_table(db, monkeypatch):
     """She should sound like a colleague, not a machine.
 
     "rpi-02 is offline, everything else is up" — NOT every row with CPU and
     memory read aloud. Reading the table is what makes an assistant sound weird.
     """
-    from app.handlers.netstatus import _get_node_status
+    import app.handlers.netstatus as ns
+    monkeypatch.setattr(ns, "_fetch_nodes", lambda: ns._PROXMOX_NODES)
 
     ctx = Context(db=db, channel="voice", actor="x", thread_key="t")
-    out = _get_node_status({}, ctx)
+    out = ns._get_node_status({}, ctx)
 
     assert "rpi-02" in out and "OFFLINE" in out       # leads with what's WRONG
     assert "Everything else is up" in out
@@ -264,7 +269,7 @@ def test_node_status_summarizes_rather_than_reading_the_table(db):
 def test_node_status_says_all_good_when_all_good(db, monkeypatch):
     import app.handlers.netstatus as ns
 
-    monkeypatch.setattr(ns, "_PROXMOX_NODES", [
+    monkeypatch.setattr(ns, "_fetch_nodes", lambda: [
         {"node": "a", "status": "online", "uptime": 100000, "cpu": 0.1,
          "maxcpu": 4, "mem": 1_073_741_824, "maxmem": 4_294_967_296},
         {"node": "b", "status": "online", "uptime": 100000, "cpu": 0.1,
@@ -276,27 +281,67 @@ def test_node_status_says_all_good_when_all_good(db, monkeypatch):
     assert out == "All 2 nodes are up."               # one line. that's it.
 
 
-def test_verbose_still_gives_full_detail(db):
+def test_verbose_still_gives_full_detail(db, monkeypatch):
     """The detail is available — it just isn't the default."""
-    from app.handlers.netstatus import _get_node_status
+    import app.handlers.netstatus as ns
+    monkeypatch.setattr(ns, "_fetch_nodes", lambda: ns._PROXMOX_NODES)
 
     ctx = Context(db=db, channel="voice", actor="x", thread_key="t")
-    out = _get_node_status({"verbose": True}, ctx)
+    out = ns._get_node_status({"verbose": True}, ctx)
 
     assert "pve-01" in out and "rpi-01" in out and "rpi-02" in out
     assert "gigabytes" in out
 
 
-def test_unknown_node_asks_rather_than_guessing(db):
+def test_unknown_node_asks_rather_than_guessing(db, monkeypatch):
     """The Grok lesson: STT mangles identifiers silently and confidently. An
     unrecognized name must ask, never snap to the closest match."""
-    from app.handlers.netstatus import _get_node_status
+    import app.handlers.netstatus as ns
+    monkeypatch.setattr(ns, "_fetch_nodes", lambda: ns._PROXMOX_NODES)
 
     ctx = Context(db=db, channel="voice", actor="x", thread_key="t")
-    out = _get_node_status({"node": "P V 801"}, ctx)
+    out = ns._get_node_status({"node": "P V 801"}, ctx)
 
     assert "do not guess" in out.lower()
     assert "pve-01" in out          # offers the known set
+
+
+# ── Honesty: no LAN backend -> a not-configured notice, never invented status ─
+# The stubs used to return fixed fixtures on the live agent roster: rpi-02 was
+# reported down on every call, and any genuinely-down node the fixture called
+# "online" was reported up. Both are fabrications. With no reachable backend the
+# tools must say they can't see the LAN.
+def test_node_status_is_honest_when_no_backend(db):
+    from app.handlers.netstatus import _get_node_status
+
+    ctx = Context(db=db, channel="voice", actor="x", thread_key="t")
+    out = _get_node_status({}, ctx)
+
+    assert out.startswith("[proxmox not configured]")
+    assert "rpi-02" not in out and "OFFLINE" not in out   # nothing fabricated
+
+
+def test_service_health_is_honest_when_no_backend(db):
+    from app.handlers.netstatus import _get_service_health
+
+    ctx = Context(db=db, channel="voice", actor="x", thread_key="t")
+    out = _get_service_health({}, ctx)
+
+    assert out.startswith("[uptime kuma not configured]")
+    assert "rpi-02" not in out                        # nothing fabricated
+
+
+def test_service_health_summarizes_when_backend_present(db, monkeypatch):
+    """When a real Kuma backend exists (fixtures injected), it summarizes
+    exception-first, same as nodes."""
+    import app.handlers.netstatus as ns
+    monkeypatch.setattr(ns, "_fetch_monitors", lambda: ns._KUMA_MONITORS)
+
+    ctx = Context(db=db, channel="voice", actor="x", thread_key="t")
+    out = ns._get_service_health({}, ctx)
+
+    assert "rpi-02" in out and "DOWN" in out          # leads with what's wrong
+    assert "Everything else is up" in out
 
 
 def test_run_turn_opens_its_own_session(db, monkeypatch):

@@ -1,13 +1,18 @@
 """Network status tools — Proxmox + Uptime Kuma.
 
-PHASE 1: THESE ARE STUBS. JARVIS runs on Fly; Proxmox and the tailnet are on the
-local network and are not reachable from Fly. Those are separate projects until
-JARVIS migrates onto the LAN.
+PHASE 1: THERE IS NO LIVE BACKEND. JARVIS runs on Fly; Proxmox and Uptime Kuma
+are on the local network and are not reachable from Fly. Until JARVIS migrates
+onto the LAN, the data source (`_fetch_nodes` / `_fetch_monitors`) returns None
+and the tools answer with an honest "[… not configured]" notice — they DO NOT
+invent status. Presenting fixed sample data as live was a real defect: a node the
+fixture called "online" was reported up while it was actually down, and rpi-02
+was reported down on every call regardless of reality — on the live agent roster.
 
-Principle (TDD §7): **build against the real interface, fake the data.** The
-return shapes match the real APIs, so at migration you swap the function bodies
-only — the speech rendering, the fuzzy matcher (Phase 2), and the orchestrator
-prompt all keep working untouched.
+Principle (TDD §7): **build against the real interface.** The fixtures below match
+the real API shapes and remain as the shape reference (and as the data the tests
+inject). At migration you swap ONLY the two `_fetch_*` bodies for a real client —
+the speech rendering, the fuzzy matcher (Phase 2), and the orchestrator prompt all
+keep working untouched.
 
 Division of labour, once real:
   * Proxmox `/api2/json/nodes`  -> VM/host lifecycle + resources
@@ -68,6 +73,38 @@ _KUMA_MONITORS: list[dict] = [
     {"name": "rpi-03", "active": True, "status": 1, "ping": 4, "uptime_24h": 1.0},
     {"name": "jarvis-mdk.fly.dev", "active": True, "status": 1, "ping": 82, "uptime_24h": 1.0},
 ]
+
+
+# ── Honest "no backend" notices ──────────────────────────────────────────────
+# The "[" prefix matches the unconfigured-sentinel shape other sources use
+# (briefing / infra / tailscale), so any consumer suppresses these the same way.
+NODES_NOT_CONFIGURED = (
+    "[proxmox not configured] I can't see the Proxmox nodes — they're on the local "
+    "network, which isn't reachable from where I run yet. That integration lands "
+    "when JARVIS moves onto the LAN; until then I can't tell you what's up or down."
+)
+SERVICES_NOT_CONFIGURED = (
+    "[uptime kuma not configured] I can't see the Uptime Kuma monitors — they're on "
+    "the local network, not reachable from where I run yet, so I can't tell you "
+    "which hosts or services are reachable."
+)
+
+
+# ── Data source (the migration seam) ─────────────────────────────────────────
+# Until JARVIS is on the LAN there is NO reachable backend, so these return None
+# and the tools answer honestly. At migration, replace each body with a real
+# client returning rows shaped exactly like the fixtures above. Do NOT return the
+# fixtures from here: presenting fixed sample data as live status is the defect
+# this replaced. The fixtures stay as the shape reference and the tests inject
+# them by patching these functions.
+def _fetch_nodes() -> list[dict] | None:
+    """Live Proxmox node list, or None when no backend is reachable."""
+    return None
+
+
+def _fetch_monitors() -> list[dict] | None:
+    """Live Uptime Kuma monitor list, or None when no backend is reachable."""
+    return None
 
 
 # ── Speech-friendly rendering (TDD §7.1) ─────────────────────────────────────
@@ -143,19 +180,24 @@ def _summarize(items: list[dict], label: str, is_ok, render, name_of) -> str:
 
 
 def _get_node_status(args: dict, ctx: Context) -> str:
-    """STUB — Proxmox-shaped. Swap the fixture for a real client at migration."""
+    """Proxmox node status via `_fetch_nodes()`. No backend reachable -> an honest
+    not-configured notice, never invented status."""
+    all_nodes = _fetch_nodes()
+    if all_nodes is None:
+        return NODES_NOT_CONFIGURED
+
     target = (args.get("node") or "").strip().lower()
     verbose = bool(args.get("verbose"))
 
-    nodes = _PROXMOX_NODES
+    nodes = all_nodes
     if target:
         # Phase 2 replaces this exact-match with resolve_node() fuzzy matching.
         # STT WILL mangle "pve-01" into "PVE oh one" / "P V 801" — silently and
         # confidently. Until the matcher exists, an unrecognized name must ASK,
         # never guess. See TDD §9.
-        nodes = [n for n in _PROXMOX_NODES if n["node"].lower() == target]
+        nodes = [n for n in all_nodes if n["node"].lower() == target]
         if not nodes:
-            known = ", ".join(n["node"] for n in _PROXMOX_NODES)
+            known = ", ".join(n["node"] for n in all_nodes)
             return (
                 f"No node named '{args.get('node')}'. Known nodes: {known}. "
                 f"Ask the user which one they meant — do not guess."
@@ -175,15 +217,20 @@ def _get_node_status(args: dict, ctx: Context) -> str:
 
 
 def _get_service_health(args: dict, ctx: Context) -> str:
-    """STUB — Uptime Kuma-shaped. Swap the fixture for a real client at migration."""
+    """Uptime Kuma monitor status via `_fetch_monitors()`. No backend reachable ->
+    an honest not-configured notice, never invented status."""
+    all_mons = _fetch_monitors()
+    if all_mons is None:
+        return SERVICES_NOT_CONFIGURED
+
     target = (args.get("service") or "").strip().lower()
     verbose = bool(args.get("verbose"))
 
-    mons = _KUMA_MONITORS
+    mons = all_mons
     if target:
-        mons = [m for m in _KUMA_MONITORS if m["name"].lower() == target]
+        mons = [m for m in all_mons if m["name"].lower() == target]
         if not mons:
-            known = ", ".join(m["name"] for m in _KUMA_MONITORS)
+            known = ", ".join(m["name"] for m in all_mons)
             return (
                 f"No monitor named '{args.get('service')}'. Known: {known}. "
                 f"Ask the user which one they meant — do not guess."
@@ -217,9 +264,11 @@ def register(reg) -> None:
         {
             "name": "get_node_status",
             "description": (
-                "Status of Proxmox nodes on the local network. Returns a SUMMARY by "
-                "default ('all 3 are up' / 'rpi-02 is down') — not a table. Omit `node` "
-                "for all. Read-only."
+                "Status of Proxmox nodes on the local network. Read-only. Returns a "
+                "SUMMARY by default (e.g. 'all 3 are up' / 'rpi-02 is down'), not a "
+                "table; omit `node` for all. NOTE: the LAN isn't reachable from where "
+                "JARVIS runs yet, so today this reports that it can't see the nodes "
+                "rather than inventing status — relay that honestly, don't guess."
             ),
             "input_schema": {
                 "type": "object",
@@ -243,8 +292,10 @@ def register(reg) -> None:
         {
             "name": "get_service_health",
             "description": (
-                "Get reachability from Uptime Kuma for hosts and services (including "
-                "laptops, phone, iPad, and the Fly app). Omit `service` for all. Read-only."
+                "Reachability from Uptime Kuma for hosts and services (laptops, phone, "
+                "iPad, the Fly app). Read-only. Omit `service` for all. NOTE: not "
+                "reachable from where JARVIS runs yet, so today it reports that it "
+                "can't see them rather than inventing status."
             ),
             "input_schema": {
                 "type": "object",
