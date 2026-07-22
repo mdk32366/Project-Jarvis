@@ -1,10 +1,12 @@
 """Morning briefing (Phase 2).
 
-Assembles the sections we have live data for today — schedule (Google Calendar),
-portfolio (Alpaca) — plus placeholders for sources not yet wired (bills, travel,
-projects, app health/spend), and has the LLM compose a concise, warm briefing in
-the principal's voice. Delivered on demand (/api/briefing) or on a daily schedule
-(the worker enqueues a `morning_briefing` job → emails the owner).
+Assembles the sections we have live data for today — schedule and the week ahead
+(Google Calendar), weather and marine (NWS), commute (Google Maps), open tasks,
+travel (recorded trips), news (Tavily), hosted-app health and spend (Fly), and
+local-network status (Tailscale) — then has the LLM compose a concise, warm
+briefing in the principal's voice. Unconfigured or failing sources are simply
+omitted, never announced. Delivered on demand (/api/briefing) or on a daily
+schedule (the worker enqueues a `morning_briefing` job → emails the owner).
 """
 
 from __future__ import annotations
@@ -24,10 +26,13 @@ from app.models import Memory
 log = logging.getLogger(__name__)
 
 # Sources not yet integrated — shown so the briefing is honest about coverage.
-# "Weekend & travel" was removed here (audit L12): a live ## Travel section is
-# now assembled from recorded trips, so listing travel as "not yet connected"
-# contradicted the brief's own content.
-_PENDING_SECTIONS = ["Upcoming bills", "Project status"]
+# This is hand-maintained prose that NOTHING fails on when it goes stale, and it
+# has now been wrong twice: "Weekend & travel" (audit L12 — a live ## Travel
+# section is now assembled from recorded trips) and "Project status" (shipped in
+# PR #40 / migration 0024, tools live on the secretary). Both listed a feature the
+# brief itself already carries. A candidate for deriving from configuration;
+# deliberately not done here to keep this PR scoped.
+_PENDING_SECTIONS = ["Upcoming bills"]
 
 # ── NWS / external API constants ──────────────────────────────────────────────
 # Nominatim usage policy requires a meaningful User-Agent identifying the app.
@@ -275,27 +280,41 @@ def gather_context(db: Session) -> str:
     raises).  DB-bound sources (tasks, trips, memory) stay on the main thread because
     the SQLAlchemy session is not thread-safe.  They take <10 ms and finish while
     the HTTP futures are still in-flight, so they add nothing to the critical path.
-    The HTTP-bound handlers (calendar, portfolio, infra, weather, marine, traffic,
-    news) do not exercise ctx.db in their normal read paths.
+    The HTTP-bound handlers (calendar, infra, weather, marine, traffic, news,
+    tailscale) do not exercise ctx.db in their normal read paths.
     """
-    from app.handlers.finance import _get_portfolio
     from app.handlers.scheduling import _calendar_lookup
     from app.handlers.infra import _fleet_health, _fleet_spend
     from app.handlers.tasks import open_task_summary
     from app.handlers.travel import _list_trips
+    from app.handlers.tailscale import _tailscale_status
 
     ctx = Context(db=db, channel="briefing", actor="system", thread_key="briefing")
 
-    with ThreadPoolExecutor(max_workers=9) as executor:
+    with ThreadPoolExecutor(max_workers=10) as executor:
         f_today     = executor.submit(_safe, "calendar",  lambda: _calendar_lookup({"range": "today"}, ctx))
         f_week      = executor.submit(_safe, "calendar",  lambda: _calendar_lookup({"range": "this week"}, ctx))
-        f_portfolio = executor.submit(_safe, "portfolio", lambda: _get_portfolio({}, ctx))
+        # Portfolio is intentionally NOT gathered. Alpaca is unconfigured and
+        # _get_portfolio only ever returns a "[demo mode]" sentinel, so it has no
+        # path to the reader — gathering it spent a thread on content that was
+        # always filtered out. The tool stays live on the finance handler/agent;
+        # restoring it in the brief is re-adding one executor.submit(_safe,
+        # "portfolio", ...) here plus a "## Portfolio" section block below.
         f_health    = executor.submit(_safe, "infra",     lambda: _fleet_health({}, ctx))
         f_spend     = executor.submit(_safe, "infra",     lambda: _fleet_spend({}, ctx))
         f_weather   = executor.submit(_safe, "weather",   lambda: _nws_weather(settings.owner_home_address))
         f_marine    = executor.submit(_safe, "marine",    lambda: _nws_marine())
         f_traffic   = executor.submit(_safe, "traffic",   lambda: _traffic_brief(db))
         f_news      = executor.submit(_safe, "news",      lambda: _news_brief())
+        # Local network / the house. ONLY Tailscale is wired here. Proxmox
+        # (get_node_status) and Uptime Kuma (get_service_health) are deliberately
+        # absent: they are Phase-1 STUBS that return fabricated fixtures with no
+        # config gate — see the module docstring in app/handlers/netstatus.py
+        # ("PHASE 1: THESE ARE STUBS ... the LAN isn't reachable from Fly").
+        # Submitting them would report a fake-offline node to the owner every
+        # morning. Re-add each as one executor.submit + one predicate entry once it
+        # speaks to a real backend at LAN migration.
+        f_tailscale = executor.submit(_safe, "tailscale", lambda: _tailscale_status({}, ctx))
 
         # DB-bound sources: safe on the main thread, done before futures finish.
         tasks    = _safe("tasks",  lambda: open_task_summary(db))
@@ -306,13 +325,13 @@ def gather_context(db: Session) -> str:
 
     today     = f_today.result()
     week      = f_week.result()
-    portfolio = f_portfolio.result()
     health    = f_health.result()
     spend     = f_spend.result()
     weather   = f_weather.result()
     marine    = f_marine.result()
     traffic   = f_traffic.result()
     news      = f_news.result()
+    tailscale = f_tailscale.result()
 
     if isinstance(facts_raw, str):
         fact_lines = facts_raw
@@ -321,7 +340,7 @@ def gather_context(db: Session) -> str:
 
     sections = [f"## Today's calendar\n{today}", f"## This week\n{week}"]
     # Weather — silently omitted if unconfigured (no home address) or NWS fails.
-    # A _safe error string starts with "(" — excluded by the same check as portfolio.
+    # A _safe error string starts with "(" and is excluded by that guard.
     if weather and not weather.startswith("("):
         sections.append(f"## Weather\n{weather}")
     # Marine — Anacortes/San Juan Islands corridor (PZZ133 + PZZ132).
@@ -338,29 +357,58 @@ def gather_context(db: Session) -> str:
     # Upcoming trips (captured from confirmation emails).
     if isinstance(trips, str) and trips and not trips.startswith("No trips on file"):
         sections.append(f"## Travel\n{trips}")
-    # Only include portfolio if a real brokerage is wired (skip demo/unavailable).
-    if portfolio and not portfolio.startswith("[demo mode]") and not portfolio.startswith("(portfolio unavailable"):
-        sections.append(f"## Portfolio\n{portfolio}")
+    # (Portfolio section removed — see the gather site above for why and what
+    # restores it. The finance tool itself is untouched.)
     # News — 2-3 headlines via Tavily. Omitted when unconfigured or slow/failing.
     if news and not news.startswith("("):
         sections.append(f"## News\n{news}")
     sections.append(f"## Recent notes/memory\n{fact_lines}")
-    # Hosted apps — only when a Fly token is configured (mirror portfolio skip).
-    if isinstance(health, str) and not health.startswith("[infra not configured]"):
+    # Hosted apps — the Fly fleet. Suppress the _safe error shape "(" and any infra
+    # bracket-sentinel "[" ("[infra not configured]", "[infra] No apps to watch")
+    # so a failing or unconfigured source never leaks into the brief — matching how
+    # every section above guards its own "(".
+    if isinstance(health, str) and health and not health.startswith(("(", "[")):
         block = health
-        if isinstance(spend, str) and not spend.startswith("[infra not configured]"):
+        if isinstance(spend, str) and spend and not spend.startswith(("(", "[")):
             block += "\n\n" + spend
         sections.append(f"## Hosted apps\n{block}")
+    # Local network — the house, kept DISTINCT from ## Hosted apps (Fly) so "is
+    # anything down" is never ambiguous about where. Include a part only when it is
+    # a non-empty string starting with neither "(" (the _safe error shape) nor "["
+    # (an unconfigured-integration sentinel, e.g. "[tailscale not configured]").
+    # Built as a filtered list so partial configuration still renders and re-adding
+    # Proxmox/Kuma later (see the gather site) is one more entry here.
+    net_parts = [
+        p for p in (tailscale,)
+        if isinstance(p, str) and p and not p.startswith(("(", "["))
+    ]
+    if net_parts:
+        sections.append("## Local network\n" + "\n\n".join(net_parts))
     sections.append("## Not yet connected\n" + ", ".join(_PENDING_SECTIONS))
     return "\n\n".join(sections)
 
 
 _BRIEF_INSTRUCTIONS = """
 Write a concise morning briefing for your principal, in their voice and preferences.
-Lead with today's schedule (most important), then a short look at the week, then a
-one-line portfolio note. Keep it tight and scannable — short lines or compact bullets,
-no filler. If a section says it's not connected or has no data, omit it or note it in
-one short phrase; do not invent anything. End with a brief, useful nudge if warranted.
+Keep it tight and scannable — short lines or compact bullets, no filler.
+
+Use this fixed section order every day, so the brief can be skimmed and the eye
+learns where to look:
+  1. Today's schedule
+  2. This week
+  3. Weather, then Marine
+  4. Traffic
+  5. Open tasks, then Travel
+  6. News
+  7. Systems — hosted apps and local network together
+
+Rules:
+- Skip any heading that has no data rather than substituting a placeholder for it,
+  and never speculate about why a source is absent.
+- Systems is exception-first: report what is WRONG. When everything is healthy,
+  say so in one short line rather than enumerating the healthy components — a list
+  of green trains the eye to skip the section where red will eventually appear.
+- Do not invent anything. End with a brief, useful nudge only if warranted.
 """
 
 
