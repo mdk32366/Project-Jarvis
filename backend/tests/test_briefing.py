@@ -213,6 +213,39 @@ def test_briefing_traffic_stays_quiet_when_no_delay(db, monkeypatch):
     assert "## Traffic" not in ctx
 
 
+def test_briefing_traffic_suppresses_guidance_strings(db, monkeypatch):
+    """_get_traffic returns guidance strings (no-route, unresolved place) that are
+    NOT traffic reports. They must never appear as a ## Traffic section — the brief
+    shows a real commute or nothing, never a confusing 'traffic' line."""
+    monkeypatch.setattr(settings, "google_maps_api_key", "fake-key")
+    monkeypatch.setattr(settings, "owner_home_address", "Stanwood WA")
+    monkeypatch.setattr(settings, "owner_work_address", "Redmond WA")
+
+    from app.handlers import maps
+    monkeypatch.setattr(maps, "_get_traffic",
+                        lambda args, ctx: "No route found from Stanwood WA to Redmond WA.")
+    ctx = briefing.gather_context(db)
+    assert "## Traffic" not in ctx
+    assert "No route found" not in ctx
+
+
+def test_briefing_traffic_shows_a_real_report(db, monkeypatch):
+    """A genuine commute report (carries the ETA phrase) IS surfaced."""
+    monkeypatch.setattr(settings, "google_maps_api_key", "fake-key")
+    monkeypatch.setattr(settings, "owner_home_address", "Stanwood WA")
+    monkeypatch.setattr(settings, "owner_work_address", "Redmond WA")
+
+    from app.handlers import maps
+    monkeypatch.setattr(
+        maps, "_get_traffic",
+        lambda args, ctx: ("38 minutes to Redmond WA, 22 miles via I-405. That's 12 "
+                           "minutes slower than usual — heavy traffic. Leaving now puts "
+                           "you there about 7:51."),
+    )
+    ctx = briefing.gather_context(db)
+    assert "## Traffic" in ctx and "heavy traffic" in ctx
+
+
 # ── News ──────────────────────────────────────────────────────────────────────
 
 def test_briefing_omits_news_when_not_configured(db, monkeypatch):
