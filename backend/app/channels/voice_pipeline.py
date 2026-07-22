@@ -461,11 +461,20 @@ def _say(text: str) -> str:
     return f'<Say voice="{settings.voice_tts_voice}">{body}</Say>'
 
 
-def twiml_gather(prompt: str, turn: int, action: str = "/api/voice/gather") -> str:
-    """Speak `prompt`, then listen. `turn` rides in the action URL as state."""
+def twiml_gather(prompt: str, turn: int, action: str = "/api/voice/gather",
+                 speech_timeout: int = 3) -> str:
+    """Speak `prompt`, then listen. `turn` rides in the action URL as state.
+
+    `speech_timeout` is the end-of-turn silence, in seconds, rendered into the
+    <Gather speechTimeout> attribute. It replaces Twilio's "auto" endpointer,
+    which truncates a compound request at the first pause. The effective value
+    comes from the runtime overlay (voice_speech_timeout_seconds); the caller
+    reads it and passes it in so this builder stays a pure string function with
+    no DB access — the default here is only a fallback for direct callers/tests.
+    """
     return (
         f"{_XML}<Response>"
-        f'<Gather input="speech" language="en-US" speechTimeout="auto" '
+        f'<Gather input="speech" language="en-US" speechTimeout="{speech_timeout}" '
         f'method="POST" action="{action}?turn={turn}">'
         f"{_say(prompt)}"
         f"</Gather>"

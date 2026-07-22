@@ -376,8 +376,9 @@ is PR-E.*
 **Runtime settings overlay** (`app/runtime_settings.py`, health TDD §7): a bounded
 allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the four
 `quiet_hours_*` fields, `outbound_calls_enabled`, `max_outbound_calls_per_hour`, the
-`location_active_start/end_hour` active window, and the location-pull trio
-(`location_pull_enabled`, `location_pull_interval_minutes`, `location_pull_timeout_seconds`) —
+`location_active_start/end_hour` active window, the location-pull trio
+(`location_pull_enabled`, `location_pull_interval_minutes`, `location_pull_timeout_seconds`),
+and `voice_speech_timeout_seconds` (the `<Gather>` end-of-turn silence, 1–10s, default 3) —
 each overridable at runtime without a redeploy. `get_effective(db, key)` returns the
 `runtime_settings` override if present, else the env/`Settings` default (never mutating the
 `@lru_cache` singleton). Every runtime reader of one of these keys reads through
