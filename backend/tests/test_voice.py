@@ -52,6 +52,45 @@ def test_twiml_is_wellformed_and_escaped():
     parseString(twiml_hangup("Goodbye."))
 
 
+# ── Speech timeout (stop cutting the caller off) ─────────────────────────────
+def test_twiml_gather_renders_numeric_timeout_not_auto():
+    """The builder renders the passed seconds into speechTimeout, never 'auto' —
+    'auto' is Twilio's short-utterance endpointer that truncates compound
+    requests at the first pause."""
+    xml = twiml_gather("go ahead", turn=0, speech_timeout=4)
+    assert 'speechTimeout="4"' in xml
+    assert "auto" not in xml
+
+
+def test_gather_route_reads_default_then_override(db):
+    """Wiring: the route helper reads voice_speech_timeout_seconds from the
+    overlay and the value reaches the attribute. Default when no row exists; an
+    override row wins — no redeploy. (The overlay itself is tested elsewhere;
+    this asserts the plumbing from setting → TwiML.)"""
+    from app.routes import _gather
+    from app import runtime_settings
+
+    # No override row → env/Settings default (3).
+    body = _gather(db, "go ahead", turn=0).body.decode()
+    assert 'speechTimeout="3"' in body
+
+    # An override wins on the very next call, no redeploy.
+    runtime_settings.set_effective(db, "voice_speech_timeout_seconds", 2)
+    body = _gather(db, "go ahead", turn=0).body.decode()
+    assert 'speechTimeout="2"' in body
+
+
+def test_speech_timeout_out_of_bounds_is_refused(db):
+    """set_effective enforces the ALLOWED_KEYS bounds (min 1, max 10): a bad
+    value is refused, not clamped into a surprising state."""
+    from app import runtime_settings
+
+    with pytest.raises(ValueError):
+        runtime_settings.set_effective(db, "voice_speech_timeout_seconds", 0)
+    with pytest.raises(ValueError):
+        runtime_settings.set_effective(db, "voice_speech_timeout_seconds", 11)
+
+
 def test_twiml_working_alternates_filler():
     # poll 0 speaks; later polls stay silent so the filler doesn't grate.
     assert "<Say" in twiml_working("CA1", 0, poll=0)

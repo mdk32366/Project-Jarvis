@@ -95,6 +95,23 @@ def _xml(body: str) -> Response:
     return Response(content=body, media_type="application/xml")
 
 
+def _gather(db: Session, prompt: str, turn: int,
+            action: str = "/api/voice/gather") -> Response:
+    """A voice re-prompt carrying the live speech timeout.
+
+    The DB read for `voice_speech_timeout_seconds` happens HERE, at the route
+    layer, and the value is passed into the pure TwiML builder — the builders in
+    voice_pipeline never touch a session. Every voice route re-prompts through
+    this, so tuning the timeout in Admin reaches all listen paths uniformly with
+    no redeploy.
+    """
+    from app.channels import voice_pipeline as vp
+    from app.runtime_settings import get_effective
+
+    timeout = get_effective(db, "voice_speech_timeout_seconds")
+    return _xml(vp.twiml_gather(prompt, turn=turn, action=action, speech_timeout=timeout))
+
+
 def _voice_party(db: Session, params: dict) -> str:
     """The HUMAN's number on this call, regardless of who dialled whom.
 
@@ -139,7 +156,7 @@ async def voice_inbound(request: Request, db: Session = Depends(get_db)):
         return _xml(vp.twiml_hangup(vp.NOT_AUTHORIZED))
 
     log.info("Voice call started: %s from %s", call_sid, from_number)
-    return _xml(vp.twiml_gather(vp.GREETING, turn=0))
+    return _gather(db, vp.GREETING, turn=0)
 
 
 @router.post("/voice/gather", tags=["jarvis"], include_in_schema=False)
@@ -166,7 +183,7 @@ async def voice_gather(
     speech = (params.get("SpeechResult") or "").strip()
     if not speech:
         # Nothing heard — re-prompt without burning a turn.
-        return _xml(vp.twiml_gather("I didn't catch that. Say again?", turn=turn))
+        return _gather(db, "I didn't catch that. Say again?", turn=turn)
 
     if speech.lower().rstrip(".!") in {"goodbye", "hang up", "that's all", "nothing else"}:
         vp.email_transcript(db, call_sid, from_number)
@@ -181,10 +198,11 @@ async def voice_gather(
     # was still running.
     if vp.prior_turn_still_running(db, call_sid, turn):
         log.info("turn %s/%s deferred — prior turn still running", call_sid, turn)
-        return _xml(vp.twiml_gather(
+        return _gather(
+            db,
             "Still finishing the last one — give me a moment, then say that again.",
             turn=turn,
-        ))
+        )
 
     log.info("Voice turn %s/%s: %r", call_sid, turn, speech)
     vp.open_turn(db, call_sid, turn, speech)
@@ -220,15 +238,13 @@ async def voice_poll(
 
     if row is None:
         log.error("poll: no turn row for %s/%s", call_sid, turn)
-        return _xml(vp.twiml_gather("Something went wrong. Try again?", turn=turn + 1))
+        return _gather(db, "Something went wrong. Try again?", turn=turn + 1)
 
     if row.status == "done":
-        return _xml(vp.twiml_gather(row.reply or "Done.", turn=turn + 1))
+        return _gather(db, row.reply or "Done.", turn=turn + 1)
 
     if row.status == "error":
-        return _xml(
-            vp.twiml_gather("I hit an error on that one. Try something else?", turn=turn + 1)
-        )
+        return _gather(db, "I hit an error on that one. Try something else?", turn=turn + 1)
 
     # Still pending. Rather than dump the caller to email (or, worse, loop
     # "Still there?"), offer the real choice: hold the line while she finishes,
@@ -236,8 +252,8 @@ async def voice_poll(
     # still-running turn, it does not start a new one.
     if poll >= vp.MAX_POLLS:
         log.info("poll budget exhausted for %s/%s — offering hold/handoff", call_sid, turn)
-        return _xml(vp.twiml_gather(vp.TIMEOUT_FALLBACK, turn=turn,
-                                    action="/api/voice/hold_choice"))
+        return _gather(db, vp.TIMEOUT_FALLBACK, turn=turn,
+                       action="/api/voice/hold_choice")
 
     return _xml(vp.twiml_working(call_sid, turn, poll=poll))
 
@@ -260,9 +276,9 @@ async def voice_hold_choice(request: Request, turn: int = 0, db: Session = Depen
     # It may have finished while she was asking the question.
     row = vp.get_turn(db, call_sid, turn)
     if row is not None and row.status == "done":
-        return _xml(vp.twiml_gather(row.reply or "Done.", turn=turn + 1))
+        return _gather(db, row.reply or "Done.", turn=turn + 1)
     if row is not None and row.status == "error":
-        return _xml(vp.twiml_gather("I hit an error on that one. Try something else?", turn=turn + 1))
+        return _gather(db, "I hit an error on that one. Try something else?", turn=turn + 1)
 
     speech = (params.get("SpeechResult") or "").strip()
     if vp.wants_callback(speech):
@@ -289,12 +305,12 @@ async def voice_hold(request: Request, turn: int = 0, since: int = 0,
 
     row = vp.get_turn(db, call_sid, turn)
     if row is None:
-        return _xml(vp.twiml_gather("Something went wrong. Try again?", turn=turn + 1))
+        return _gather(db, "Something went wrong. Try again?", turn=turn + 1)
     if row.status == "done":
         # The answer landed — speak it and re-open the conversation.
-        return _xml(vp.twiml_gather(row.reply or "Done.", turn=turn + 1))
+        return _gather(db, row.reply or "Done.", turn=turn + 1)
     if row.status == "error":
-        return _xml(vp.twiml_gather("I hit an error on that one. Try something else?", turn=turn + 1))
+        return _gather(db, "I hit an error on that one. Try something else?", turn=turn + 1)
 
     elapsed = int(time.time()) - since
     if since <= 0 or elapsed >= settings.voice_hold_max_seconds:
@@ -341,7 +357,7 @@ async def voice_outbound(request: Request, call: int = 0, db: Session = Depends(
         vp.seed_context(db, row.call_sid or params.get("CallSid", ""), row.context)
 
     log.info("outbound call #%s answered (%s)", row.id, row.kind)
-    return _xml(vp.twiml_gather(row.opening, turn=0))
+    return _gather(db, row.opening, turn=0)
 
 
 @router.post("/voice/status", tags=["jarvis"], include_in_schema=False)

@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     voice_hold_music_url: str = ""
     # How long she'll hold the line before handing off to email, in seconds.
     voice_hold_max_seconds: int = 300
+    # <Gather> speech end-of-turn timeout, in seconds. Replaces Twilio's "auto"
+    # endpointer, which is tuned for short IVR utterances and truncates a person
+    # composing a compound request at the first pause. A per-speaker judgement, so
+    # it's tuned live via the runtime overlay (voice_speech_timeout_seconds); this
+    # is only the default source. Too short cuts off compound requests; too long
+    # makes short answers ("yes") feel sluggish.
+    voice_speech_timeout_seconds: int = 3
 
     # ── Action safety ────────────────────────────────────────────────────────
     confirm_threshold_usd: float = 50.0

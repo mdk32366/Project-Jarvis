@@ -65,6 +65,11 @@ ALLOWED_KEYS: dict[str, _Key] = {
     "location_pull_enabled":           _Key("bool"),
     "location_pull_interval_minutes":  _Key("int", min=5, max=240),
     "location_pull_timeout_seconds":   _Key("int", min=30, max=900),
+    # <Gather> speech end-of-turn timeout. Behavioural, not secret, not safety-
+    # critical: a bad value makes calls awkward, it does not gate an action. Below
+    # 1 is unusable; above ~10 the caller believes the line is dead. Tuned live
+    # because the right value is a per-speaker judgement found only on real calls.
+    "voice_speech_timeout_seconds":    _Key("int", min=1, max=10),
 }
 
 _TRUE = {"1", "true", "yes", "on", "t"}
