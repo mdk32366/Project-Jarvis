@@ -217,7 +217,16 @@ def _traffic_brief(db) -> str:
         {"origin": settings.owner_home_address, "destination": settings.owner_work_address},
         ctx,
     )
-    return "" if _TRAFFIC_QUIET in result else result
+    # Surface ONLY a genuine traffic report. Besides a real commute line and the
+    # "Traffic is light." quiet case, _get_traffic also returns guidance strings
+    # ("No route found…", "Where to?…", "[maps not configured]…") — none of which
+    # belong in the brief as a "## Traffic" section (that is what produced a
+    # confusing traffic line). A real OK result always carries this ETA phrase;
+    # the guidance strings never do. Anything without it, or a quiet commute, is
+    # "no traffic to report" → omitted.
+    if _TRAFFIC_QUIET in result or "puts you there about" not in result:
+        return ""
+    return result
 
 
 def _news_brief() -> str:
@@ -403,8 +412,11 @@ learns where to look:
   7. Systems — hosted apps and local network together
 
 Rules:
-- Skip any heading that has no data rather than substituting a placeholder for it,
-  and never speculate about why a source is absent.
+- The data below is the ONLY source. Write about a section only if it appears
+  there. If a section (traffic, weather, marine, news, …) is NOT in the data, say
+  nothing about it at all — do not note that it's missing, unavailable, or not
+  checked, and never speculate about why. A silent omission is correct; a line
+  explaining an absence ("traffic wasn't available") is a bug.
 - Systems is exception-first: report what is WRONG. When everything is healthy,
   say so in one short line rather than enumerating the healthy components — a list
   of green trains the eye to skip the section where red will eventually appear.
