@@ -98,10 +98,13 @@ def test_missing_runbook_degrades_gracefully(db):
 def test_runbook_is_runtime_editable(db):
     """Edit a row -> the new text surfaces, no redeploy (TDD #30)."""
     seed_health_topology(db)
-    rem = get_runbook(db, "duffel", "401")
+    # Was keyed to ("duffel", "401") — a fault code no check emits, so this test
+    # was editing a runbook that could never render. Re-keyed to the code
+    # `check_liveness` actually produces.
+    rem = get_runbook(db, "duffel", "call_failed")
     rem.runbook = "EDITED: rotate the key"
     db.commit()
-    assert get_runbook(db, "duffel", "401").runbook == "EDITED: rotate the key"
+    assert get_runbook(db, "duffel", "call_failed").runbook == "EDITED: rotate the key"
 
 
 # ── tool -> component map (TDD #36) ──────────────────────────────────────────

@@ -317,3 +317,90 @@ def test_capabilities_endpoint_leaks_no_secrets(client, db, auth_headers):
     assert "depends_on" not in blob
     for secretish in ("API_KEY", "AUTH_TOKEN", "REFRESH_TOKEN", "SERVICE_ACCOUNT"):
         assert secretish not in blob
+
+
+# ── the fault-code -> runbook join ───────────────────────────────────────────
+#
+# THE BUG THIS PREVENTS. `check_liveness` emits exactly one fault code,
+# `call_failed`, but the runbooks for calendar and oauth were keyed to
+# `auth_invalid` / `token_expired` — codes no check produces. So they could never
+# join, and a real four-day calendar outage rendered on the status page naming the
+# fault and offering nothing. Eight more components had no runbook at all.
+#
+# A runbook that cannot join is worse than a missing one: it looks like coverage.
+# The project arc is about to add checks and runbooks to this same join, so it is
+# enforced here rather than re-audited by hand later.
+
+# check_type -> the fault codes that check can emit as a real, actionable fault.
+# `unknown`-tier codes (no_evidence / no_heartbeat / no_requests / no_projects) are
+# deliberately excluded: they mean "no basis to judge", not "here is a fault to
+# fix", and a runbook for them would be advice about an absence.
+_EMITTABLE_FAULTS = {
+    "liveness":                {"call_failed"},
+    "heartbeat":               {"heartbeat_stale"},
+    "location_scheduler":      {"not_asking", "relay_rejected"},
+    "location_responsiveness": {"not_answering"},
+    "project_hygiene":         {"record_stale"},
+    "health_evaluator":        {"evaluator_stale", "rollup_incoherent"},
+}
+
+
+def _emittable_pairs():
+    """(component, fault_code) pairs a check can actually produce.
+
+    Honours `_APP_UP`, which OVERRIDES a component's declared check_type —
+    `postgres` is declared `liveness` but is routed to `check_app_up`, so it can
+    never emit `call_failed`. Reading check_type alone gets this wrong.
+    """
+    from app.health import _COMPONENTS
+    from app.health_checks import _APP_UP, _CHECKS
+
+    pairs = set()
+    for spec in _COMPONENTS:
+        name = spec["name"]
+        ctype = spec.get("check_type", "none")
+        if name in _APP_UP:
+            pairs.add((name, "check_error"))      # an unreachable DB looks like this
+            continue
+        if ctype not in _CHECKS:
+            continue
+        for code in _EMITTABLE_FAULTS.get(ctype, ()):
+            pairs.add((name, code))
+    return pairs
+
+
+def test_every_emittable_fault_has_a_runbook(seeded):
+    """No component may go non-ok with nothing to say."""
+    from app.health import get_runbook
+
+    missing = [(c, f) for c, f in sorted(_emittable_pairs())
+               if get_runbook(seeded, c, f) is None]
+    assert missing == [], f"faults with no runbook: {missing}"
+
+
+def test_no_runbook_is_keyed_to_a_fault_no_check_emits(seeded):
+    """The other half, and the one that actually bit. A dead runbook reads as
+    coverage on inspection and renders nothing in production."""
+    from app.models import Remediation
+
+    emittable = _emittable_pairs()
+    stored = {(r.component, r.fault_code) for r in seeded.query(Remediation).all()}
+    dead = sorted(stored - emittable)
+    assert dead == [], f"runbooks that can never join: {dead}"
+
+
+def test_seed_actually_deletes_a_retired_runbook(seeded):
+    """Reconciling never deletes on its own — retirement has to be explicit or it
+    does not happen. Pinned because the six dead runbooks were removed from the
+    code list AND added to _RETIRED_REMEDIATIONS; only the second one clears rows
+    from a database that already has them."""
+    from app.models import Remediation
+
+    seeded.add(Remediation(component="duffel", fault_code="401", runbook="stale", severity="warn"))
+    seeded.commit()
+
+    seed_health_topology(seeded)
+
+    assert (seeded.query(Remediation)
+            .filter(Remediation.component == "duffel", Remediation.fault_code == "401")
+            .first()) is None
