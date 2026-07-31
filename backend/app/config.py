@@ -196,6 +196,11 @@ class Settings(BaseSettings):
     # profile wiring are pinned by NOTHING (no committed export), so this class of
     # break recurs — and only the VALUE identifies it. See docs/SESSION-closeout-2026-07-31.md.
     location_log_nonce: bool = False
+    # How often the worker recomputes health and stamps the evaluator heartbeat.
+    # Must stay well under the `health_evaluator` component's seeded stale_seconds
+    # (900s) — three missed cycles before it reads down, so an ordinary slow tick
+    # never trips the alarm that means "nothing is being checked at all".
+    health_cycle_seconds: int = 300
     # Fly secret age past this many days is flagged as "aging" (real Fly metadata,
     # not a fabricated countdown). The health check reads it hourly-cached.
     secret_age_flag_days: int = 90

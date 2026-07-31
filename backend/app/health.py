@@ -19,13 +19,18 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from app.models import Component, HealthResult, Remediation
+from app.models import Capability, CapabilityMember, Component, HealthResult, Remediation
 
 log = logging.getLogger(__name__)
 
 # Trunk subsystems: a failure here takes down many limbs at once, so they are
 # blast_radius=multi and surface first/most prominently.
-_TRUNK = {"anthropic_api", "postgres", "worker_scheduler", "email_ingest"}
+_TRUNK = {"anthropic_api", "postgres", "worker_scheduler", "email_ingest",
+          # A dead evaluator does not break location or email — it breaks KNOWING,
+          # which invalidates every other reading on the page at once. That is a
+          # multi-limb blast in the only sense that matters here, and trunk renders
+          # first, which is exactly where "the monitor is down" belongs.
+          "health_evaluator"}
 
 # name, kind, description, depends_on, check_type, check_config
 # check_type: liveness | secret_age | published_expiry | heartbeat | freshness | none
@@ -45,7 +50,14 @@ _COMPONENTS: list[dict] = [
     {"name": "tavily",                  "kind": "external_api", "depends_on": "TAVILY_API_KEY",  "check_type": "liveness",          "description": "Web search + page fetch."},
     {"name": "alpaca",                  "kind": "external_api", "depends_on": "ALPACA_API_KEY",  "check_type": "liveness",          "description": "Market data."},
     {"name": "gmail",                   "kind": "external_api", "depends_on": "GMAIL_APP_PASSWORD", "check_type": "liveness",       "description": "Outbound email (SMTP)."},
-    {"name": "google_oauth",            "kind": "external_api", "depends_on": "GOOGLE_OAUTH_REFRESH_TOKEN", "check_type": "published_expiry", "description": "Contacts/Tasks/Docs/Sheets (OAuth)."},
+    # F2 (capability orders): was `published_expiry`, which was DEFERRED and never
+    # built — Google refresh tokens publish no expiry — so this row returned
+    # `unknown` forever and any capability naming it as primary could never be
+    # green. Audit-derived liveness is the same shape every other external API
+    # uses, and it can actually return `ok`. Residual, stated: with no recent
+    # Google call it reads `unknown` (no evidence), which is honest — unlike a
+    # permanent unknown that no usage could ever clear.
+    {"name": "google_oauth",            "kind": "external_api", "depends_on": "GOOGLE_OAUTH_REFRESH_TOKEN", "check_type": "liveness", "description": "Contacts/Tasks/Docs/Sheets (OAuth)."},
     {"name": "google_calendar_svcacct", "kind": "external_api", "depends_on": "GOOGLE_SERVICE_ACCOUNT_JSON", "check_type": "liveness",     "description": "Calendar (service account)."},
     {"name": "duffel",                  "kind": "external_api", "depends_on": "DUFFEL_API_KEY",  "check_type": "liveness",          "description": "Flight search + booking."},
     {"name": "google_maps",             "kind": "external_api", "depends_on": "GOOGLE_MAPS_API_KEY", "check_type": "liveness",      "description": "Directions + Places."},
@@ -60,6 +72,14 @@ _COMPONENTS: list[dict] = [
     {"name": "postgres",        "kind": "internal_subsystem", "depends_on": "DATABASE_URL",      "check_type": "liveness",  "description": "The database — every durable record."},
     {"name": "worker_scheduler", "kind": "internal_subsystem", "depends_on": "",                "check_type": "heartbeat", "check_config": {"stale_seconds": 300}, "description": "Job worker + briefing scheduler."},
     {"name": "email_ingest",    "kind": "internal_subsystem", "depends_on": "",                  "check_type": "none",      "description": "Inbound email ingestion."},
+    # F1 (capability orders): the health system's row for ITSELF. Without it,
+    # "self-health: ok" means only "what health checks depend on is ok" — never
+    # "health checking is running" — so an evaluator that silently stopped would
+    # read green. `stale_seconds` is 3x the 300s evaluator interval: one missed
+    # cycle is a slow tick, three is a dead evaluator.
+    {"name": "health_evaluator", "kind": "internal_subsystem", "depends_on": "postgres",
+     "check_type": "health_evaluator", "check_config": {"stale_seconds": 900},
+     "description": "Is health checking itself running, and is the capability rollup coherent?"},
 
     # ── Data feeds ──
     # Location is TWO components on purpose. The old single `location_pings`
@@ -158,7 +178,139 @@ _REMEDIATIONS: list[dict] = [
                 "the campaign with business framing. Voice is unaffected."},
     {"component": "tavily", "fault_code": "401", "severity": "warn",
      "runbook": "Tavily rejected the key. Check TAVILY_API_KEY; confirm the plan has credits."},
+    # `call_failed` is what check_liveness actually emits. The two runbooks above
+    # for google_calendar_svcacct/google_oauth are keyed to fault codes NO check
+    # produces (`auth_invalid`, `token_expired`), so they could never join — a live
+    # calendar outage rendered with no runbook at all. Keyed to the real code now;
+    # the aspirational ones are left in place for when a check emits them.
+    {"component": "google_calendar_svcacct", "fault_code": "call_failed", "severity": "critical",
+     "runbook": "Calendar calls are failing. Read the evidence rows: `invalid_grant: Token has "
+                "been expired or revoked` means the OAuth credential died — re-consent with "
+                "`cd backend && python -m app.google_oauth --client-secrets <path>` then "
+                "`fly secrets set GOOGLE_OAUTH_REFRESH_TOKEN=<new>`. Confirm FIRST which auth "
+                "path scheduling.py is using (OAuth `_service()` vs the service-account "
+                "fallback) — the fix differs by path, and a service-account fault is instead "
+                "'re-share the calendar with the service-account email'."},
+    {"component": "google_oauth", "fault_code": "call_failed", "severity": "critical",
+     "runbook": "A Google OAuth call failed (Docs/Sheets/Contacts/Tasks). Usually a dead or "
+                "de-scoped refresh token: `cd backend && python -m app.google_oauth "
+                "--client-secrets <path>`, then `fly secrets set GOOGLE_OAUTH_REFRESH_TOKEN=<new>`."},
+    # The meta-check's own faults. A runbook here is load-bearing in a way the
+    # others are not: when this fires, every other reading on the page is suspect.
+    {"component": "health_evaluator", "fault_code": "evaluator_stale", "severity": "critical",
+     "runbook": "Health checking has STOPPED. Every other status on this page is stale and "
+                "must not be trusted — including the greens. The evaluator rides the worker "
+                "tick, so this usually means the worker is dead: check `worker_scheduler` "
+                "first, then `fly apps restart jarvis-mdk`, then confirm the log line "
+                "`health cycle: N components in Xms`."},
+    {"component": "health_evaluator", "fault_code": "rollup_incoherent", "severity": "warn",
+     "runbook": "The capability rollup references components that do not exist, are disabled, "
+                "or a capability has no primary member. The rollup is still reporting, but at "
+                "least one capability's answer is built on a missing part. Fix the seed in "
+                "`app/health.py` (_CAPABILITIES / _CAPABILITY_MEMBERS) — the detail names the "
+                "offending capability and component."},
 ]
+
+
+# ── Capabilities (TDD §4; seed ratified 2026-07-31) ──────────────────────────
+#
+# A capability is what the owner would say JARVIS can DO. Components are parts;
+# this is what the parts add up to from outside. Both are needed: "postgres is up"
+# does not answer "can you tell me where I am".
+#
+# PRIMARY is the member whose `down` makes the capability RED. Everything else
+# makes it AMBER. Derived rule, stated because it is load-bearing and was NOT
+# given: a primary that is `degraded` yields AMBER, not red — otherwise
+# project_hygiene (which is degraded-or-better by design) would red the project
+# capability and contradict the ratified amber ceiling.
+#
+# Trunk components are EXPLICIT-ONLY members (decision 8): a capability lists
+# postgres/anthropic_api only where genuinely load-bearing, and trunk faults render
+# ABOVE the rollup rather than reddening eight rows with one fault.
+_CAPABILITIES: list[dict] = [
+    {"name": "location", "label": "Location", "lifecycle": "live",
+     "description": "Knowing where the owner is, on demand and on a schedule.",
+     "notes": ""},
+    {"name": "calendar", "label": "Calendar", "lifecycle": "live",
+     "description": "Reading the schedule and creating events."},
+    {"name": "morning_brief", "label": "Morning brief", "lifecycle": "live",
+     "description": "The daily brief: schedule, weather, marine, traffic, tasks, news.",
+     "notes": "Content sources are non-primary on purpose: a brief that goes out "
+              "without its weather section is degraded, a brief that never fires is "
+              "broken. Only the scheduler can make this red."},
+    {"name": "project_tracking", "label": "Project tracking", "lifecycle": "live",
+     "description": "Projects, milestones, and whether the records still tell the truth.",
+     "notes": "AMBER CEILING BY DESIGN — this capability has no red path, and that is "
+              "ratified, not an oversight. project_hygiene is informational and never "
+              "returns `down`: the tools are ungated DB reads/writes with no user-visible "
+              "outage mode, so a drifting project record is a bookkeeping problem, not a "
+              "system fault. Manufacturing a red path for symmetry would put bookkeeping "
+              "beside a dead scheduler and train the eye to skip both."},
+    {"name": "memory", "label": "Memory", "lifecycle": "live",
+     "description": "Facts, episodes, and recall.",
+     "notes": "KNOWN BLIND SPOT: vectorstore/embedding health is uninstrumented, so a "
+              "semantic-recall failure is invisible to this rollup — stored memory would "
+              "still read green while recall silently returned nothing. Pending a "
+              "`vectorstore` component."},
+    {"name": "voice_sms", "label": "Voice + SMS", "lifecycle": "live",
+     "description": "Inbound/outbound calls and text messages.",
+     "notes": "ONE capability by design, not an oversight. Twilio voice and A2P SMS do "
+              "fail independently, but there is exactly one `twilio` component covering "
+              "both — so two capabilities would share one member, always agree, and the "
+              "split would be cosmetic. Splitting requires splitting the COMPONENT first "
+              "(twilio_voice / twilio_sms, each with its own check and runbook)."},
+    {"name": "self_health", "label": "Self-health monitoring", "lifecycle": "live",
+     "description": "Is JARVIS watching herself, and is that watching trustworthy?",
+     "notes": "Seeded only because `health_evaluator` now exists (F1). Before it, this "
+              "capability would have reported on everything except whether it was running."},
+    {"name": "contacts", "label": "Contacts / People", "lifecycle": "live",
+     "description": "Contact lookup and Google People sync.",
+     "notes": "Seeded only because google_oauth moved from the never-built "
+              "`published_expiry` check to audit-derived liveness (F2). It reads `unknown` "
+              "if no Google call has happened in the liveness window — honest absence of "
+              "evidence, which usage clears."},
+
+    # ── Gated: excluded from the live rollup, reported as not-configured ──
+    # Stated honestly rather than omitted, because silent absence is how a
+    # capability stops being noticed (the PR #43 netstatus argument).
+    {"name": "flight_booking", "label": "Flight booking", "lifecycle": "gated",
+     "gated_by": "booking_enabled",
+     "description": "Searching and booking flights via Duffel."},
+    {"name": "local_network", "label": "Local network", "lifecycle": "gated",
+     "gated_by": "",
+     "description": "LAN visibility: hypervisor, uptime monitor, tailnet.",
+     "notes": "Grouped as ONE gated capability rather than four gated rows — they share a "
+              "single cause (unreachable from Fly) and a single fix (be on the LAN), so "
+              "four rows would be one fact repeated four times. All members are stubs."},
+]
+
+# capability -> [(component, is_primary)]
+_CAPABILITY_MEMBERS: dict[str, list[tuple[str, bool]]] = {
+    # Primary is responsiveness because it is the END-TO-END signal: a dead
+    # scheduler eventually shows up here too, while the reverse is not true.
+    "location": [("location_responsiveness", True), ("location_pull_scheduler", False),
+                 ("navigator", False)],
+    "calendar": [("google_calendar_svcacct", True), ("scheduling", False)],
+    "morning_brief": [("worker_scheduler", True), ("gmail", False), ("twilio", False),
+                      ("nws", False), ("google_calendar_svcacct", False),
+                      ("google_maps", False)],
+    "project_tracking": [("project_hygiene", True)],
+    # anthropic_api is non-primary: distillation and recall degrade without it,
+    # but stored memory stays readable. postgres is primary and IS listed, because
+    # here it is genuinely load-bearing rather than ambient (decision 8).
+    "memory": [("postgres", True), ("archivist", False), ("anthropic_api", False)],
+    "voice_sms": [("twilio", True)],
+    "self_health": [("health_evaluator", True), ("postgres", False),
+                    ("worker_scheduler", False)],
+    "contacts": [("google_oauth", True), ("secretary", False)],
+    "flight_booking": [("duffel", True), ("travel", False)],
+    "local_network": [("netstatus", True), ("proxmox", False), ("uptime_kuma", False),
+                      ("tailscale", False)],
+}
+
+# Same lesson as _RETIRED: reconciling never deletes, so a capability dropped from
+# the list above would linger and keep being rolled up.
+_RETIRED_CAPABILITIES: set[str] = set()
 
 # tool name -> owning component (the §4A evidence join key). Maps to the external
 # API where one exists (that's what liveness watches), else the owning subsystem.
@@ -263,9 +415,58 @@ def seed_health_topology(db: Session) -> int:
         row.runbook = rem["runbook"]
         row.severity = rem.get("severity", "warn")
 
+    _seed_capabilities(db)
+
     db.commit()
-    log.info("seeded/reconciled %d components, %d remediations", touched, len(_REMEDIATIONS))
+    log.info("seeded/reconciled %d components, %d remediations, %d capabilities",
+             touched, len(_REMEDIATIONS), len(_CAPABILITIES))
     return touched
+
+
+def _seed_capabilities(db: Session) -> None:
+    """Seed + RECONCILE capabilities and their membership.
+
+    Membership is reconciled by REPLACEMENT, not merge: a member removed from
+    `_CAPABILITY_MEMBERS` must actually disappear, or a component dropped from a
+    capability keeps voting on its status forever. That is the `_RETIRED` lesson
+    applied one level up — and it matters more here, because a stale member is not
+    merely visible, it silently changes an answer.
+    """
+    for spec in _CAPABILITIES:
+        row = db.get(Capability, spec["name"])
+        if row is None:
+            row = Capability(name=spec["name"])
+            db.add(row)
+        row.label = spec.get("label", spec["name"])
+        row.lifecycle = spec.get("lifecycle", "live")
+        row.gated_by = spec.get("gated_by", "")
+        row.description = spec.get("description", "")
+        row.notes = spec.get("notes", "")
+
+    for name in _RETIRED_CAPABILITIES:
+        row = db.get(Capability, name)
+        if row is not None:
+            db.delete(row)
+            log.info("retired capability %r", name)
+        for m in db.query(CapabilityMember).filter(CapabilityMember.capability == name).all():
+            db.delete(m)
+
+    for cap, members in _CAPABILITY_MEMBERS.items():
+        wanted = {c: p for c, p in members}
+        existing = {
+            m.component: m
+            for m in db.query(CapabilityMember).filter(CapabilityMember.capability == cap).all()
+        }
+        for component, is_primary in wanted.items():
+            m = existing.get(component)
+            if m is None:
+                m = CapabilityMember(capability=cap, component=component)
+                db.add(m)
+            m.is_primary = is_primary
+        for component, m in existing.items():
+            if component not in wanted:
+                db.delete(m)
+                log.info("removed %s from capability %s", component, cap)
 
 
 def registry_discrepancies(db: Session) -> dict:

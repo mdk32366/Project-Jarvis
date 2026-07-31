@@ -678,6 +678,28 @@ def status_full(_: User = Depends(get_current_user), db: Session = Depends(get_d
     return status_payload(db)
 
 
+@router.get("/status/capabilities", tags=["admin"])
+def status_capabilities(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """What JARVIS can DO right now, rolled up from component health.
+
+    Runs the checks fresh first, then rolls up — otherwise this reports on
+    whatever the last cycle happened to leave behind, and a capability page
+    showing yesterday's answer is worse than no page.
+
+    Deliberately does NOT stamp the evaluator heartbeat: see `run_health_cycle`.
+    Loading this page must not be able to prove the background evaluator alive.
+
+    Auth-gated; no secrets — capability names, statuses, member components, and
+    stored runbooks only.
+    """
+    from app.capabilities import evaluate, summary
+    from app.health_checks import run_all_checks
+
+    run_all_checks(db)
+    rollup = evaluate(db)
+    return {"summary": summary(rollup), "capabilities": rollup}
+
+
 @router.get("/settings", tags=["admin"])
 def get_settings(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Effective value + source (override/default) for every runtime-overridable

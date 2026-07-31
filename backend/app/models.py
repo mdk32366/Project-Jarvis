@@ -741,3 +741,72 @@ class RuntimeSetting(Base):
     value: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class EvaluatorHeartbeat(Base):
+    """Proof-of-life for the HEALTH EVALUATOR itself (capability TDD F1).
+
+    Single row (id=1), stamped every time the worker runs a health cycle. Without
+    it, "self-health: ok" means only "the things health checks depend on are ok" —
+    never "health checking is actually running", so an evaluator that silently
+    stopped would still read green. That is the fabricated-`ok` failure of the
+    pre-epoch `actions_audit`, one level up, and it is the single thing here that
+    must not be faked: this component's job is noticing when things are faked.
+
+    Deliberately NOT folded into `scheduler_heartbeat`: that row means "the
+    briefing scheduler is alive". Two different liveness claims sharing one
+    timestamp is how one dead subsystem hides behind another.
+    """
+
+    __tablename__ = "evaluator_heartbeat"
+
+    id: Mapped[int] = mapped_column(primary_key=True)          # always 1
+    beat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    components_checked: Mapped[int] = mapped_column(Integer, default=0)
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Capability(Base):
+    """A user-facing capability — the thing the owner would say JARVIS "can do"
+    (capability TDD §4). Rolls up one or more `component` rows into one answer.
+
+    A capability is NOT a component. Components are the system's parts; a
+    capability is what those parts add up to from outside. "Postgres is up" is a
+    component fact; "I can tell you where you are" is a capability fact, and it is
+    the second one the owner actually asked about.
+
+    `lifecycle`: live | gated. `gated_by` names the Settings flag that gates it
+    (e.g. `booking_enabled`) — a gated capability is EXCLUDED from the live rollup
+    and reported as "not configured" rather than omitted, because silent absence is
+    how a capability stops being noticed (the PR #43 netstatus argument).
+    """
+
+    __tablename__ = "capability"
+
+    name: Mapped[str] = mapped_column(String(64), primary_key=True)
+    label: Mapped[str] = mapped_column(String(80), default="")
+    lifecycle: Mapped[str] = mapped_column(String(16), default="live")   # live|gated
+    gated_by: Mapped[str] = mapped_column(String(64), default="")        # Settings flag name
+    description: Mapped[str] = mapped_column(String(300), default="")
+    # Free text surfaced with the capability. Carries a DELIBERATE limitation —
+    # e.g. project tracking's amber ceiling, memory's uninstrumented vectorstore —
+    # so a known blind spot travels with the reading instead of living only in a
+    # close-out nobody re-reads.
+    notes: Mapped[str] = mapped_column(Text, default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class CapabilityMember(Base):
+    """Which components compose a capability, and which one is PRIMARY.
+
+    The primary is the member whose `down` makes the capability RED; any other
+    member's fault makes it AMBER. That distinction is the whole point: a morning
+    brief with no weather section is degraded, a morning brief that never fires is
+    broken, and one status word for both teaches the reader to ignore it.
+    """
+
+    __tablename__ = "capability_member"
+
+    capability: Mapped[str] = mapped_column(String(64), primary_key=True)
+    component: Mapped[str] = mapped_column(String(64), primary_key=True)
+    is_primary: Mapped[bool] = mapped_column(Boolean, default=False)

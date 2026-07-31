@@ -37,6 +37,7 @@ def run_once() -> int:
         _check_watches(db)
         _briefing_tick(db)
         _location_pull_tick(db)
+        _maybe_run_health_cycle(db)
         _maybe_prune_request_log(db)
         return n
     finally:
@@ -59,6 +60,37 @@ def _maybe_prune_request_log(db) -> None:
         prune(db)
     except Exception as e:  # noqa: BLE001
         log.error("request_log prune error: %s", e)
+
+
+_last_health_cycle = [0.0]        # monotonic ts of the last health cycle
+
+
+def _maybe_run_health_cycle(db) -> None:
+    """Recompute health on an interval and stamp the evaluator heartbeat (F1).
+
+    THROTTLED, not per-tick: the worker ticks every 5s and a full cycle scans a
+    30-day slice of `actions_audit` once per liveness component. Running that
+    every 5s would spend the worker's life proving it is alive.
+
+    The interval must stay well under the component's seeded `stale_seconds`
+    (300s vs 900s — three missed cycles before it reads down), so an ordinary slow
+    tick never trips the alarm that means "nothing is being checked".
+
+    Never raises: the evaluator failing must not stop the job queue. But note it
+    fails LOUDLY in the health surface rather than silently — a swallowed exception
+    here stops the heartbeat, and a stopped heartbeat is exactly what
+    `check_health_evaluator` reports.
+    """
+    try:
+        prev = _last_health_cycle[0]
+        now = time.monotonic()
+        if prev and now - prev < settings.health_cycle_seconds:
+            return
+        _last_health_cycle[0] = now
+        from app.health_checks import run_health_cycle
+        run_health_cycle(db)
+    except Exception as e:  # noqa: BLE001
+        log.error("health cycle error: %s", e)
 
 
 def _location_pull_tick(db) -> None:

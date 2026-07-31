@@ -278,6 +278,55 @@ def check_project_hygiene(db: Session, c: Component) -> CheckResult:
                        checked_at=_now(), last_failure_at=_now())
 
 
+def check_health_evaluator(db: Session, c: Component) -> CheckResult:
+    """*Is health checking itself running, and is the rollup coherent?* (F1)
+
+    The one check that must not be faked, because its job is noticing when things
+    are faked. Everything else on this page is a claim about a subsystem; this is
+    the claim that those claims are being recomputed at all. Without it, an
+    evaluator that silently stopped would leave every stale reading — including
+    every green — looking current.
+
+    Two failure modes, deliberately distinguished:
+      `evaluator_stale`     nothing is recomputing; every other reading is suspect
+      `rollup_incoherent`   it IS running, but a capability is assembled from a
+                            component that is missing or disabled — a confident
+                            answer built on a part nobody checks
+
+    Staleness wins: an incoherence report from a dead evaluator is itself stale.
+    """
+    from app.capabilities import coherence_problems
+    from app.models import EvaluatorHeartbeat
+
+    stale_seconds = _cfg(c).get("stale_seconds", 900)
+    hb = db.get(EvaluatorHeartbeat, 1)
+    beat = _aware(hb.beat_at) if hb else None
+    if hb is None or beat is None:
+        return CheckResult(c.name, "unknown", "no_heartbeat",
+                           "the evaluator has not reported a cycle yet", checked_at=_now())
+
+    age = (_now() - beat).total_seconds()
+    if age > stale_seconds:
+        return CheckResult(c.name, "down", "evaluator_stale",
+                           f"no health cycle in {int(age)}s (> {stale_seconds}s) — every "
+                           f"other status on this page is stale",
+                           checked_at=_now(), last_failure_at=beat)
+
+    problems = coherence_problems(db)
+    if problems:
+        detail = "; ".join(problems[:4])
+        if len(problems) > 4:
+            detail += f" (+{len(problems) - 4} more)"
+        return CheckResult(c.name, "degraded", "rollup_incoherent",
+                           f"{len(problems)} rollup problem(s) — {detail}",
+                           checked_at=_now(), last_failure_at=_now())
+
+    return CheckResult(c.name, "ok", None,
+                       f"last cycle {int(age)}s ago ({hb.components_checked} components, "
+                       f"{hb.duration_ms}ms); rollup coherent",
+                       checked_at=_now(), last_success_at=beat)
+
+
 def check_app_up(db: Session, c: Component) -> CheckResult:
     """App up-status: if this code is running and the DB answers, the app + its
     Postgres are up. A trivially-true check by construction — but it makes 'the
@@ -293,6 +342,7 @@ _CHECKS = {
     "location_scheduler": check_location_scheduler,
     "location_responsiveness": check_location_responsiveness,
     "project_hygiene": check_project_hygiene,
+    "health_evaluator": check_health_evaluator,
 }
 # components whose up-status is the app itself (postgres/anthropic liveness is
 # really "is the app up") get app_up when they have no more specific check.
@@ -352,6 +402,40 @@ def run_all_checks(db: Session) -> list[CheckResult]:
         results.append(r)
     db.commit()
     return results
+
+
+def run_health_cycle(db: Session) -> int:
+    """Run every check AND stamp the evaluator heartbeat. Returns components checked.
+
+    ONLY this path stamps the heartbeat — `status_payload` deliberately does not,
+    even though it runs the same checks. If viewing the status page refreshed the
+    beat, then opening the page would prove the evaluator alive by the act of
+    asking, and a dead background evaluator would read green to the one person
+    looking at it. The heartbeat has to measure the CONTINUOUS cycle, which is the
+    thing that can silently stop, not the on-demand one.
+
+    Stamped AFTER the checks run, so the `health_evaluator` result recorded within
+    a cycle reflects the real gap since the previous cycle rather than a beat it
+    just wrote itself.
+    """
+    import time as _time
+
+    from app.models import EvaluatorHeartbeat
+
+    started = _time.monotonic()
+    results = run_all_checks(db)
+    elapsed_ms = int((_time.monotonic() - started) * 1000)
+
+    hb = db.get(EvaluatorHeartbeat, 1)
+    if hb is None:
+        hb = EvaluatorHeartbeat(id=1)
+        db.add(hb)
+    hb.beat_at = _now()
+    hb.components_checked = len(results)
+    hb.duration_ms = elapsed_ms
+    db.commit()
+    log.info("health cycle: %d components in %dms", len(results), elapsed_ms)
+    return len(results)
 
 
 def _evidence_for(db: Session, component: str, limit: int = 5) -> list[dict]:
