@@ -75,6 +75,38 @@ def _safe(label: str, fn):
         return f"({label} unavailable right now: {e})"
 
 
+def _safe_tool(label: str, reg, tool: str, args: dict, ctx) -> tuple[str, str]:
+    """Run a briefing source through the AUDITED seam and return `(text, status)`.
+
+    Two contracts held at once, and both matter:
+
+    1. `Registry.run_tool` is the seam that DERIVES status from the outcome, so the
+       audit row this enables says what actually happened rather than what the
+       caller assumed. Before this, the brief exercised the calendar every morning
+       through a direct handler call and recorded nothing — starving the very
+       check that watches it, and letting `google_calendar_svcacct` latch `down`
+       on a resolved fault.
+
+    2. `_safe`'s "(label unavailable…)" shape is PRESERVED on failure. Every
+       section guard below keys off that leading "(" to drop a failed source, so
+       returning `run_tool`'s raw error string here would narrate an error dump
+       into a brief that gets read aloud — the exact defect PR #44 fixed.
+
+    Writes NOTHING. The caller records the audit on the main thread: these run in
+    a ThreadPoolExecutor over a shared Session, and a SQLAlchemy Session is not
+    thread-safe.
+    """
+    try:
+        result, status = reg.run_tool(tool, args, ctx)
+    except Exception as e:  # noqa: BLE001 — run_tool shouldn't raise, but a brief never dies
+        log.warning("briefing source '%s' failed: %s", label, e)
+        return f"({label} unavailable right now: {e})", "error"
+    if status != "ok":
+        log.warning("briefing source '%s' failed: %s", label, result)
+        return f"({label} unavailable right now: {result})", "error"
+    return result, "ok"
+
+
 def _nws_weather(address: str) -> str:
     """NWS point forecast for a US address. No API key required.
 
@@ -198,7 +230,7 @@ def _nws_marine() -> str:
     return "\n".join(all_lines) if all_lines else ""
 
 
-def _traffic_brief(db) -> str:
+def _traffic_brief(db, *, reg=None, ctx=None, audited=None) -> str:
     """Home → work commute. Returns "" when unconfigured or delay is not meaningful.
 
     Suppresses the section entirely when _get_traffic reports "Traffic is light."
@@ -210,13 +242,22 @@ def _traffic_brief(db) -> str:
             and settings.owner_work_address):
         return ""
 
-    from app.handlers.maps import _get_traffic
+    args = {"origin": settings.owner_home_address, "destination": settings.owner_work_address}
 
-    ctx = Context(db=db, channel="briefing", actor="system", thread_key="briefing")
-    result = _get_traffic(
-        {"origin": settings.owner_home_address, "destination": settings.owner_work_address},
-        ctx,
-    )
+    if reg is None:                      # direct/legacy call — keep working
+        from app.handlers.base import build_registry
+        reg = build_registry(db=db)
+    if ctx is None:
+        ctx = Context(db=db, channel="briefing", actor="system", thread_key="briefing")
+
+    # Through the audited seam: google_maps liveness reads `get_traffic` rows, and
+    # the brief is the only thing that calls it every morning. The audit row is
+    # APPENDED, not written — this runs in a worker thread (see gather_context).
+    result, status = _safe_tool("traffic", reg, "get_traffic", args, ctx)
+    if audited is not None:
+        audited.append(("get_traffic", args, result, status))
+    if status != "ok":
+        return ""                        # a failed lookup is not a traffic report
     # Surface ONLY a genuine traffic report. Besides a real commute line and the
     # "Traffic is light." quiet case, _get_traffic also returns guidance strings
     # ("No route found…", "Where to?…", "[maps not configured]…") — none of which
@@ -292,28 +333,34 @@ def gather_context(db: Session) -> str:
     The HTTP-bound handlers (calendar, infra, weather, marine, traffic, news,
     tailscale) do not exercise ctx.db in their normal read paths.
     """
-    from app.handlers.scheduling import _calendar_lookup
-    from app.handlers.infra import _fleet_health, _fleet_spend
+    from app.handlers.base import build_registry, record_tool_audit
     from app.handlers.tasks import open_task_summary
-    from app.handlers.travel import _list_trips
-    from app.handlers.tailscale import _tailscale_status
 
     ctx = Context(db=db, channel="briefing", actor="system", thread_key="briefing")
 
+    # Tool-backed sources now run through the registry so each one records an audit
+    # row. THE BRIEF IS THE ONLY THING THAT EXERCISES SEVERAL OF THESE COMPONENTS
+    # DAILY — running it off the audited path starved `check_liveness` of the
+    # exact evidence it reads, which is how the calendar latched `down` on a fault
+    # that had already cleared. Built here on the main thread; `run_tool` itself
+    # touches no session, so the worker threads still honour the no-DB rule above.
+    reg = build_registry(db=db)
+    audited: list[tuple[str, dict, str, str]] = []      # (tool, args, result, status)
+
     with ThreadPoolExecutor(max_workers=10) as executor:
-        f_today     = executor.submit(_safe, "calendar",  lambda: _calendar_lookup({"range": "today"}, ctx))
-        f_week      = executor.submit(_safe, "calendar",  lambda: _calendar_lookup({"range": "this week"}, ctx))
+        f_today     = executor.submit(_safe_tool, "calendar", reg, "calendar_lookup", {"range": "today"}, ctx)
+        f_week      = executor.submit(_safe_tool, "calendar", reg, "calendar_lookup", {"range": "this week"}, ctx)
         # Portfolio is intentionally NOT gathered. Alpaca is unconfigured and
         # _get_portfolio only ever returns a "[demo mode]" sentinel, so it has no
         # path to the reader — gathering it spent a thread on content that was
         # always filtered out. The tool stays live on the finance handler/agent;
         # restoring it in the brief is re-adding one executor.submit(_safe,
         # "portfolio", ...) here plus a "## Portfolio" section block below.
-        f_health    = executor.submit(_safe, "infra",     lambda: _fleet_health({}, ctx))
-        f_spend     = executor.submit(_safe, "infra",     lambda: _fleet_spend({}, ctx))
+        f_health    = executor.submit(_safe_tool, "infra", reg, "fleet_health", {}, ctx)
+        f_spend     = executor.submit(_safe_tool, "infra", reg, "fleet_spend", {}, ctx)
         f_weather   = executor.submit(_safe, "weather",   lambda: _nws_weather(settings.owner_home_address))
         f_marine    = executor.submit(_safe, "marine",    lambda: _nws_marine())
-        f_traffic   = executor.submit(_safe, "traffic",   lambda: _traffic_brief(db))
+        f_traffic   = executor.submit(_safe, "traffic",   lambda: _traffic_brief(db, reg=reg, ctx=ctx, audited=audited))
         f_news      = executor.submit(_safe, "news",      lambda: _news_brief())
         # Local network / the house. ONLY Tailscale is wired here. Proxmox
         # (get_node_status) and Uptime Kuma (get_service_health) are deliberately
@@ -323,24 +370,45 @@ def gather_context(db: Session) -> str:
         # Submitting them would report a fake-offline node to the owner every
         # morning. Re-add each as one executor.submit + one predicate entry once it
         # speaks to a real backend at LAN migration.
-        f_tailscale = executor.submit(_safe, "tailscale", lambda: _tailscale_status({}, ctx))
+        f_tailscale = executor.submit(_safe_tool, "tailscale", reg, "tailscale_status", {}, ctx)
 
         # DB-bound sources: safe on the main thread, done before futures finish.
         tasks    = _safe("tasks",  lambda: open_task_summary(db))
-        trips    = _safe("trips",  lambda: _list_trips({}, ctx))
+        trips, trips_status = _safe_tool("trips", reg, "list_trips", {}, ctx)
+        audited.append(("list_trips", {}, trips, trips_status))
         facts_raw = _safe("memory", lambda: db.execute(
             select(Memory).order_by(Memory.created_at.desc()).limit(5)
         ).scalars().all())
 
-    today     = f_today.result()
-    week      = f_week.result()
-    health    = f_health.result()
-    spend     = f_spend.result()
+    # Tool-backed futures now yield (text, status); the plain _safe ones still
+    # yield a bare string.
+    today,     s_today  = f_today.result()
+    week,      s_week   = f_week.result()
+    health,    s_health = f_health.result()
+    spend,     s_spend  = f_spend.result()
+    tailscale, s_tail   = f_tailscale.result()
     weather   = f_weather.result()
     marine    = f_marine.result()
     traffic   = f_traffic.result()
     news      = f_news.result()
-    tailscale = f_tailscale.result()
+
+    audited.extend([
+        ("calendar_lookup", {"range": "today"},     today,     s_today),
+        ("calendar_lookup", {"range": "this week"}, week,      s_week),
+        ("fleet_health",    {},                     health,    s_health),
+        ("fleet_spend",     {},                     spend,     s_spend),
+        ("tailscale_status", {},                    tailscale, s_tail),
+    ])
+
+    # Audit rows are written HERE — on the main thread, after the pool has joined.
+    # The worker threads share one SQLAlchemy Session, which is not thread-safe, and
+    # the gather docstring's "HTTP-bound handlers do not exercise ctx.db" invariant
+    # is exactly what keeps that safe. Recording inside the threads would have
+    # broken it to fix a different bug.
+    for tool, args, result, status in audited:
+        record_tool_audit(db, channel="briefing", actor="system",
+                          tool=f"briefing:{tool}", args=args,
+                          result=result, status=status)
 
     if isinstance(facts_raw, str):
         fact_lines = facts_raw

@@ -794,21 +794,37 @@ def project_action(item: ProjectActionIn, user: User = Depends(get_current_user)
 
 @router.get("/calendar/health", tags=["admin"])
 def calendar_health(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    """Return the RAW calendar_lookup output so calendar setup issues are visible."""
-    from app.handlers.base import Context
-    from app.handlers.scheduling import _calendar_lookup
+    """Return the RAW calendar_lookup output so calendar setup issues are visible.
+
+    Runs through the registry so the probe records an audit row. That is not
+    bookkeeping: `check_liveness` reads those rows, so a diagnostic that exercised
+    the calendar without recording it would leave the very check you are debugging
+    exactly as starved as it was before you looked.
+    """
+    from app.handlers.base import Context, build_registry, record_tool_audit
+
     ctx = Context(db=db, channel="web", actor="admin", thread_key="admin")
-    return {"result": _calendar_lookup({"range": "this week"}, ctx)}
+    args = {"range": "this week"}
+    result, status = build_registry(db=db).run_tool("calendar_lookup", args, ctx)
+    record_tool_audit(db, channel="web", actor="admin", tool="admin:calendar_lookup",
+                      args=args, result=result, status=status)
+    return {"result": result, "status": status}
 
 
 @router.get("/infra/health", tags=["admin"])
 def infra_health(_: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """Return RAW fleet health + spend so Fly setup issues are visible in the UI."""
-    from app.handlers.base import Context
-    from app.handlers.infra import _fleet_health, _fleet_spend
+    from app.handlers.base import Context, build_registry, record_tool_audit
 
     ctx = Context(db=db, channel="admin", actor="admin", thread_key="infra")
-    return {"health": _fleet_health({}, ctx), "spend": _fleet_spend({}, ctx)}
+    reg = build_registry(db=db)
+    out = {}
+    for key, tool in (("health", "fleet_health"), ("spend", "fleet_spend")):
+        result, status = reg.run_tool(tool, {}, ctx)
+        record_tool_audit(db, channel="admin", actor="admin", tool=f"admin:{tool}",
+                          args={}, result=result, status=status)
+        out[key] = result
+    return out
 
 
 @router.post("/auth/change-password", tags=["auth"])

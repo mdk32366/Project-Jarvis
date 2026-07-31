@@ -191,8 +191,10 @@ def test_briefing_omits_traffic_when_not_configured(db, monkeypatch):
 
 def test_briefing_includes_traffic_when_delay_is_significant(db, monkeypatch):
     """Meaningful delay surfaces the traffic section."""
+    # **kw absorbs the audited-seam parameters (reg/ctx/audited) that gather_context
+    # now passes; the stub's job is still just "return a significant delay".
     monkeypatch.setattr(briefing, "_traffic_brief",
-                        lambda db: "38 minutes to work. That's 14 minutes slower than usual — heavy traffic.")
+                        lambda db, **kw: "38 minutes to work. That's 14 minutes slower than usual — heavy traffic.")
     ctx = briefing.gather_context(db)
     assert "## Traffic" in ctx
     assert "heavy traffic" in ctx
