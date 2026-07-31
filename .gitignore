@@ -14,6 +14,15 @@ backend/static/
 .env.local
 *.log
 
+# Google OAuth client-secrets downloads. The bootstrap in app/google_oauth.py
+# takes one via --client-secrets and the app keeps NO token cache on disk, so
+# these should be used from ~/Downloads and deleted — never parked in the repo.
+# This is the backstop for when that discipline slips: one stray `git add -A`
+# would otherwise publish a live credential to a public repo. No leading slash,
+# so it matches at any depth.
+client_secret*.json
+client_secrets*.json
+
 # OS
 .DS_Store
 
