@@ -393,8 +393,27 @@ def gather_context(db: Session) -> str:
     ]
     if net_parts:
         sections.append("## Local network\n" + "\n\n".join(net_parts))
+    # Systems — the capability rollup, ONE line. Count only, with any amber/red
+    # named inline; the per-component detail stays on the status page and out of
+    # the brief, which is read aloud.
+    #
+    # THE SCOPED EXCEPTION to exception-first: an all-green rollup still says so,
+    # every day. Every other section here goes silent when it has nothing to
+    # report — but a monitor that only speaks up on failure is indistinguishable
+    # from a monitor that has stopped, and this is the one line whose job is to
+    # prove otherwise. It costs six words.
+    systems = _safe("systems", lambda: _capability_line(db))
+    if systems and not systems.startswith("("):
+        sections.append(f"## Systems\n{systems}")
     sections.append("## Not yet connected\n" + ", ".join(_PENDING_SECTIONS))
     return "\n\n".join(sections)
+
+
+def _capability_line(db) -> str:
+    """The one-line capability rollup for the brief. Returns "" when nothing is
+    seeded — a brief should not narrate an empty rollup (the PR #44 rule)."""
+    from app.capabilities import brief_line
+    return brief_line(db)
 
 
 _BRIEF_INSTRUCTIONS = """

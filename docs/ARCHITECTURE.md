@@ -309,7 +309,7 @@ Postgres on Fly (SQLite in dev/tests). 33 tables in `backend/app/models.py`:
 | Projects | `project`, `milestone`, `project_document` (multi-session arcs — see below) |
 | Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` (+ `request_id`, and a descriptive `trigger` that no health check reads), `location_requests` (the server-initiated ask a ping answers) |
 | App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below), `scheduler_heartbeat` (briefing-scheduler proof-of-life + catch-up state) |
-| Health | `component` (topology inventory), `remediation` (fault→runbook), `health_result` (transient current status) |
+| Health | `component` (topology inventory), `remediation` (fault→runbook), `health_result` (transient current status), `capability` + `capability_member` (the user-facing rollup — see below), `evaluator_heartbeat` (proof-of-life for health checking *itself*) |
 
 **Project tracking** (`app/handlers/projects.py`, `docs/TDD-project-tracking.md`): the durable
 answer to "where am I on this?" Every multi-session arc previously lived in session close-out
@@ -372,6 +372,32 @@ PR-0 truthful-audit epoch onward — pre-epoch rows are `ok` by construction and
 evidence. `status_payload(db)` (behind `GET /api/status/full`) runs the checks, upserts
 `health_result`, and joins the runbook + evidence for anything not-ok. *The exception-first page
 is PR-E.*
+
+**Capability rollup** (`app/capabilities.py`, `docs/TDD-capability-status.md`): components
+answer *"is this part working"*; capabilities answer *"can she still do the thing"*, which is
+the question actually asked. `capability` + `capability_member` group component health into
+**8 live** capabilities (Location, Calendar, Morning brief, Project tracking, Memory,
+Voice+SMS, Self-health, Contacts) and **2 gated** (Flight booking behind `booking_enabled`;
+Local network, whose members are LAN stubs unreachable from Fly). Gated capabilities are
+reported as not-configured, never omitted — silent absence is how a capability stops being
+noticed. Each capability has exactly one **primary** member: primary `down` → red, primary
+`degraded` → amber, any non-primary fault → amber, primary `unknown` → unknown (never green).
+A non-primary `unknown` is surfaced but does not move the rollup — for a contributor, absence
+of evidence is weaker than evidence of failure. Trunk components are **explicit-only** members
+and their faults render above the rollup, not inside it. Non-ok capabilities carry their
+**driving member**'s stored runbook (never improvised). Surfaced at `GET
+/api/status/capabilities` (auth-gated, no secrets) and as a one-line morning-brief section.
+Seeded/reconciled from code by `seed_health_topology`, never frozen into a migration.
+
+**`health_evaluator`** — the health system's component for *itself*. The worker runs
+`run_health_cycle` every `health_cycle_seconds` (300s), stamping `evaluator_heartbeat`; the
+check reads staleness against a seeded 900s (three missed cycles). Without it, "self-health:
+ok" could only mean "what health checks depend on is ok", never "health checking is running",
+so an evaluator that silently stopped would leave every stale green looking current.
+`status_payload` deliberately does **not** stamp the heartbeat — otherwise viewing the status
+page would prove the evaluator alive by the act of asking. Faults: `evaluator_stale` (nothing
+is recomputing — every other reading is suspect) and `rollup_incoherent` (a capability names a
+missing or disabled component).
 
 **Runtime settings overlay** (`app/runtime_settings.py`, health TDD §7): a bounded
 allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the four
@@ -500,7 +526,10 @@ chat + history, memory CRUD + audit, agent-config CRUD, action audit, briefing o
 runtime settings (`GET /settings` effective-value+source, `PUT /settings/{key}` — 403 for a
 safety-critical key without confirm, 404 for a non-allow-list key), the true status surface
 (`GET /status/full` — runs every health check fresh, joins each not-ok component's stored
-runbook + recent failing audit rows as evidence; auth-gated, no secrets), projects
+runbook + recent failing audit rows as evidence; auth-gated, no secrets), the capability
+rollup (`GET /status/capabilities` — runs the checks fresh then groups them into the 8 live +
+2 gated capabilities, each non-ok one carrying its driving member's runbook; auth-gated, no
+secrets), projects
 (`GET /projects` read model with progress + anomalies, `POST /projects/action` — the SINGLE write
 path, which runs a project tool through the registry exactly as a phone call would and fails
 closed against the wider registry), health probes — plus
