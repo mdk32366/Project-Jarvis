@@ -378,7 +378,11 @@ allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the f
 `quiet_hours_*` fields, `outbound_calls_enabled`, `max_outbound_calls_per_hour`, the
 `location_active_start/end_hour` active window, the location-pull trio
 (`location_pull_enabled`, `location_pull_interval_minutes`, `location_pull_timeout_seconds`),
-and `voice_speech_timeout_seconds` (the `<Gather>` end-of-turn silence, 1–10s, default 3) —
+`location_log_nonce` (diagnostic, **default off** — logs the received nonce value, quoted,
+when a ping carries one that closes no request; the *fact* of a miss is always logged, only
+the *value* is gated, because per-ping logging of a client-supplied field does not belong
+always-on), and `voice_speech_timeout_seconds` (the `<Gather>` end-of-turn silence, 1–10s,
+default 3) —
 each overridable at runtime without a redeploy. `get_effective(db, key)` returns the
 `runtime_settings` override if present, else the env/`Settings` default (never mutating the
 `@lru_cache` singleton). Every runtime reader of one of these keys reads through
@@ -512,4 +516,4 @@ All env-driven via pydantic `Settings` (`backend/app/config.py`):
 - **Kill switches**: `enable_trading=False`, `booking_enabled=False`, `voice_enabled`, `outbound_calls_enabled`, `briefing_enabled`, `enable_reflector`, `episodes_enabled`
 - **Identity**: `OWNER_*` block — Tier-1 ground truth and Duffel passenger data
 - **Whitelists**: `ALLOWED_SENDERS`, `ALLOWED_NUMBERS` — the only identities that may command JARVIS
-- **Location**: `LOCATION_TOKEN` (phone→server shared secret), `AUTOREMOTE_KEY` (server→phone pull dispatch; both are secrets and neither is runtime-overridable), `location_pull_enabled/interval_minutes/timeout_seconds`, `location_active_start/end_hour`
+- **Location**: `LOCATION_TOKEN` (phone→server shared secret), `AUTOREMOTE_KEY` (server→phone pull dispatch; both are secrets and neither is runtime-overridable), `location_pull_enabled/interval_minutes/timeout_seconds`, `location_active_start/end_hour`, `location_log_nonce` (diagnostic, default off)

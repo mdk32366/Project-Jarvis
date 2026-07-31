@@ -496,29 +496,33 @@ async def location_ingest(request: Request, db: Session = Depends(get_db)):
     # unknown or stale nonce loses the correlation, never the fix.
     from app.handlers.location import close_request
 
-    # A ping that carries the field but closes no request is the debugging case: the
-    # value is not persisted anywhere, so if it isn't logged here it is gone. Say
-    # WHICH way it failed — unresolved, empty, and unmatched have three different
-    # causes on the phone, and the old single line collapsed them into silence.
-    # Always quoted, so whitespace and an empty value are visible rather than
-    # reading as a clean miss. Safe to log in full: the nonce is a CORRELATOR, not a
-    # credential (see above) — the token already authenticated. Bounded only because
-    # the value is client-supplied.
-    raw_nonce = str(body.get("nonce") or "") if "nonce" in body else None
-    nonce = (raw_nonce or "").strip()
+    nonce = str(body.get("nonce") or "").strip()
     req = None
-    if raw_nonce is not None:
-        if not nonce:
-            log.info("location ping nonce empty: '%s' — dropped, no close attempted",
-                     raw_nonce[:64])
-        elif nonce.startswith("%"):             # Tasker sends a literal %arpar1 when unset
-            log.info("location ping nonce unresolved: '%s' — dropped, no close attempted",
-                     nonce[:64])
-        else:
-            req = close_request(db, nonce)
-            if req is None:
+    if nonce and not nonce.startswith("%"):     # Tasker sends a literal %arpar1 when unset
+        req = close_request(db, nonce)
+        if req is None:
+            # THAT a nonce missed is always logged; WHAT it held only under the
+            # `location_log_nonce` flag (default off — per-ping logging of a
+            # client-supplied value does not belong always-on in main).
+            #
+            # The flag exists because the phone-side body template and profile
+            # wiring are pinned by nothing — no committed export — so a device-side
+            # edit can break this round trip again with no other trace. On
+            # 2026-07-31 the value was what diagnosed it, and the fact never could
+            # have: a stray '%' on an otherwise byte-perfect nonce.
+            #
+            # Quoted so whitespace is visible rather than reading as a clean miss;
+            # bounded because the value is client-supplied (the mint emits exactly
+            # 22 chars, so anything at the cap is itself diagnostic). Safe to log:
+            # the nonce is a CORRELATOR, not a credential — the token above already
+            # did all the authenticating.
+            from app.runtime_settings import get_effective
+
+            if get_effective(db, "location_log_nonce"):
                 log.info("location ping nonce unmatched: '%s' — recording the fix unlinked",
                          nonce[:64])
+            else:
+                log.info("location ping carried an unknown nonce; recording it unlinked")
 
     # How the fix arrived, as the client describes it. Descriptive only — nothing
     # in the health path reads it, because a client-supplied field must never be
