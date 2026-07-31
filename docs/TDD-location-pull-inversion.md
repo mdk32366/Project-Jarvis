@@ -484,6 +484,52 @@ password manager at creation time, not later.
 | `location_pull_interval_minutes` | `15` |
 | `location_pull_timeout_seconds` | `120` |
 | `location_active_hours_start` / `_end` | reuse existing active-hours values |
+| `location_log_nonce` | `false` — diagnostic, see §9.1 |
+
+### 9.1 `location_log_nonce` — naming the received nonce
+
+Added 2026-07-31, after the four-fault hunt (`docs/SESSION-closeout-2026-07-31.md`).
+
+When a ping carries a nonce that closes no request, the value is not persisted
+anywhere — so if it is not logged, it is gone. With the flag on, `/api/location`
+names it, quoted, in whichever of three shapes it arrived:
+
+| Shape | Line | What it means on the phone |
+|---|---|---|
+| empty | `nonce empty: '   '` | the field populates blank — filter / trigger mismatch |
+| unresolved | `nonce unresolved: '%armessage'` | the variable never resolved — wiring |
+| unmatched | `nonce unmatched: 'abc…'` | real value, wrong string — encoding / whitespace |
+
+**Default off, and that is load-bearing:** `main` must not carry always-on per-ping
+logging of a client-supplied value. Flag off still reports *that* an unmatched
+nonce missed (the pre-instrumentation generic line); only the *value* is gated.
+
+**Why all three shapes and not just `unmatched`.** PR #47 first gated `unmatched`
+alone. Both faults found on 07-31 — a stray `%` prepended to a byte-perfect nonce,
+and the literal `%armessage` from an unpopulated variable — classify as
+**`unresolved`**, because the `startswith("%")` guard diverts them before
+`close_request` is ever called. Unmatched-only gating would have kept the exact
+class the instrumentation was built for invisible at every flag setting. Widened
+in the follow-up (order 1, 2026-07-31).
+
+**Quoting is the point, not decoration.** `'%U4GkiaJiPFBCHIBweXwLug'` and
+`'%armessage'` are both "unresolved", need *opposite* fixes, and no boolean
+distinguishes them. The first is a good nonce wearing a junk character; the second
+is a variable that never populated.
+
+**Logging the value is safe.** The nonce is a CORRELATOR, not a credential —
+`X-Jarvis-Token` does all the authenticating (§4). Bounded at 64 chars because the
+value is client-supplied; the mint emits exactly 22, so anything at the cap is
+itself diagnostic.
+
+**Matching behaviour is untouched by the flag.** The `%`-guard still governs
+whether a close is *attempted*, in either state: a literal is never looked up as a
+nonce, and the fix is never lost.
+
+**This flag is a workaround for a missing instrument.** The phone-side body
+template and profile wiring are pinned by nothing — see §8 and the still-owed
+`devices/jarvis-location-pull.prj.xml` export. Once that export exists and is
+reviewable, this becomes a convenience rather than the only window.
 
 ---
 

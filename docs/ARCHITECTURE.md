@@ -379,9 +379,11 @@ allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the f
 `location_active_start/end_hour` active window, the location-pull trio
 (`location_pull_enabled`, `location_pull_interval_minutes`, `location_pull_timeout_seconds`),
 `location_log_nonce` (diagnostic, **default off** — logs the received nonce value, quoted,
-when a ping carries one that closes no request; the *fact* of a miss is always logged, only
+when a ping carries one that closes no request, in whichever of three shapes it arrived:
+`empty` / `unresolved` / `unmatched`. The *fact* of an unmatched miss is always logged, only
 the *value* is gated, because per-ping logging of a client-supplied field does not belong
-always-on), and `voice_speech_timeout_seconds` (the `<Gather>` end-of-turn silence, 1–10s,
+always-on. All three shapes are covered because both 2026-07-31 faults classified as
+`unresolved` — see TDD-location-pull-inversion §9.1), and `voice_speech_timeout_seconds` (the `<Gather>` end-of-turn silence, 1–10s,
 default 3) —
 each overridable at runtime without a redeploy. `get_effective(db, key)` returns the
 `runtime_settings` override if present, else the env/`Settings` default (never mutating the
