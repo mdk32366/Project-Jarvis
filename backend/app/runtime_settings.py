@@ -65,6 +65,13 @@ ALLOWED_KEYS: dict[str, _Key] = {
     "location_pull_enabled":           _Key("bool"),
     "location_pull_interval_minutes":  _Key("int", min=5, max=240),
     "location_pull_timeout_seconds":   _Key("int", min=30, max=900),
+    # Diagnostic only, default off. Flipping it on logs the received nonce when one
+    # closes no request — the value, not just the fact. Not safety-critical: it gates
+    # a log line, never an action. Not a secret either way: the nonce is a correlator
+    # and X-Jarvis-Token does the authenticating. Live-tunable because the failure it
+    # diagnoses is intermittent and a redeploy to observe it is the thing that made
+    # the 2026-07-31 hunt cost a day.
+    "location_log_nonce":              _Key("bool"),
     # <Gather> speech end-of-turn timeout. Behavioural, not secret, not safety-
     # critical: a bad value makes calls awkward, it does not gate an action. Below
     # 1 is unusable; above ~10 the caller believes the line is dead. Tuned live

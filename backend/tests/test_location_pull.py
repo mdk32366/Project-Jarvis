@@ -486,3 +486,68 @@ def test_autoremote_key_is_not_runtime_overridable():
 
     assert "autoremote_key" not in ALLOWED_KEYS
     assert "location_pull_enabled" in ALLOWED_KEYS
+
+
+# ── nonce diagnostics: the value is gated, the miss is not ───────────────────
+#
+# The 2026-07-31 hunt (four faults, one symptom) turned on making the RECEIVED
+# nonce visible: a stray '%' on an otherwise byte-perfect nonce, which no boolean
+# could have shown. The instrumentation stayed, behind a flag — because the
+# phone-side body template and profile wiring are pinned by nothing, so this
+# class of break recurs, and because per-ping logging of a client-supplied value
+# does not belong always-on in main. These two properties are the deal.
+
+def test_flag_defaults_off_and_the_value_is_not_logged(client, db, _token, caplog):
+    """Default off is the load-bearing half: `main` must not carry always-on
+    per-ping nonce logging. The MISS is still reported — losing that would be a
+    regression on the pre-instrumentation behaviour, not a return to it."""
+    import logging
+
+    from app.runtime_settings import get_effective
+
+    assert get_effective(db, "location_log_nonce") is False
+    caplog.set_level(logging.INFO, logger="app.routes")
+
+    _post_ping(client, {"lat": 48.5, "lon": -122.6, "nonce": "no-such-nonce"})
+
+    said = [r.getMessage() for r in caplog.records if "nonce" in r.getMessage()]
+    assert said == ["location ping carried an unknown nonce; recording it unlinked"]
+    assert not any("no-such-nonce" in m for m in said)      # the VALUE stayed out
+
+
+def test_flag_on_names_the_received_value(client, db, _token, caplog):
+    """And the other half: flipped on, it prints what actually arrived, quoted —
+    which is the only thing that identifies a phone-side edit."""
+    import logging
+
+    from app.runtime_settings import set_effective
+
+    set_effective(db, "location_log_nonce", True, actor="test")
+    caplog.set_level(logging.INFO, logger="app.routes")
+
+    _post_ping(client, {"lat": 48.5, "lon": -122.6, "nonce": "no-such-nonce"})
+
+    said = [r.getMessage() for r in caplog.records if "nonce" in r.getMessage()]
+    assert said == [
+        "location ping nonce unmatched: 'no-such-nonce' — recording the fix unlinked"
+    ]
+
+
+def test_the_guard_still_refuses_to_look_up_a_literal(client, db, _token, caplog):
+    """`empty` and `unresolved` were dropped: they never reach close_request, so
+    they log nothing in EITHER flag state. Pinned because the 2026-07-31 faults
+    both landed in that branch — if this class is ever wanted visible again, it
+    is a deliberate change, not an accident."""
+    import logging
+
+    from app.runtime_settings import set_effective
+
+    set_effective(db, "location_log_nonce", True, actor="test")
+    caplog.set_level(logging.INFO, logger="app.routes")
+
+    for junk in ("%armessage", "%arpar1", "   "):
+        r = _post_ping(client, {"lat": 48.5, "lon": -122.6, "nonce": junk})
+        assert r.status_code == 200                        # the fix is never lost
+        assert db.get(LocationPing, r.json()["id"]).request_id is None
+
+    assert [r.getMessage() for r in caplog.records if "nonce" in r.getMessage()] == []

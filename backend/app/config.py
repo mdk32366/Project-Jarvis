@@ -190,6 +190,12 @@ class Settings(BaseSettings):
     # A request unanswered for this long is swept to `timeout`. Without the sweep,
     # `pending` rows accumulate and the responsiveness check can never read false.
     location_pull_timeout_seconds: int = 120
+    # Log the RECEIVED nonce, quoted, when a ping carries one that closes no request.
+    # OFF by default: it is per-ping logging of a client-supplied value, which does
+    # not belong always-on. On for a diagnosis only. The phone-side body template and
+    # profile wiring are pinned by NOTHING (no committed export), so this class of
+    # break recurs — and only the VALUE identifies it. See docs/SESSION-closeout-2026-07-31.md.
+    location_log_nonce: bool = False
     # Fly secret age past this many days is flagged as "aging" (real Fly metadata,
     # not a fabricated countdown). The health check reads it hourly-cached.
     secret_age_flag_days: int = 90
