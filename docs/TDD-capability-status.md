@@ -240,16 +240,48 @@ But a monitor that only speaks up on failure is indistinguishable from a monitor
 that has stopped, and this is the one line whose job is to prove otherwise. It
 costs six words.
 
-## 9. Fixed in passing — a runbook that could never join
+## 9. The runbook join — found here, closed in a follow-up
 
-`check_liveness` emits fault code `call_failed`. The only runbooks for
+`check_liveness` emits exactly one fault code: `call_failed`. The runbooks for
 `google_calendar_svcacct` and `google_oauth` were keyed to `auth_invalid` /
 `token_expired` — codes **no check produces**. So the live, four-day-old calendar
-outage rendered on the status page with no runbook at all.
+outage rendered on the status page naming the fault and offering nothing.
 
-Runbooks keyed to `call_failed` added for both. The aspirational codes are left in
-place for when a check emits them. Pinned by
-`test_the_live_calendar_fault_code_resolves_to_a_runbook`.
+The full audit that followed found the problem was not two rows:
+
+| | Count |
+|---|---|
+| Components that could go `down` with **no runbook at all** | **8** (`anthropic_api`, `twilio`, `gmail`, `google_maps`, `tavily`, `duffel`, `alpaca`, `nws`) |
+| Runbooks keyed to codes **no check emits** (dead on arrival) | **6** (`duffel/401`, `tavily/401`, `twilio/a2p_rejected`, `google_calendar_svcacct/auth_invalid`, `google_oauth/token_expired`, `google_oauth/token_missing_scope`) |
+
+Both closed in `fix/runbook-join-gaps`. Two things worth recording:
+
+**`postgres` is not in either list, and reading `check_type` says it should be.**
+It declares `check_type="liveness"` but `_APP_UP` **overrides** that and routes it
+to `check_app_up`, so it can never emit `call_failed`. Its real failure mode is
+the check raising — which is exactly what an unreachable database looks like from
+inside `SELECT 1` — so it is keyed to `check_error`. Any audit of this join that
+reads `check_type` alone gets `postgres` wrong.
+
+**The gap was pinned as intended behaviour.** `test_missing_runbook_degrades_
+gracefully` asserted `remediation is None` for a failing Duffel and called it
+graceful — its docstring said *"no seeded runbook"* as though that were the
+design. A test can encode a bug as a guarantee, and then the bug has a defender.
+
+### 9.1 The invariant, now enforced
+
+Two tests replace the hand audit, because the project arc is about to add checks
+and runbooks to this same join:
+
+- every `(component, emittable fault_code)` has a runbook
+- no runbook is keyed to a code no check emits
+
+`unknown`-tier codes (`no_evidence`, `no_heartbeat`, `no_requests`,
+`no_projects`) are deliberately excluded: they mean "no basis to judge", not "here
+is a fault to fix", and a runbook for them would be advice about an absence.
+
+Both guards were negative-validated — deliberately broken to confirm they fire —
+because an enforcement test that cannot fail is worse than none.
 
 ## 10. Known gaps
 

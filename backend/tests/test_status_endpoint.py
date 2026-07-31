@@ -60,14 +60,37 @@ def test_liveness_down_carries_evidence(db):
     assert d["evidence"][0]["status"] == "error"
 
 
-def test_missing_runbook_degrades_gracefully(db):
-    """Liveness emits a generic 'call_failed' with no seeded runbook — the payload
-    returns remediation=None (PR-E shows a generic message), never a crash."""
+def test_a_failing_component_now_carries_its_runbook(db):
+    """THE FIX. This test previously asserted `remediation is None` for a failing
+    duffel and called that graceful — it was pinning the BUG as intended
+    behaviour. `check_liveness` emits `call_failed`; nothing was keyed to it, so
+    eight components could go down showing a fault and no guidance. That is what a
+    real four-day calendar outage looked like on this page."""
     seed_health_topology(db)
     _audit(db, "search_flights", "error")
     d = next(c for c in status_payload(db)["checks"] if c["component"] == "duffel")
     assert d["fault_code"] == "call_failed"
-    assert d["remediation"] is None      # graceful: no matching row, still shows evidence
+    assert d["remediation"] is not None
+    assert "DUFFEL_API_KEY" in d["remediation"]["runbook"]
+
+
+def test_missing_runbook_degrades_gracefully(db):
+    """The graceful path is still real and still worth pinning — it just has to be
+    CONSTRUCTED now rather than found lying around. A runbook deleted at runtime
+    (or a check emitting a code nobody has written up yet) yields remediation=None
+    and still shows evidence, never a crash."""
+    from app.models import Remediation
+
+    seed_health_topology(db)
+    db.query(Remediation).filter(Remediation.component == "duffel",
+                                 Remediation.fault_code == "call_failed").delete()
+    db.commit()
+
+    _audit(db, "search_flights", "error")
+    d = next(c for c in status_payload(db)["checks"] if c["component"] == "duffel")
+    assert d["fault_code"] == "call_failed"
+    assert d["remediation"] is None
+    assert d["evidence"]                 # graceful: no runbook, still shows evidence
 
 
 def test_payload_is_not_a_secret_surface(db):

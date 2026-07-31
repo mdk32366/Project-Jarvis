@@ -120,25 +120,22 @@ _RETIRED: set[str] = {"location_pings"}
 # measure delivery (TDD §12).
 _RETIRED_REMEDIATIONS: set[tuple[str, str]] = {
     ("location_pull_scheduler", "dispatch_failing"),
+    # Keyed to fault codes NO CHECK EMITS, so they could never join and never
+    # rendered — a component would go `down` and the status page would show the
+    # fault with no guidance at all, which is how the four-day calendar outage
+    # was displayed. `check_liveness` emits exactly one code: `call_failed`.
+    # Their content is folded into the `call_failed` runbooks below, which DO
+    # join, rather than discarded.
+    ("duffel", "401"),
+    ("tavily", "401"),
+    ("twilio", "a2p_rejected"),
+    ("google_calendar_svcacct", "auth_invalid"),
+    ("google_oauth", "token_expired"),
+    ("google_oauth", "token_missing_scope"),
 }
 
 # (component, fault_code) -> runbook. The "place to start" (TDD §4.2 / build §2.1).
 _REMEDIATIONS: list[dict] = [
-    {"component": "google_oauth", "fault_code": "token_missing_scope", "severity": "critical",
-     "runbook": "Docs/Sheets/Contacts/Tasks scope missing or refresh token dead. "
-                "`cd backend && python -m app.google_oauth --client-secrets <path>`, then "
-                "`fly secrets set GOOGLE_OAUTH_REFRESH_TOKEN=<new>`."},
-    {"component": "google_oauth", "fault_code": "token_expired", "severity": "critical",
-     "runbook": "OAuth refresh token expired. Re-consent: "
-                "`cd backend && python -m app.google_oauth --client-secrets <path>`, then "
-                "`fly secrets set GOOGLE_OAUTH_REFRESH_TOKEN=<new>`."},
-    {"component": "google_calendar_svcacct", "fault_code": "auth_invalid", "severity": "critical",
-     "runbook": "Service account lost calendar scope or the calendar isn't shared with it. "
-                "Re-share the calendar with the service-account email (Make changes to events); "
-                "verify scope in scheduling.py."},
-    {"component": "duffel", "fault_code": "401", "severity": "warn",
-     "runbook": "Duffel rejected the key. Check DUFFEL_API_KEY; if live-mode, confirm activation "
-                "and prepaid balance."},
     {"component": "worker_scheduler", "fault_code": "heartbeat_stale", "severity": "critical",
      "runbook": "Worker not reporting (no heartbeat in the staleness window). "
                 "`fly apps restart jarvis-mdk`; confirm the log line "
@@ -173,11 +170,6 @@ _REMEDIATIONS: list[dict] = [
                 "command word and no '=:=' separator); the task reads %arpar1; Tasker location "
                 "permission is 'Allow all the "
                 "time'; Tasker battery is Unrestricted. See docs/tasker-setup-and-recovery.md."},
-    {"component": "twilio", "fault_code": "a2p_rejected", "severity": "warn",
-     "runbook": "SMS blocked by A2P. Re-register the brand under the EIN as a business and resubmit "
-                "the campaign with business framing. Voice is unaffected."},
-    {"component": "tavily", "fault_code": "401", "severity": "warn",
-     "runbook": "Tavily rejected the key. Check TAVILY_API_KEY; confirm the plan has credits."},
     # `call_failed` is what check_liveness actually emits. The two runbooks above
     # for google_calendar_svcacct/google_oauth are keyed to fault codes NO check
     # produces (`auth_invalid`, `token_expired`), so they could never join — a live
@@ -192,9 +184,77 @@ _REMEDIATIONS: list[dict] = [
                 "fallback) — the fix differs by path, and a service-account fault is instead "
                 "'re-share the calendar with the service-account email'."},
     {"component": "google_oauth", "fault_code": "call_failed", "severity": "critical",
-     "runbook": "A Google OAuth call failed (Docs/Sheets/Contacts/Tasks). Usually a dead or "
-                "de-scoped refresh token: `cd backend && python -m app.google_oauth "
-                "--client-secrets <path>`, then `fly secrets set GOOGLE_OAUTH_REFRESH_TOKEN=<new>`."},
+     "runbook": "A Google OAuth call failed (Docs/Sheets/Contacts/Tasks). Two causes, and the "
+                "evidence rows tell them apart: `invalid_grant` = the refresh token is dead or "
+                "revoked; a 403 naming a scope = the token was minted before that scope was "
+                "added. Both are fixed the same way — re-consent with `cd backend && python -m "
+                "app.google_oauth --client-secrets <path>`, then `fly secrets set "
+                "GOOGLE_OAUTH_REFRESH_TOKEN=<new>`. Adding a scope in code does NOT update an "
+                "existing token; it must be re-minted."},
+
+    # ── `call_failed` for every remaining liveness component ─────────────────
+    #
+    # `check_liveness` emits exactly ONE fault code. Before this, eight components
+    # could go `down` with no runbook at all — the status page would name the fault
+    # and then say nothing about it, which is what a real four-day calendar outage
+    # actually looked like. A runbook per emittable (component, code) is now
+    # enforced by test, so this cannot silently recur as checks are added.
+    #
+    # Each says what the failure MEANS for the user before what to do about it: a
+    # runbook that opens with a command assumes you already know why you are here.
+    {"component": "anthropic_api", "fault_code": "call_failed", "severity": "critical",
+     "runbook": "THE LLM IS FAILING — every agent is affected, so expect this to be the real "
+                "cause of unrelated-looking faults elsewhere. Check status.anthropic.com first; "
+                "then ANTHROPIC_API_KEY (`fly secrets list` shows presence, not value) and "
+                "whether the account is rate-limited or out of credit. Read the evidence rows: "
+                "a 401 is the key, a 429 is rate limiting, a 529 is upstream overload and "
+                "usually clears itself."},
+    {"component": "twilio", "fault_code": "call_failed", "severity": "critical",
+     "runbook": "SMS or voice is failing. VOICE AND SMS FAIL INDEPENDENTLY and share this one "
+                "component — read the evidence rows to see which. SMS blocked by A2P: "
+                "re-register the brand under the EIN as a business and resubmit the campaign "
+                "with business framing; voice is unaffected by that. Otherwise check "
+                "TWILIO_AUTH_TOKEN / TWILIO_ACCOUNT_SID, the number's capabilities, and account "
+                "balance."},
+    {"component": "gmail", "fault_code": "call_failed", "severity": "critical",
+     "runbook": "Outbound email is failing — drafts and confirmations will not be delivered. "
+                "GMAIL_APP_PASSWORD is an APP PASSWORD, not the account password, and it dies "
+                "when 2FA is reset or the app password is revoked. Regenerate at "
+                "myaccount.google.com/apppasswords and `fly secrets set GMAIL_APP_PASSWORD=<new>`."},
+    {"component": "google_maps", "fault_code": "call_failed", "severity": "warn",
+     "runbook": "Directions/Places are failing — traffic drops out of the brief and 'near me' "
+                "stops resolving. Usually billing rather than the key: confirm the Cloud project "
+                "still has billing enabled and that Directions API + Places API are both "
+                "enabled. Then check GOOGLE_MAPS_API_KEY and any HTTP-referrer restriction on it."},
+    {"component": "tavily", "fault_code": "call_failed", "severity": "warn",
+     "runbook": "Web research is failing — the researcher agent returns nothing and the news "
+                "section drops from the brief. A 401 is the key; a 432/quota response means the "
+                "plan is out of credits. Check TAVILY_API_KEY and the plan balance at "
+                "tavily.com."},
+    {"component": "duffel", "fault_code": "call_failed", "severity": "warn",
+     "runbook": "Flight search/booking is failing. A 401 means Duffel rejected the key — check "
+                "DUFFEL_API_KEY, and if it is a LIVE-mode key confirm the account is activated "
+                "and has prepaid balance (test keys work while live keys 401 on an "
+                "un-activated account). Note booking is gated behind `booking_enabled` "
+                "separately, so this can fail while nothing user-visible is broken."},
+    {"component": "alpaca", "fault_code": "call_failed", "severity": "warn",
+     "runbook": "Market data is failing. Check ALPACA_API_KEY / ALPACA_SECRET_KEY and that the "
+                "base URL matches the key's environment (paper keys against the live endpoint "
+                "401, and vice versa). Read-only market data only — no order path is affected."},
+    {"component": "nws", "fault_code": "call_failed", "severity": "info",
+     "runbook": "Weather/marine is failing — those sections drop out of the brief, which is a "
+                "degraded brief, not a broken one. NWS needs no API key, so this is almost "
+                "always upstream: check api.weather.gov. It also 404s legitimately for a "
+                "point outside US coverage, so confirm the configured home address first."},
+    # postgres runs check_app_up (which OVERRIDES its check_type), so it cannot emit
+    # `call_failed`. Its only failure mode is the check raising — which is exactly
+    # what an unreachable database looks like from inside `SELECT 1`.
+    {"component": "postgres", "fault_code": "check_error", "severity": "critical",
+     "runbook": "THE DATABASE IS UNREACHABLE — `SELECT 1` raised. Nothing durable is being "
+                "written: no audit rows, no health results, no jobs. Every other status on this "
+                "page is suspect because they are all read from it. Check `fly status -a "
+                "jarvis-mdk` and the Postgres attachment; confirm DATABASE_URL is set and the "
+                "database has not run out of disk."},
     # The meta-check's own faults. A runbook here is load-bearing in a way the
     # others are not: when this fires, every other reading on the page is suspect.
     {"component": "health_evaluator", "fault_code": "evaluator_stale", "severity": "critical",
