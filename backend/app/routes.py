@@ -496,33 +496,49 @@ async def location_ingest(request: Request, db: Session = Depends(get_db)):
     # unknown or stale nonce loses the correlation, never the fix.
     from app.handlers.location import close_request
 
-    nonce = str(body.get("nonce") or "").strip()
-    req = None
-    if nonce and not nonce.startswith("%"):     # Tasker sends a literal %arpar1 when unset
-        req = close_request(db, nonce)
-        if req is None:
-            # THAT a nonce missed is always logged; WHAT it held only under the
-            # `location_log_nonce` flag (default off — per-ping logging of a
-            # client-supplied value does not belong always-on in main).
-            #
-            # The flag exists because the phone-side body template and profile
-            # wiring are pinned by nothing — no committed export — so a device-side
-            # edit can break this round trip again with no other trace. On
-            # 2026-07-31 the value was what diagnosed it, and the fact never could
-            # have: a stray '%' on an otherwise byte-perfect nonce.
-            #
-            # Quoted so whitespace is visible rather than reading as a clean miss;
-            # bounded because the value is client-supplied (the mint emits exactly
-            # 22 chars, so anything at the cap is itself diagnostic). Safe to log:
-            # the nonce is a CORRELATOR, not a credential — the token above already
-            # did all the authenticating.
-            from app.runtime_settings import get_effective
+    # THAT a nonce missed is logged unconditionally; WHAT it held only under the
+    # `location_log_nonce` flag (default off — per-ping logging of a client-supplied
+    # value does not belong always-on in main).
+    #
+    # The flag covers ALL THREE shapes, not just `unmatched`. Both faults diagnosed
+    # on 2026-07-31 — a stray '%' prepended to a byte-perfect nonce, and the literal
+    # '%armessage' from an unpopulated Tasker variable — landed in `unresolved`.
+    # Gating only `unmatched` would have kept the exact class the instrumentation was
+    # built for invisible at every flag setting. The phone-side body template and
+    # profile wiring are pinned by NOTHING (they live on the device), so the class
+    # recurs, and `unresolved` is what it looks like.
+    #
+    # Each shape is named because they have three different causes on the phone:
+    # empty = the field populates blank (filter/trigger mismatch); unresolved = the
+    # variable never resolved (wiring); unmatched = a real value that is the wrong
+    # string (encoding/whitespace). Always quoted, so whitespace is visible rather
+    # than reading as a clean miss; bounded because the value is client-supplied (the
+    # mint emits exactly 22 chars, so anything at the cap is itself diagnostic).
+    # Safe to log: the nonce is a CORRELATOR, not a credential — the token above
+    # already did all the authenticating.
+    from app.runtime_settings import get_effective
 
-            if get_effective(db, "location_log_nonce"):
-                log.info("location ping nonce unmatched: '%s' — recording the fix unlinked",
+    raw_nonce = str(body.get("nonce") or "") if "nonce" in body else None
+    nonce = (raw_nonce or "").strip()
+    req = None
+    if raw_nonce is not None:
+        name_the_value = get_effective(db, "location_log_nonce")
+        if not nonce:
+            if name_the_value:
+                log.info("location ping nonce empty: '%s' — dropped, no close attempted",
+                         raw_nonce[:64])
+        elif nonce.startswith("%"):             # Tasker sends a literal %arpar1 when unset
+            if name_the_value:
+                log.info("location ping nonce unresolved: '%s' — dropped, no close attempted",
                          nonce[:64])
-            else:
-                log.info("location ping carried an unknown nonce; recording it unlinked")
+        else:
+            req = close_request(db, nonce)
+            if req is None:
+                if name_the_value:
+                    log.info("location ping nonce unmatched: '%s' — recording the fix unlinked",
+                             nonce[:64])
+                else:
+                    log.info("location ping carried an unknown nonce; recording it unlinked")
 
     # How the fix arrived, as the client describes it. Descriptive only — nothing
     # in the health path reads it, because a client-supplied field must never be
