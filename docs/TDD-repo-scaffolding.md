@@ -94,12 +94,12 @@ manager at creation. Fly secrets are write-only once set.
 
 ### 4.3 Repo visibility — KEEL doctrine
 
-> **RECONCILED 2026-08-01 — UNRESOLVED CONFLICT, needs ratification before build.**
-> Shipped code defaults the opposite way: `_create_project_from_idea` reads
-> `private = bool(args.get("private", True))` — **private by default** — and
-> `tests/test_ideas.py:294` pins `private is True`. This section says public by
-> default. Both cannot stand, and this is a security-relevant default that must
-> not be settled by whichever code gets written last. See §11.3.
+> **RECONCILED 2026-08-01 → RATIFIED: public stands.** Shipped code defaults the
+> opposite way (`_create_project_from_idea`: `private = bool(args.get("private", True))`,
+> pinned by `tests/test_ideas.py:294`). The owner ratified **this section**, not the
+> code: KEEL doctrine wins, new project repos are created public by default, and the
+> code changes to match. See §11.3 for the consequence — **this makes the secret
+> scanner a precondition of the flip, not a companion to it.**
 
 New project repos are created **public** by default, per current KEEL doctrine:
 the Planner AI (browser chat) can only connect directly to public repos, so a
@@ -375,16 +375,43 @@ means the *common* path (idea commits) holds creation rights it never uses.
 That is a real defence-in-depth point. It is **not** a capability blocker, and
 it should not be presented to the owner as owner-action-required.
 
-### 11.3 Visibility default — doc and code disagree (§4.3) — **NEEDS RATIFICATION**
+### 11.3 Visibility default — **RATIFIED 2026-08-01: public**
 
-Code: private by default, pinned by a test. Doc: public by default, on the KEEL
-argument that a Planner AI in a browser chat can only connect to public repos.
+Code said private by default, pinned by a test. This TDD said public, on the KEEL
+argument that a Planner AI in a browser chat can only connect to public repos — so
+a private day-one repo cannot be brought into a session like the ones that produced
+this arc. **The doctrine wins and the code changes to match.**
 
-Both positions are coherent; they cannot both be the default. This is the one
-item in the pass that is a **decision, not a finding**, and it is the owner's to
-make. Flagged rather than resolved. Whichever way it goes, the losing side's test
-gets updated deliberately and the reason recorded here — a security-relevant
-default that flips because someone edited a fixture is how defaults rot.
+Recorded here rather than left as a shared assumption, for the same reason the 24h
+session expiry was recorded in `design-note-latch-failures.md` §7: no code changed
+at the moment of the decision, so the ratification *is* the deliverable. A
+security-relevant default that flips because someone edited a fixture is how
+defaults rot.
+
+**The consequence, and it is a hard sequencing constraint, not a note.** §4.3
+already says it — *"a public repo means every document committed is public at the
+moment of the commit"* — but it is now load-bearing rather than cautionary. Under a
+private default, shipping the scaffold before the scanner leaked nothing. Under a
+public default it can. Therefore:
+
+> **The secret scanner (build step 1) is a PRECONDITION of the visibility flip
+> (build step 6), not a companion to it.** They may not land in the same PR with
+> the flip first, and the flip may not be pulled forward "since it's a one-line
+> default." KEEL's own argument for building public is that it makes secrets
+> discipline *structurally enforced rather than optional* — that argument is only
+> honest once the enforcement exists.
+
+**Open sub-decision, deliberately not settled here.** The ratified default was
+argued for *project inception* repos, which need to be Planner-connectable. It is
+not obvious the same reasoning reaches `create_project_from_idea`, where flipping
+the default silently changes a shipped, owner-facing behaviour: "promote idea #7"
+currently yields a private repo and would begin yielding a public one, with the
+idea body — free text captured from SMS and voice — public at the moment of the
+seed commit. Two defensible resolutions: apply the public default uniformly (one
+rule, no surprises about which path you are on), or scope it to
+`create_project_repo` and leave idea promotion private (the two paths already
+serve different purposes, per §11.6). **Decide at build step 6, with the scanner
+already in place either way.**
 
 ### 11.4 The scanner is a retrofit with live exposure (§4.5)
 
@@ -464,8 +491,13 @@ exposure first, and refuses to spend effort on a second repo-creation path.
 | 3 | Migration 0027, `github_write_log`; backfill the existing write paths into it | Was step 1; `repo_url`/`url` dropped (exist) |
 | 4 | `commit_document` — branch + PR (Git Refs + Pulls API), tier→path enforcement | Genuinely new; was step 3 |
 | 5 | Scaffold template stored + versioned in-repo | Unchanged |
-| 6 | **Generalise** `create_project_from_idea` → `create_project_repo` | Was "build, gated"; now a refactor |
+| 6 | **Generalise** `create_project_from_idea` → `create_project_repo`; flip the visibility default to public (§11.3) and update `test_ideas.py:294` deliberately | Was "build, gated"; now a refactor + the ratified flip |
 | 7 | `github` component + `github_writes` check reading the write log + runbooks | Unchanged, with §11.7's substrate pinned |
 
 Steps 1 and 2 are independent of the project-management arc and can ship without
-TDD #2. **§11.3 must be ratified before step 6**, not during it.
+TDD #2.
+
+**Step 1 gates step 6** (§11.3): the visibility flip may not land before the
+scanner covers every writer. This is the one ordering constraint in the list that
+is a safety property rather than a convenience — the others can be resequenced if
+something more urgent surfaces; this one cannot.
