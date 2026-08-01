@@ -329,6 +329,12 @@ delete — `ideas.status` is orthogonal to the older `ideas.promoted_url`, which
 GitHub *repo* exists. All tools ungated (reversible bookkeeping must not dilute the gate) and all
 voice-reachable, because "where am I" is a question asked from a boat.
 
+> **TDD #3 (repo scaffolding & document commits) is COMPLETE** as of 2026-08-01 — steps 1–7
+> shipped in PRs #53–#57. The five subsections below are its surface: the write log, the secret
+> scanner, the scaffold template, document commits, gated repo creation, and the write-health
+> component. `docs/TDD-repo-scaffolding.md` §11 records where the draft disagreed with the code
+> and what was ratified instead.
+
 **GitHub writes** (`github_write_log`, `docs/TDD-repo-scaffolding.md` §5/§7/§11): one row per
 *attempted* write — `operation` (`create_repo` / `commit_doc` / `open_pr`), `target`, `ref`, `ok`,
 `error`. It exists because a partial write is currently invisible: the shipped repo-seeding loop in
@@ -373,6 +379,21 @@ subtree), and `render_scaffold` **refuses to render an incomplete template** —
 excludes `*.md`, three of the six files are markdown, and an image missing them would seed repos
 with no README while every offline test passed. `.dockerignore` carries a negation for the
 template path; the completeness check is what makes a regression of it loud.
+
+**GitHub write health** (`github_writes` component, `check_github_writes`, TDD #3 §7): reads
+`github_write_log` over a 7-day window — `ok` when every write landed, `degraded` on any failure,
+`unknown` when nothing was written (no evidence is not health), and **never `down`**, because
+being unable to commit a document is not the system being down. Same amber ceiling as
+`project_hygiene`, and stated on the component so it can't become a surprise. **The substrate is
+the point**: it reads the write log, *not* `actions_audit`, because the routine thing exercising
+GitHub is the `commit_idea` job and jobs write no audit rows — an audit-derived check here would
+be starved from birth. That was designed out at #53 by landing the table ahead of its writers, and
+is pinned by a test that fails if the check ever reads the audit table instead. Declared
+`external_api` / `depends_on: GITHUB_TOKEN` by analogy to `tavily`/`gmail`/`duffel`. One
+`write_failed` fault code, deliberately not split by operation: a `CheckResult` carries one code,
+so a window holding both a failed create and a failed commit would have to misreport one — the
+operation lives in the detail instead. The detail summarises status/operation/target and never
+round-trips stored `error` text onto the status page.
 
 **Repo creation** (`create_project_repo`, `app/handlers/repos.py`, TDD #3 §4.3/§6.2 — **GATED**):
 creates a repository for a tracked project and seeds the versioned scaffold. Gated because

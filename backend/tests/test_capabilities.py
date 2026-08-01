@@ -342,6 +342,10 @@ _EMITTABLE_FAULTS = {
     "location_responsiveness": {"not_answering"},
     "project_hygiene":         {"record_stale"},
     "health_evaluator":        {"evaluator_stale", "rollup_incoherent"},
+    # `no_evidence` is emitted alongside `unknown`, not a fault status — but it
+    # IS a code the check produces and therefore something the surface can try
+    # to join, so it needs a runbook like any other or the join renders blank.
+    "github_writes":           {"write_failed", "no_evidence"},
 }
 
 

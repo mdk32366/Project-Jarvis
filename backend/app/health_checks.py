@@ -40,7 +40,8 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.health import component_for_tool, get_runbook
 from app.models import (
-    ActionAudit, Component, HealthResult, LocationRequest, SchedulerHeartbeat,
+    ActionAudit, Component, GithubWriteLog, HealthResult, LocationRequest,
+    SchedulerHeartbeat,
 )
 
 log = logging.getLogger(__name__)
@@ -241,6 +242,66 @@ def check_location_responsiveness(db: Session, c: Component) -> CheckResult:
     )
 
 
+def check_github_writes(db: Session, c: Component) -> CheckResult:
+    """*Are JARVIS's writes to GitHub landing?* (TDD #3 §7)
+
+    **READS `github_write_log`, NOT `actions_audit` — and that is the whole
+    reason this check exists in the shape it does.** The routine thing that
+    exercises GitHub is the `commit_idea` JOB, and jobs write no `actions_audit`
+    rows; an audit-derived check here would be starved from birth — `unknown`
+    forever, or latched on its first failure with nothing able to clear it. That
+    is the calendar latch, and it was designed out at #53 by landing this table
+    ahead of its writers rather than discovered afterwards.
+
+    NEVER returns `down`, capped at `degraded` (§7). Being unable to commit a
+    document is not the system being down: the app runs, a write just didn't
+    land. Inflating that to `down` would train the eye to ignore the status page,
+    which is the exception-first design's whole concern — the same amber ceiling
+    `check_project_hygiene` carries, and stated here for the same reason.
+
+    The detail line summarises status + operation + target. It deliberately does
+    NOT surface `github_write_log.error` verbatim. That field is value-free by
+    #54's invariant, but this result renders on the status page, and a check that
+    round-trips stored error text is one refactor away from being the thing that
+    republishes a secret somebody's scanner caught.
+    """
+    cfg = _cfg(c)
+    days = cfg.get("window_days", 7)
+    since = _now() - timedelta(days=days)
+
+    rows = (
+        db.query(GithubWriteLog)
+        .filter(GithubWriteLog.created_at >= since)
+        .order_by(GithubWriteLog.id.desc())
+        .all()
+    )
+    if not rows:
+        # No evidence is not health. A system that has written nothing is
+        # unknown, never green — the standing rule.
+        return CheckResult(c.name, "unknown", "no_evidence",
+                           f"no GitHub writes in the last {days} days",
+                           checked_at=_now())
+
+    failed = [r for r in rows if not r.ok]
+    ok_rows = [r for r in rows if r.ok]
+    last_ok = max((_aware(r.created_at) for r in ok_rows if r.created_at), default=None)
+    last_bad = max((_aware(r.created_at) for r in failed if r.created_at), default=None)
+
+    if not failed:
+        return CheckResult(c.name, "ok", None,
+                           f"{len(rows)} write(s) in {days}d, all landed",
+                           checked_at=_now(), last_success_at=last_ok)
+
+    ops = ", ".join(sorted({r.operation for r in failed}))
+    newest = failed[0]
+    return CheckResult(
+        c.name, "degraded", "write_failed",
+        f"{len(failed)} of {len(rows)} write(s) failed in {days}d ({ops}); "
+        f"most recent: {newest.operation} -> {newest.target[:120]}",
+        checked_at=_now(), last_success_at=last_ok, last_failure_at=last_bad,
+    )
+
+
 def check_project_hygiene(db: Session, c: Component) -> CheckResult:
     """Are the project records still telling the truth? (project-tracking TDD §7)
 
@@ -343,6 +404,7 @@ _CHECKS = {
     "location_responsiveness": check_location_responsiveness,
     "project_hygiene": check_project_hygiene,
     "health_evaluator": check_health_evaluator,
+    "github_writes": check_github_writes,
 }
 # components whose up-status is the app itself (postgres/anthropic liveness is
 # really "is the app up") get app_up when they have no more specific check.
