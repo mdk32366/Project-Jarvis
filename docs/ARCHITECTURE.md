@@ -528,7 +528,7 @@ suite could not have caught it.
 
 | Route | Page |
 |---|---|
-| `/login` | JWT login (HS256, `access_token_expire_minutes` = 24h, no refresh flow) |
+| `/login` | JWT login (HS256, `access_token_expire_minutes` = 24h, **no refresh flow — ratified 2026-08-01**, see `design-note-latch-failures.md` §7) |
 | `/` | Chat with JARVIS |
 | `/memory` | Browse/audit/correct memories |
 | `/status` | **Exception-first health page** — polls `/api/status/full` every 30s; shows only non-ok components (detail + joined runbook + evidence), healthy collapses to one line, `unknown` rendered distinctly (never green), stale-poll indicator |
