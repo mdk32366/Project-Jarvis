@@ -143,6 +143,17 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "planning_status",
     "next_planning_question",
     "abandon_planning",
+    # Inception dates. "Where am I on X" and "push milestone 4 to September"
+    # are boat questions, and all five are reversible bookkeeping on JARVIS's
+    # own records — no money, no outward write, nothing another human sees.
+    # ratify_plan is the owner's deliberate act but not an outward one, and
+    # reset_baseline snapshots before it moves anything, so a spoofed call is
+    # recoverable and logged rather than silent.
+    "propose_milestone_date",
+    "ratify_plan",
+    "replan",
+    "reset_baseline",
+    "project_timeline",
     # travel — read, booking, and document creation.
     "list_trips",
     "search_flights",

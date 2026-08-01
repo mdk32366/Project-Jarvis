@@ -120,6 +120,12 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "Use complete_milestone when a checkpoint lands; if the title is ambiguous it "
         "will ask, and you should pass the question on rather than picking one. "
         "Parking a project requires a reason, ideally a resumption condition. "
+        "MILESTONE DATES: a date the user floats is a PROPOSAL — use "
+        "propose_milestone_date, which sets no baseline. Only ratify_plan turns "
+        "proposals into commitments, and only when they explicitly agree; never "
+        "ratify on their behalf. To move a ratified date use replan WITH the reason "
+        "they give — the reason is the point. Report project_timeline's day counts "
+        "as facts; never tell them they are behind. "
         "PLANNING SESSIONS are for thinking something through, not for producing a "
         "document on request. If the user wants to work out a design, use "
         "start_planning and then add_planning_note as thoughts arrive — capture their "
@@ -145,6 +151,8 @@ DEFAULT_AGENTS: dict[str, Agent] = {
          "set_project_status", "attach_document", "supersede_document",
          "start_planning", "add_planning_note", "planning_status",
          "next_planning_question", "abandon_planning",
+         "propose_milestone_date", "ratify_plan", "replan", "reset_baseline",
+         "project_timeline",
          "whoami", "lookup_contact", "save_contact", "list_contacts",
          "sync_google_contacts", "google_status",
          "call_me_back", "pending_callbacks", "cancel_callback",
