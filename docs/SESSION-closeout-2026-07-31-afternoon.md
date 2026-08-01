@@ -7,8 +7,8 @@ closed a series of health-model gaps that were larger than the feature.
 loop closed after four nested faults). This is the same day's second arc.
 
 **Resume point:** new chat stream for the Project Management arc (see
-`PREWORK-project-management-arc.md`). `/clear` for the Builder once PR #50 and the
-audit-starvation fix are merged and pushed.
+`PREWORK-project-management-arc.md`). `/clear` for the Builder once PR #51 is
+merged (#50 is already in).
 
 ---
 
@@ -16,10 +16,11 @@ audit-starvation fix are merged and pushed.
 
 | PR | Contents | State |
 |---|---|---|
-| **#47** | `location_log_nonce` widened to all three cases (empty/unresolved/unmatched), default off | Merged |
-| **#48** | (base for #47) | Merged |
+| **#47** | `location_log_nonce` gated to `unmatched` only, default off; + the morning close-out and `backfill_projects.py` | Merged |
+| **#48** | `location_log_nonce` **widened** to all three cases (empty/unresolved/unmatched), still default off | Merged |
 | **#49** | Capability rollup: `capability` + `capability_member` tables, evaluator, `GET /api/status/capabilities`, brief line, `capability_rollup` meta-check, F1 `health_evaluator`, F2 `google_oauth` liveness | Merged, deployed `72f2be9` |
-| **#50** | Runbook-gap enforcement: 8 `call_failed` runbooks added, 6 dead runbooks retired via `_RETIRED_REMEDIATIONS`, two enforcement guards | Green, **merge pending** |
+| **#50** | Runbook-gap enforcement: 8 `call_failed` runbooks added, 6 dead runbooks retired via `_RETIRED_REMEDIATIONS`, two enforcement guards | Merged |
+| **#51** | Audit-starvation fix: 12 bypass sites routed through `Registry.run_tool`, `record_tool_audit`, + a bypass guard | Green |
 
 Plus one owner-visible outcome: the capability rollup is live and reading current
 truth — **6 of 8 green**, Location red (climbing), Project tracking amber (ceiling
@@ -55,6 +56,27 @@ topology against the live 28-row component table, and the audit is what paid off
   prod rows before claiming it unblocked.
 - **Memory has no vectorstore component** — semantic-recall failure is invisible.
   Accepted as a known blind spot for v1, noted in the seed; follow-up component.
+- **`anthropic_api` and `nws` have no audited tool at all** (found by the PR #51
+  sweep, and the one routing cannot fix). Every LLM call goes through
+  `app/llm.py`; every forecast through `_nws_weather`. Neither is a **registered
+  tool**, so no `actions_audit` row can ever map to them and `component_for_tool`
+  returns nothing. Their liveness checks are therefore structurally incapable of a
+  verdict: **never green, never able to detect a fault** — the same class as the
+  `published_expiry` gap F2 closed.
+
+  **More serious than the vectorstore blind spot, because `anthropic_api` is
+  TRUNK**: `blast_radius=multi`, a member of the Memory capability, and the one
+  component whose failure takes down many limbs at once. It cannot currently be
+  seen failing, and a Memory member sits permanently `unknown`.
+
+  **Carried as a decision, not a snap call** (see the pre-work). The fork is real:
+  give them a *legitimately synthetic* liveness probe, or accept them as
+  permanently unknown and exclude them from green-eligibility with that stated as
+  design. A synthetic probe is defensible **here** in a way it was not for the
+  calendar — the calendar had real daily traffic that merely needed routing, so a
+  prober would have been reading its own noise; the LLM has no registerable tool
+  path at all, so there is no real traffic to route and a health-ping is the only
+  honest signal available.
 
 ### 2.2 The latched-check class (found at merge time — the biggest one)
 
@@ -135,22 +157,47 @@ have not watched fail is one you do not yet trust.
 
 ## 4. Queued for the Builder (not yet done)
 
-1. **Merge PR #50** (runbook-gap enforcement) — green, self-contained.
-2. **Audit-starvation fix** — route `briefing.py:295`'s direct `_calendar_lookup`
-   through `Registry.run_tool` so the daily brief feeds the audit substrate it
-   currently bypasses. **Plus a sweep for other direct-call bypasses** that could
-   latch the same way — this sweep is the high-value part, since any unaudited
-   tool call is a latent latch, and the project arc is about to add tool calls.
-   The design fork ("passive vs active probe") was resolved toward
-   passive-plus-complete-substrate; this is a routing fix, not a new TDD.
+1. ~~**Merge PR #50**~~ — **DONE**, merged (`e45aa91`).
+2. ~~**Audit-starvation fix**~~ — **DONE**, PR #51, green.
+
+   The sweep was the high-value part and it earned that weighting: **12 bypass
+   sites, 5 on liveness components.** The calendar latch was not a bug, it was an
+   *instance* — `list_trips` → `duffel` and `get_traffic` → `google_maps` were
+   latent latches of the identical shape, waiting to read red on a resolved fault.
+   And `routes.py`'s own **calendar diagnostic** was itself unaudited: a probe that
+   exercised the calendar without recording it, keeping the very check it was built
+   to debug exactly as starved as before you looked.
+
+   `infra` and `tailscale` were converted too despite having no liveness check.
+   Uniformity is what makes the sweep durable rather than a one-time cleanup — in a
+   codebase where some tool calls route through the registry and some don't, the
+   next bypass looks normal.
+
+   **Two invariants were nearly traded away, and both would have shipped looking
+   like clean refactors:**
+   - *Thread-safety.* The brief's workers share one Session and the `gather_context`
+     docstring pins "HTTP-bound handlers do not exercise ctx.db". Writing audit rows
+     inside the threads buys observability with thread-safety — the kind of
+     constraint that stays invisible until it corrupts something under load.
+     Outcomes are collected; rows are written on the main thread after the join.
+   - *The brief is read aloud.* Section guards key off `_safe`'s `"("` prefix.
+     `run_tool`'s raw error string lacks it, so a naive swap would have narrated an
+     error dump into a spoken brief — **the PR #44 defect reintroduced inside the
+     same diff as the audit-routing change**, where it would have passed review as
+     a pure refactor.
+
+   **Guard added and negative-validated:** a test walks non-handler app code for
+   direct calls to any liveness-backed tool and fails with `file:line`. Planted a
+   bypass, watched it fail; removed it, watched it pass. Third instrument
+   deliberately broken today.
 
 ---
 
 ## 5. Owner threads still open (unchanged, none blocking)
 
 - **Calendar OAuth** — credential works; **no re-mint needed** (that premise was
-  stale). The latch is cleared. If it re-latches before the §4 starvation fix
-  lands, one registry-routed calendar read clears it again.
+  stale). The latch is cleared, and with #51 merged the daily brief now feeds the
+  substrate, so it cannot re-latch the same way.
 - **Phone export** — `devices/jarvis-location-pull.prj.xml`, scrubbed. Owed across
   three closeouts. The instrument that makes the phone-side config reviewable;
   every hour of this morning's nonce hunt was reasoning about a file no one could
@@ -170,7 +217,8 @@ mechanism works end to end.
 
 - Location pull loop: **working end to end** (first `fulfilled` at 15:30:28).
 - Capability rollup: **live, 6/8 green**, reading current truth, self-evaluating.
-- Health topology: **three gaps closed, one latch class identified and cleared,
-  runbook join repaired and enforced.**
+- Health topology: **four instrumentation gaps found — three closed (self-health,
+  contacts, runbook join), one owed a decision (`anthropic_api` / `nws`, trunk) —
+  plus a latch CLASS swept (12 sites, not one bug) and the runbook join enforced.**
 - Project arc (5 TDDs): **drafted, TDD #1 merged and live**; the rest queued as
   pre-work.

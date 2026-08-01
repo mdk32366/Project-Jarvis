@@ -96,11 +96,48 @@ in the test plan.
   will add tool calls. Every tool call that exercises a component must go through
   `Registry.run_tool`, or it becomes a latent latch of the kind that made Calendar
   read red for four days. This is a live constraint on how the arc's tools are
-  wired, not a general nicety.
+  wired, not a general nicety. **It is now enforced**: a test walks non-handler app
+  code for direct calls to any liveness-backed tool and fails with `file:line`, so
+  the arc will be told rather than discovering it later.
+- **The runbook join is enforced too.** Any new check must ship a runbook for every
+  fault code it can emit, and must not ship one keyed to a code it cannot. Two
+  guards fail the build otherwise. The arc adds checks; this is the join they land on.
 - **The interview engine (#2) is reused by inception, not rebuilt.** Inception is a
   `project_plan` session type over #2's machinery, with its own slot set and its own
   output half (rows + timeline + document). If #2 is built with that reuse in mind,
   inception is much smaller.
+
+---
+
+## Carried decision — NOT for a snap call
+
+### `anthropic_api` / `nws` cannot produce a health verdict
+
+The fourth instrumentation gap (close-out §2.1). Neither has a **registered tool**,
+so no `actions_audit` row can ever map to them: every LLM call goes through
+`app/llm.py`, every forecast through `_nws_weather`. Their liveness checks are
+structurally incapable of a verdict — **never green, never able to detect a
+fault**. Same class as the `published_expiry` gap F2 closed.
+
+This is **not** fixable by routing, which is why it was correctly left out of
+PR #51. It is more serious than the vectorstore blind spot because **`anthropic_api`
+is TRUNK** — `blast_radius=multi`, a Memory capability member, and the component
+whose failure takes down the most limbs. Right now it cannot be seen failing.
+
+**The fork:**
+
+| Option | Argument for | Argument against |
+|---|---|---|
+| **A. Legitimately synthetic liveness probe** | There is no registerable real traffic to route, so a health-ping is the only honest signal available. A cheap LLM call genuinely answers "is the model reachable". | Adds a synthetic write path and a per-cycle cost; the check then partly reads its own traffic. |
+| **B. Accept as permanently unknown**, excluded from green-eligibility, stated as design | Honest about the limit; no fabricated signal. Consistent with "unknown ≠ green". | Trunk stays unobservable. A Memory member sits permanently unknown, which is the state that trains people to ignore a panel. |
+
+**Why a synthetic probe is defensible HERE but was not for the calendar:** the
+calendar had real daily traffic that merely needed routing, so a prober would have
+been reading its own noise — a check that cannot distinguish "the calendar works"
+from "my prober works". The LLM has **no** registerable tool path at all, so there
+is no real traffic to starve or route, and the objection does not apply.
+
+Wants its own small decision doc. Do not decide it in passing.
 
 ---
 
