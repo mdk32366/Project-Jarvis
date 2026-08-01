@@ -112,6 +112,12 @@ _COMPONENTS: list[dict] = [
     # (see check_github_writes). A failed document commit is not the system
     # being down, and the amber ceiling is deliberate — the same treatment
     # project_hygiene's is given directly above.
+    # Bookkeeping, like project_hygiene above and never `down` for the same
+    # reason. `internal_subsystem` rather than `external_api`: nothing leaves the
+    # box — the failure it watches for is a session started and forgotten.
+    {"name": "planning_sessions", "kind": "internal_subsystem", "depends_on": "postgres",
+     "check_type": "planning_sessions", "check_config": {"stale_days": 7},
+     "description": "Is a planning session rotting — open and untouched, or more than one at once?"},
     {"name": "github_writes", "kind": "external_api", "depends_on": "GITHUB_TOKEN",
      "check_type": "github_writes", "check_config": {"window_days": 7},
      "description": "Document commits + repo creation to GitHub (reads github_write_log)."},
@@ -183,6 +189,19 @@ _REMEDIATIONS: list[dict] = [
     # the DETAIL, where it can name all of them; the runbook covers all four §7
     # starting points. A fault code the evidence cannot cleanly separate is the
     # orphan the join guard exists to catch.
+    {"component": "planning_sessions", "fault_code": "session_stalled", "severity": "info",
+     "runbook": "A planning session is open and going stale, or more than one is open at "
+                "once. Ask JARVIS 'planning status' — it names the slots still missing and "
+                "the question that would fill each. Then either (1) keep going: add notes "
+                "until the gate reports ready, (2) write it up: 'emit the TDD' — it refuses "
+                "if it isn't ready, so trying costs nothing, or (3) let it go: "
+                "abandon_planning with a reason (the notes are kept either way). More than "
+                "one open is the more urgent case — a note sent from a phone has no "
+                "unambiguous home until it's resolved."},
+    {"component": "planning_sessions", "fault_code": "no_evidence", "severity": "info",
+     "runbook": "No planning session has ever been opened, so there is nothing to judge — "
+                "`unknown`, NOT a fault and NOT a green. Expected before the feature has "
+                "been used for the first time."},
     {"component": "github_writes", "fault_code": "write_failed", "severity": "warn",
      "runbook": "A GitHub write didn't land. The check's detail names the operation and "
                 "target — start there, then work down: (1) token — is GITHUB_TOKEN still "

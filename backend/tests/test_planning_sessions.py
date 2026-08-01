@@ -305,22 +305,26 @@ def test_abandoning_requires_a_reason_and_keeps_the_notes(db, ctx):
 
 
 # ── 6. GATE BEFORE EMISSION (§9) — asserted, not intended ────────────────────
-def test_nothing_in_this_build_can_emit(db):
-    """§9's ordering as a fact rather than a promise. Emission is a later order;
-    a system that emits with a gate bolted on afterwards is how gates end up
-    bypassable, and the only way to know the gate came first is to check that
-    nothing can emit yet."""
-    reg = build_registry(include_delegate=False)
-    assert not reg.has("emit_tdd")
+def test_emission_is_not_reachable_from_a_sub_agent(db):
+    """SUPERSEDES `test_nothing_in_this_build_can_emit` (#58), retired in #59
+    when emission shipped.
 
-    # Checked against what the module DOES, not what it mentions — the docstring
-    # names emit_tdd precisely to record that it is deferred, and a test that
-    # forbade the word would push that reasoning out of the code.
-    src = (BACKEND / "app" / "handlers" / "planning.py").read_text(encoding="utf-8")
-    assert '"name": "emit_tdd"' not in src, "an emit tool is registered"
-    assert "def _emit" not in src, "an emit handler exists"
-    assert "commit_document(" not in src, "an emit path is wired to TDD #3"
-    assert "from app.handlers.repos" not in src, "the writer is imported"
+    That test asserted no emit path existed AT ALL — correct and load-bearing
+    while the gate was being proven alone, and DELIBERATELY time-bound: §9's
+    ordering is a fact about build sequence, and once emission lands there is no
+    longer anything for it to assert. It was retired rather than weakened,
+    which is the honest move for a test whose subject legitimately changed.
+    (Weakening it in place — say, to `assert True` with a sad comment — is how a
+    suite fills up with tests that no longer test anything.)
+
+    What survives is the invariant that is NOT time-bound: emission is top-level
+    only, so no sub-agent can reach it and the voice allowlist can exclude it.
+    The gate-before-emission ordering is now enforced forward by
+    `test_planning_emission.py`, which proves a not-ready session reaches zero
+    GitHub calls.
+    """
+    assert not build_registry(include_delegate=False).has("emit_tdd")
+    assert build_registry(include_delegate=True).has("emit_tdd")
 
 
 def test_the_tools_are_registered_and_ungated():

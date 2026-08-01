@@ -189,6 +189,103 @@ def _abandon_planning(args: dict, ctx: Context) -> str:
     return f"Planning session #{s.id} ('{s.topic}') abandoned: {reason}. The notes are kept."
 
 
+def _emit_tdd(args: dict, ctx: Context) -> str:
+    """Emit the session as a TDD: branch + PR, never `main` (§7.1).
+
+    **STEP 1 IS THE REFUSAL, and it is the whole reason the gate shipped first.**
+    Nothing is composed and no GitHub client is constructed if the session isn't
+    ready. The readiness rules are NOT re-implemented here — `session_readiness`
+    is called. A second copy of the rules is a second thing that can disagree
+    with the first, and the one that gets fixed is whichever happens to be
+    failing loudly.
+    """
+    from app.handlers.repos import _commit_document
+    from app.models import ProjectDocument
+    from app.planning import compose_document
+    from app.secretscan import scan_for_secrets
+
+    s = _open_session(ctx.db)
+    if s is None:
+        return "No open planning session to emit."
+
+    # ── 1. THE GATE. Refusal is the feature (§5.3). ─────────────────────────
+    r = session_readiness(s.notes)
+    if not r.ready:
+        return ("I'm not writing that up yet — it would be a document with holes in "
+                f"it.\n\n{r.summary()}")
+
+    # ── 2. Resolve the destination BEFORE composing, so an unroutable session
+    # fails cheaply rather than after building a document nobody can place.
+    if s.target == "jarvis":
+        project_ref = "JARVIS"
+    else:
+        if not s.project_id:
+            return ("This session targets a new project but isn't linked to one, and I "
+                    "won't guess a repo. Link it to a tracked project first.")
+        p = ctx.db.get(Project, s.project_id)
+        if p is None:
+            return "The linked project is gone — relink the session before emitting."
+        project_ref = p.name
+
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    body = compose_document(s, s.notes, date=date)
+
+    # ── 3. Scan here TOO, and it is not redundant — it is CONTROL FLOW.
+    # `commit_document` scans and refuses by returning a human-facing string.
+    # Emission has to decide whether to mark the session `emitted`, and deciding
+    # that by pattern-matching another tool's prose is a proxy-signal defect
+    # waiting to happen (design-note-latch-failures §3). Owning the refusal here
+    # means the decision is made on a value, not on wording that may change.
+    findings = scan_for_secrets(body)
+    if findings:
+        where = "; ".join(f"{f.pattern_name} on line {f.line}" for f in findings[:5])
+        return (f"I won't publish that — the session notes look like they contain a "
+                f"secret: {where}. Nothing was sent to GitHub, and the session is "
+                f"still open. Remove the credential from the note and ask again.")
+
+    title = f"TDD — {s.topic}"[:200]
+
+    # ── 4. Write. `commit_document` owns branch+PR, tier->path, its own scan,
+    # AND `attach_document` — so emission must NOT attach separately: that
+    # would insert a second ProjectDocument and trip project_hygiene's
+    # "two live docs of one kind" anomaly. See the PR notes.
+    before = {d.id for d in ctx.db.query(ProjectDocument).all()}
+    result = _commit_document(
+        {"project": project_ref, "title": title, "body": body,
+         "tier": "live", "kind": "tdd"}, ctx)
+
+    # ── 5. Success is judged on STATE, not on the returned prose. A new
+    # ProjectDocument row is the observable proof the write landed; the message
+    # is for the human.
+    new = [d for d in ctx.db.query(ProjectDocument).all() if d.id not in before]
+    if not new:
+        return (f"The write didn't land, so I've left the session open.\n\n{result}")
+
+    doc = new[0]
+    s.status = "emitted"
+    s.emitted_at = datetime.now(timezone.utc)
+    s.document_id = doc.id
+    _touch(s)
+    ctx.db.commit()
+
+    return (f"Emitted session #{s.id} as a TDD.\n\n{result}\n\n"
+            f"It carries the not-build-ready banner and a provenance section "
+            f"({len(s.notes)} notes). Bring it to a design session before anyone builds "
+            f"from it.")
+
+
+_EMIT_SCHEMA = {
+    "name": "emit_tdd",
+    "description": (
+        "Write the open planning session up as a TDD and open a pull request. REFUSES "
+        "if the session is incomplete, and returns what's missing. Use only when the "
+        "user asks to write it up — capturing more thinking is almost always the better "
+        "move."
+    ),
+    "input_schema": {"type": "object", "properties": {}},
+}
+
+
 _SCHEMAS = [
     ({
         "name": "start_planning",
@@ -255,3 +352,24 @@ TOOL_NAMES = [s["name"] for s, _ in _SCHEMAS]
 def register(reg: Registry) -> None:
     for schema, fn in _SCHEMAS:
         reg.register(schema, fn)
+
+
+def register_top_level(reg: Registry) -> None:
+    """`emit_tdd` — ungated, but TOP-LEVEL ONLY, and the placement is the
+    channel control rather than a filing choice.
+
+    **Voice cannot emit (§4.2).** Reviewing a design by having it read aloud is
+    not review — there is no scrollback and no "go back to §5" — and emission is
+    an outward write that opens a PR on a repo that is now PUBLIC by default
+    (§11.3 as ratified). Voice auth is caller-ID and spoofable, so a
+    voice-reachable path to it is exactly the blast-radius class the allowlist
+    contains. Same reasoning, and the same mechanism, as `commit_document` and
+    `create_project_repo`: `orchestrator._run_inner` restricts the top-level
+    registry to `VOICE_TOOLS_PHASE1` on a call, so absence from that allowlist
+    removes the tool. Fail-closed, not filtered.
+
+    Registering it on the secretary roster instead would have forced it into the
+    voice allowlist — every agent is voice-reachable and a roster must be a
+    subset of it — which is precisely the trap #58 left a comment about.
+    """
+    reg.register(_EMIT_SCHEMA, _emit_tdd)
