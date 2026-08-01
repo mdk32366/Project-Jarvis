@@ -300,7 +300,7 @@ flowchart LR
 
 ## 8. Database
 
-Postgres on Fly (SQLite in dev/tests). 36 tables in `backend/app/models.py`:
+Postgres on Fly (SQLite in dev/tests). 40 tables in `backend/app/models.py`:
 
 | Group | Tables |
 |---|---|
@@ -308,7 +308,7 @@ Postgres on Fly (SQLite in dev/tests). 36 tables in `backend/app/models.py`:
 | Memory | `persona_profile`, `preferences`, `memories`, `memory_embeddings`, `episodes`, `episode_quotes` |
 | Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` (per-*tool*), `request_log` (per-*request* — one coarse row per top-level request; retention 90d + row cap) |
 | Work | `jobs`, `tasks`, `ideas`, `watches`, `outbound_calls` |
-| Projects | `project`, `milestone`, `project_document` (multi-session arcs — see below), `github_write_log` (one row per attempted GitHub write; the health substrate for GitHub, see below), `planning_session` + `planning_note` (the interview engine — see below) |
+| Projects | `project`, `milestone` (+ inception date columns), `project_document` (multi-session arcs — see below), `github_write_log` (one row per attempted GitHub write; the health substrate for GitHub, see below), `planning_session` + `planning_note` (the interview engine — see below), `replan` + `baseline_reset` + `plan_risk` + `plan_assumption` (inception — see below) |
 | Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` (+ `request_id`, and a descriptive `trigger` that no health check reads), `location_requests` (the server-initiated ask a ping answers) |
 | App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below), `scheduler_heartbeat` (briefing-scheduler proof-of-life + catch-up state) |
 | Health | `component` (topology inventory), `remediation` (fault→runbook), `health_result` (transient current status), `capability` + `capability_member` (the user-facing rollup — see below), `evaluator_heartbeat` (proof-of-life for health checking *itself*) |
@@ -329,6 +329,34 @@ looks like progress). Promotion from an idea is a status change plus a link, nev
 delete — `ideas.status` is orthogonal to the older `ideas.promoted_url`, which records that a
 GitHub *repo* exists. All tools ungated (reversible bookkeeping must not dilute the gate) and all
 voice-reachable, because "where am I" is a question asked from a boat.
+
+**Project inception** (`docs/TDD-project-inception.md`, steps 1–2 shipped): the capstone, and it is
+**a session type on the interview engine, not a second engine**. `planning_session.target` gains
+`project_plan`; the same table, the same cross-channel note accumulation, and the same gate apply,
+with a richer slot set — `objectives`, `milestones` (≥2), `risks`, `assumptions`, plus `tasks` as
+the conditional. `risks` and `assumptions` are inception's unfakeable pair, exactly parallel to
+`rejected` / `open_questions`: you cannot generate a real risk from a project *name*. It takes a
+**subset** of the base slots deliberately — not `tests` or `data_model`, because requiring a test
+plan for "restore the boat" is a bar that gets routed around rather than met.
+
+Slot sets are keyed by session type (`SLOT_SETS`, `slot_set_for`). That refactor is what made reuse
+possible: readiness previously read one module-level slot list and could not tell which kind of
+session it was judging, so a richer set would have needed either a parallel readiness function (a
+second gate) or a widened set for everyone (weakening the engine inception extends). An unknown
+type falls back to the **stricter** base set — a bug must not silently relax a gate — and a test
+asserts the base types still gate on their own slots, because that regression would be invisible
+from inception's own tests.
+
+**Schema (migration `0028`), no behaviour yet**: `milestone.baseline_date` / `current_date` /
+`date_status` (`none`/`proposed`/`ratified`), plus `replan`, `baseline_reset`, `plan_risk`,
+`plan_assumption`. **The fabrication guard in scheduling form** — a date elicited in an interview is
+`proposed` and sets no baseline; only ratification writes `baseline_date`, so *you cannot slip from
+a date you never agreed to*. A replan is a **logged event, not a field edit**: `replan.reason` and
+`baseline_reset.reason` are `NOT NULL` **at the column**, because enforcing it only in the tool
+leaves the silent edit one direct write away. Risks and assumptions are **rows, not prose**, so a
+risk can be resurfaced when it bites rather than sitting inert in section 9. Dates do not move until
+step 3; steps 3–7 (ratification, replan/timeline, resurfacing, emit, brief) follow as their own
+orders.
 
 **Planning sessions** (`app/planning.py` + `app/handlers/planning.py`, `docs/TDD-planning-sessions.md`):
 the interview engine. A session is an **object, not a conversation** — notes accumulate into slots

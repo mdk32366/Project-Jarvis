@@ -34,7 +34,8 @@ def _no_llm(monkeypatch):
     """Classification is stubbed off by default. A test that wants to prove
     classification behaviour patches it explicitly — the rest must not make a
     network call to file a note."""
-    monkeypatch.setattr("app.handlers.planning._classify", lambda content: None)
+    monkeypatch.setattr("app.handlers.planning._classify",
+                        lambda content, target="jarvis": None)
 
 
 # Substantive filler: over the 120-char floor, and real prose rather than

@@ -27,11 +27,16 @@ from sqlalchemy import select
 from app.config import settings
 from app.handlers.base import Context, Registry
 from app.models import PlanningNote, PlanningSession, Project
-from app.planning import ALL_SLOTS, SLOT_QUESTIONS, session_readiness
+from app.planning import (EVERY_SLOT, SLOT_QUESTIONS, session_readiness,
+                          slot_set_for)
 
 log = logging.getLogger(__name__)
 
-TARGETS = ("jarvis", "new_project")
+# `project_plan` is inception (TDD project-inception §4.1) — the SAME table,
+# the SAME note accumulation, the SAME gate, with a richer slot set. A second
+# session table or a second readiness path would be a second gate, and a
+# second gate is a second thing that can be bypassed.
+TARGETS = ("jarvis", "new_project", "project_plan")
 
 
 def _open_session(db) -> PlanningSession | None:
@@ -45,7 +50,7 @@ def _touch(s: PlanningSession) -> None:
     s.updated_at = datetime.now(timezone.utc)
 
 
-def _classify(content: str) -> str | None:
+def _classify(content: str, target: str = "jarvis") -> str | None:
     """Put a captured thought into a slot.
 
     Haiku, not the conversational model — this is a narrow classifier over
@@ -62,7 +67,7 @@ def _classify(content: str) -> str | None:
         resp = create_message(
             system=(
                 "You file one note from a design conversation into exactly one slot.\n"
-                f"Slots: {', '.join(ALL_SLOTS)}.\n"
+                f"Slots: {', '.join(slot_set_for(target).all)}.\n"
                 "Answer with the slot name alone, lowercase, nothing else.\n"
                 "If the note doesn't clearly belong to one slot, answer: none.\n"
                 "Guidance: problem = what's broken; goals = what done looks like; "
@@ -76,7 +81,7 @@ def _classify(content: str) -> str | None:
         )
         text = "".join(b.text for b in resp.content if b.type == "text").strip().lower()
         word = text.split()[0].strip(".,:") if text else ""
-        return word if word in ALL_SLOTS else None
+        return word if word in slot_set_for(target).all else None
     except Exception as e:  # noqa: BLE001 — classification must never eat a thought
         log.warning("planning note classification failed (filing unclassified): %s", e)
         return None
@@ -130,10 +135,11 @@ def _add_planning_note(args: dict, ctx: Context) -> str:
                 "I'll open one.")
 
     slot = (args.get("slot") or "").strip().lower() or None
-    if slot and slot not in ALL_SLOTS:
-        return f"Slot must be one of: {', '.join(ALL_SLOTS)}."
+    allowed = slot_set_for(s.target).all
+    if slot and slot not in allowed:
+        return f"Slot must be one of: {', '.join(allowed)}."
     if slot is None:
-        slot = _classify(content)
+        slot = _classify(content, s.target)
 
     n = PlanningNote(session_id=s.id, slot=slot, content=content, channel=ctx.channel)
     ctx.db.add(n)
@@ -141,7 +147,7 @@ def _add_planning_note(args: dict, ctx: Context) -> str:
     ctx.db.commit()
 
     where = f"filed under {slot}" if slot else "unfiled — I couldn't place it"
-    r = session_readiness(s.notes)
+    r = session_readiness(s.notes, target=s.target)
     if r.ready:
         return f"Noted ({where}). That's every required slot filled."
     nxt = r.missing[0]
@@ -152,7 +158,7 @@ def _planning_status(args: dict, ctx: Context) -> str:
     s = _open_session(ctx.db)
     if s is None:
         return "No open planning session."
-    r = session_readiness(s.notes)
+    r = session_readiness(s.notes, target=s.target)
     head = (f"Session #{s.id}: {s.topic} (target: {s.target}, "
             f"{len(s.notes)} note(s), filled: {', '.join(r.filled) or 'none'})")
     return f"{head}\n{r.summary()}"
@@ -165,7 +171,7 @@ def _next_planning_question(args: dict, ctx: Context) -> str:
     s = _open_session(ctx.db)
     if s is None:
         return "No open planning session."
-    r = session_readiness(s.notes)
+    r = session_readiness(s.notes, target=s.target)
     if r.ready:
         return "Nothing missing — every required slot has real content in it."
     v = r.missing[0]
@@ -209,7 +215,7 @@ def _emit_tdd(args: dict, ctx: Context) -> str:
         return "No open planning session to emit."
 
     # ── 1. THE GATE. Refusal is the feature (§5.3). ─────────────────────────
-    r = session_readiness(s.notes)
+    r = session_readiness(s.notes, target=s.target)
     if not r.ready:
         return ("I'm not writing that up yet — it would be a document with holes in "
                 f"it.\n\n{r.summary()}")
@@ -300,7 +306,7 @@ _SCHEMAS = [
             "properties": {
                 "topic": {"type": "string", "description": "What the session is about."},
                 "target": {"type": "string", "enum": list(TARGETS),
-                           "description": "jarvis (a capability for JARVIS) or new_project."},
+                           "description": "jarvis (a capability for JARVIS), new_project, or project_plan (inception: interviewing the user into a project)."},
                 "project": {"type": "string", "description": "Optional tracked project to link."},
             },
             "required": ["topic"],
@@ -317,8 +323,8 @@ _SCHEMAS = [
             "type": "object",
             "properties": {
                 "content": {"type": "string", "description": "The thought, as they said it."},
-                "slot": {"type": "string", "enum": list(ALL_SLOTS),
-                         "description": "Optional; inferred when omitted."},
+                "slot": {"type": "string", "enum": list(EVERY_SLOT),
+                         "description": "Optional; inferred when omitted. Only the slots belonging to the open session's type are accepted."},
             },
             "required": ["content"],
         },
