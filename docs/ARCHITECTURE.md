@@ -245,6 +245,7 @@ the orchestrator **commits** (send, book, create with invites) — under the gat
 | Contacts | whoami, lookup_contact, save_contact, list_contacts, sync_google_contacts, google_status | Google People |
 | Ideas | capture_idea, list_ideas, get_idea, **create_project_from_idea** (gated) | GitHub Contents API + `POST /user/repos` |
 | Projects | create_project, promote_idea, list_projects, project_status, add_milestone, complete_milestone, drop_milestone, set_project_status, attach_document, supersede_document | DB only |
+| Repos | **commit_document** (branch + PR, never `main`, never merges; ungated but registered **top-level** so the voice allowlist excludes it — see below) | GitHub |
 | Callbacks | call_me_back, pending_callbacks, cancel_callback | Twilio (via worker) |
 | Watches | watch_for, list_watches, cancel_watch | LLM judge (worker) |
 | Infra | fleet_health, fleet_spend | Fly Machines + GraphQL |
@@ -353,6 +354,30 @@ aborts — so the classifier is testable offline and the refusal is asserted at 
 its output is bound for `github_write_log`, which is stored *and* rendered on the status page, so
 a leak there leaks twice. Built and proven before any writer exists (§8), which stopped being
 prudence and became a safety property when public-by-default repo visibility was ratified (§11.3).
+
+**Document commits** (`app/handlers/repos.py`, TDD #3 §4.1/§6.1): `commit_document(project, title,
+body, tier, kind)` — **this is where the scanner stops being detection and becomes refusal.**
+`scan_for_secrets` runs on body *and* title before any GitHub client is constructed; a finding
+aborts, logs a `commit_doc` row with the pattern name (never the value), and returns a refusal.
+Asserted by a test that fails if the client is so much as constructed — negative-validated by
+planting a scan-too-late defect and watching it fire. A refusal is deliberately **not** an audit
+fault: the tool worked, and a defended write reading `error` would teach the health substrate that
+being correct is a failure (the same reasoning that keeps refused gate outcomes in the ok-family).
+Then: resolve the repo (**never guess** — `settings.jarvis_repo` for JARVIS herself, else
+`project.repo_url`, else abort), derive the path **from the tier** (`live`→`docs/`,
+`archive`→`docs/archive/`, `operational`→`docs/operational/` — there is no `path` argument on the
+schema, which is what makes the convention enforced rather than hoped for), branch
+`docs/<slug>-<yyyymmdd>`, commit, open a PR, **never merge** (asserted, including that no `/merge`
+string exists in the module), and reuse `attach_document` so the tracker and the repo cannot
+diverge through a second insert path.
+
+**Ungated** — a branch and a PR are reversible, and diluting the gate with reversible work is how a
+gate stops being read. **Not voice-reachable, structurally:** it is registered *top-level*, and
+`orchestrator._run_inner` restricts the top-level registry to `VOICE_TOOLS_PHASE1` on a voice call,
+so absence from that allowlist removes it. A sub-agent roster could not achieve this — all nine
+agents are in `VOICE_AGENTS_PHASE1` and a roster must be a subset of the voice allowlist, so a
+roster entry would drag it onto a caller-ID-authenticated channel. Config: `jarvis_repo`
+(default `mdk32366/Project-Jarvis`).
 
 **Health model** (`app/health.py`, TDD §4): a relational map of the deterministic topology.
 `component` is the inventory — every agent, external API, subsystem, and data feed — each row

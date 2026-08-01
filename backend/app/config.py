@@ -284,6 +284,13 @@ class Settings(BaseSettings):
     ideas_repo: str = ""                    # "owner/jarvis-ideas"
     ideas_branch: str = "main"
 
+    # JARVIS's OWN repo — the destination when `commit_document` targets her
+    # rather than a tracked project (TDD #3 §6.1 step 2). A declared constant,
+    # not a guess: the rule is "never guess a repo", and an unset value makes
+    # the tool refuse rather than fall back to something plausible. Not a
+    # secret — it is this application's public source repository.
+    jarvis_repo: str = "mdk32366/Project-Jarvis"
+
     # ── Travel ───────────────────────────────────────────────────────────────
     # Trips are learned from confirmation emails — no airline credentials, no
     # scraping. duffel_api_key is TEST MODE search+booking; never make the live
