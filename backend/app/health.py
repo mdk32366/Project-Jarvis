@@ -101,6 +101,20 @@ _COMPONENTS: list[dict] = [
     {"name": "project_hygiene", "kind": "internal_subsystem", "depends_on": "postgres",
      "check_type": "project_hygiene", "check_config": {"stale_days": 30},
      "description": "Are the project records honest — milestones open, one live doc, recently touched?"},
+    # `external_api` + a named credential, by analogy to tavily/gmail/duffel/
+    # google_maps — the writes go OUT to GitHub and GITHUB_TOKEN is what makes
+    # them possible. It is the first `external_api` with a bespoke check_type,
+    # which is fine: kind and check_type vary independently here already
+    # (location_pull_scheduler is a `data_feed` with its own check).
+    #
+    # ONE ASYMMETRY, STATED because a silent one is how a ceiling becomes a
+    # surprise: unlike its external_api peers this component NEVER reads `down`
+    # (see check_github_writes). A failed document commit is not the system
+    # being down, and the amber ceiling is deliberate — the same treatment
+    # project_hygiene's is given directly above.
+    {"name": "github_writes", "kind": "external_api", "depends_on": "GITHUB_TOKEN",
+     "check_type": "github_writes", "check_config": {"window_days": 7},
+     "description": "Document commits + repo creation to GitHub (reads github_write_log)."},
 ]
 
 # Components removed from _COMPONENTS above. The seed RECONCILES but does not
@@ -162,6 +176,31 @@ _REMEDIATIONS: list[dict] = [
                 "(no open milestones, two live docs of one kind, or untouched for 30+ days). "
                 "Fix it by completing/adding a milestone, superseding the duplicate document, "
                 "or parking the project with a reason."},
+    # ONE fault code, deliberately, not create/commit split. `github_write_log`
+    # does distinguish operations — but a CheckResult carries exactly one
+    # fault_code, so a window holding both a failed create and a failed commit
+    # would have to pick one and mislead about the other. The operation is in
+    # the DETAIL, where it can name all of them; the runbook covers all four §7
+    # starting points. A fault code the evidence cannot cleanly separate is the
+    # orphan the join guard exists to catch.
+    {"component": "github_writes", "fault_code": "write_failed", "severity": "warn",
+     "runbook": "A GitHub write didn't land. The check's detail names the operation and "
+                "target — start there, then work down: (1) token — is GITHUB_TOKEN still "
+                "valid and does it carry `repo` scope? An expired or rotated PAT fails every "
+                "write identically. (2) rate limit — GitHub returns 403 when exhausted; it "
+                "clears on its own, so a 403 burst that stops is not a fault to chase. "
+                "(3) repo existence — a repo renamed, deleted, or made private out from under "
+                "a recorded repo_url fails on create AND commit. (4) branch conflict — a "
+                "docs/<slug>-<date> branch already present from a half-finished run; the commit "
+                "path is idempotent, so re-running is safe. Full rows are in github_write_log "
+                "(never contains a secret value — see the scanner's non-echo invariant)."},
+    {"component": "github_writes", "fault_code": "no_evidence", "severity": "info",
+     "runbook": "Nothing has been written to GitHub in the window, so there is nothing to "
+                "judge — this is `unknown`, NOT a fault, and not a green either. Expected on "
+                "a fresh system or a quiet week. If you believe writes SHOULD have happened, "
+                "the question is upstream: did commit_document or create_project_repo actually "
+                "run? Check actions_audit for the tool call — its absence there means the tool "
+                "was never invoked, which is a different problem from a write that failed."},
     {"component": "location_responsiveness", "fault_code": "not_answering", "severity": "warn",
      "runbook": "The server is asking and the phone is not answering. PHONE-SIDE. Confirm AutoRemote "
                 "is installed and receiving (send a test from the AutoRemote web console); the Tasker "
