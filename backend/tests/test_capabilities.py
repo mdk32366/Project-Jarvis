@@ -404,3 +404,130 @@ def test_seed_actually_deletes_a_retired_runbook(seeded):
     assert (seeded.query(Remediation)
             .filter(Remediation.component == "duffel", Remediation.fault_code == "401")
             .first()) is None
+
+
+# ── audit starvation: the brief must FEED the checks that watch it ───────────
+#
+# THE BUG. `check_liveness` derives health from `actions_audit`. The morning brief
+# read the calendar every single day through a direct handler call and wrote no
+# audit row — so the one thing that exercised the component routinely was invisible
+# to the one check that watched it. `google_calendar_svcacct` then latched `down`
+# for a day on a fault that had already resolved, because nothing could clear it.
+#
+# A latched check is worse than a missing one: it reports a fault with total
+# confidence, and the fault is gone.
+
+def test_the_brief_records_audit_rows_for_its_tool_backed_sources(db, monkeypatch):
+    """The starvation fix. Whatever the sources return, the brief must leave
+    evidence that it ran them."""
+    from app import briefing
+    from app.health import component_for_tool
+    from app.models import ActionAudit
+
+    monkeypatch.setattr(briefing, "_nws_weather", lambda a: "")
+    monkeypatch.setattr(briefing, "_nws_marine", lambda: "")
+    monkeypatch.setattr(briefing, "_news_brief", lambda: "")
+
+    briefing.gather_context(db)
+
+    tools = {r.tool for r in db.query(ActionAudit).all()}
+    assert "briefing:calendar_lookup" in tools, tools
+
+    # and the rows must RESOLVE to the component whose liveness reads them —
+    # an audit row nothing maps to feeds nothing.
+    assert component_for_tool("briefing:calendar_lookup") == "google_calendar_svcacct"
+
+
+def test_brief_audit_status_is_derived_not_asserted(db, monkeypatch):
+    """A row that says `ok` because the caller assumed so is the fabricated-`ok`
+    bug that made 539 pre-epoch rows worthless. A failing source must record
+    `error`."""
+    from app import briefing
+    from app.handlers.base import ToolFault
+    from app.models import ActionAudit
+
+    monkeypatch.setattr(briefing, "_nws_weather", lambda a: "")
+    monkeypatch.setattr(briefing, "_nws_marine", lambda: "")
+    monkeypatch.setattr(briefing, "_news_brief", lambda: "")
+
+    def _boom(args, ctx):
+        raise ToolFault("Error reading calendar: invalid_grant")
+
+    monkeypatch.setattr("app.handlers.scheduling._calendar_lookup", _boom)
+
+    briefing.gather_context(db)
+
+    rows = [r for r in db.query(ActionAudit).all() if r.tool == "briefing:calendar_lookup"]
+    assert rows, "no audit row recorded for the failing source"
+    assert all(r.status == "error" for r in rows), [r.status for r in rows]
+
+
+def test_a_failing_source_is_still_kept_out_of_the_brief(db, monkeypatch):
+    """The audited seam must not cost the PR #44 property: a failed source is
+    dropped, never narrated. `run_tool`'s raw error string does not start with
+    '(', so `_safe_tool` restores that shape deliberately."""
+    from app import briefing
+    from app.handlers.base import ToolFault
+
+    monkeypatch.setattr(briefing, "_nws_weather", lambda a: "")
+    monkeypatch.setattr(briefing, "_nws_marine", lambda: "")
+    monkeypatch.setattr(briefing, "_news_brief", lambda: "")
+    monkeypatch.setattr("app.handlers.infra._fleet_health",
+                        lambda a, c: (_ for _ in ()).throw(ToolFault("fly exploded")))
+
+    ctx = briefing.gather_context(db)
+    assert "fly exploded" not in ctx
+    assert "## Hosted apps" not in ctx
+
+
+def test_no_new_direct_handler_bypasses_are_introduced(db):
+    """THE GUARD. The latch happened because one routine call went around the
+    audited seam. Any tool exercised outside the registry is a latent latch of the
+    same shape, so new ones must be deliberate rather than accidental.
+
+    Allow-listed exceptions are tools whose component carries no liveness check,
+    so no check can starve on them.
+    """
+    import io
+    import os
+    import re
+
+    from app.handlers.base import build_registry
+    from app.health import component_for_tool
+    from app.health_checks import _APP_UP
+
+    reg = build_registry(include_delegate=False)
+    fn_for_tool = {}
+    for t in sorted(reg._tools):
+        n = getattr(reg._tools[t].fn, "__name__", "")
+        if n:
+            fn_for_tool.setdefault(n, t)
+
+    liveness = set()
+    from app.health import _COMPONENTS
+    for spec in _COMPONENTS:
+        if spec.get("check_type") == "liveness" and spec["name"] not in _APP_UP:
+            liveness.add(spec["name"])
+
+    offenders = []
+    for root, _, files in os.walk("app"):
+        if "handlers" in root:              # handler-internal calls are not bypasses
+            continue
+        for f in files:
+            if not f.endswith(".py"):
+                continue
+            path = os.path.join(root, f).replace("\\", "/")
+            src = io.open(path, encoding="utf-8", errors="replace").read()
+            for fname, tool in fn_for_tool.items():
+                if component_for_tool(tool) not in liveness:
+                    continue
+                for m in re.finditer(r"(?<!def )\b%s\s*\(" % re.escape(fname), src):
+                    line = src[:m.start()].count("\n") + 1
+                    text = src.splitlines()[line - 1].strip()
+                    if text.startswith(("def ", "#")):
+                        continue
+                    offenders.append(f"{path}:{line} calls {fname}() [tool={tool}]")
+
+    assert offenders == [], (
+        "direct handler calls bypass Registry.run_tool, so they write no audit row "
+        "and can starve a liveness check into latching:\n  " + "\n  ".join(offenders))

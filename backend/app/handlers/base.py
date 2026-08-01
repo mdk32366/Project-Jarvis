@@ -6,10 +6,14 @@ tool calls. Tools can be marked `gated` so the orchestrator routes them through
 the human-in-the-loop confirmation gate instead of executing immediately.
 """
 
+import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from sqlalchemy.orm import Session
+
+log = logging.getLogger(__name__)
 
 
 class ToolFault(Exception):
@@ -146,6 +150,41 @@ class Registry:
         """Back-compat: run a tool and return just its result string. Callers
         that also record audit should prefer `run_tool` to get the status."""
         return self.run_tool(name, args, ctx)[0]
+
+
+def record_tool_audit(db, *, channel: str, actor: str, tool: str,
+                      args: dict, result: str, status: str) -> None:
+    """Write the `actions_audit` row for a tool run OUTSIDE the orchestrator.
+
+    WHY THIS EXISTS. `check_liveness` derives a component's health from its audit
+    rows, so a tool exercised off the audited path is invisible to it — and a
+    component whose only regular exercise is off-path can LATCH. That is not
+    hypothetical: the morning brief read the calendar every day through a direct
+    handler call, wrote nothing, and `google_calendar_svcacct` sat `down` for a
+    day on a fault that had already resolved, because the only thing that could
+    have cleared it never ran.
+
+    `status` must be DERIVED from the call's outcome (use `Registry.run_tool`,
+    which is the seam that knows), never asserted by the caller. An audit row that
+    says `ok` because the caller assumed so is the fabricated-`ok` bug that made
+    539 rows worthless before the PR-0 epoch.
+
+    Never raises: failing to record a call must not fail the call. It is written on
+    its own commit for the same reason — a caller mid-transaction must not have its
+    work committed early by an audit write.
+    """
+    from app.models import ActionAudit
+
+    try:
+        db.add(ActionAudit(
+            channel=channel, actor=actor, tool=tool,
+            arguments=json.dumps(args, default=str)[:4000],
+            result=str(result)[:4000], status=status,
+        ))
+        db.commit()
+    except Exception:  # noqa: BLE001 — recording must never break the caller
+        db.rollback()
+        log.warning("could not record audit row for %r", tool)
 
 
 def build_registry(include_delegate: bool = False, db=None, allow: set[str] | None = None) -> Registry:
