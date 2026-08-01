@@ -200,7 +200,8 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # (delegate) and governs the one irreversible action (trading) behind the
         # confirmation gate. All read-only/domain tools live in specialist agents.
         from app import agents
-        from app.handlers import datetime_tools, finance, ideas, scheduling, secretary, selfstatus, travel
+        from app.handlers import (datetime_tools, finance, ideas, repos, scheduling,
+                                  secretary, selfstatus, travel)
 
         agents.register_delegate(reg, db)
         finance.register_trading(reg)
@@ -219,6 +220,12 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # the orchestrator (a pure delegator) can answer "how are you feeling"
         # directly instead of delegating it (health TDD §9).
         selfstatus.register(reg)
+        # commit_document: UNGATED (a branch + PR is reversible) but registered
+        # top-level ON PURPOSE — that placement is what keeps it off voice. The
+        # `allow` restriction below drops anything absent from
+        # VOICE_TOOLS_PHASE1, and a sub-agent roster could not achieve the same
+        # thing because every agent is voice-reachable (repos.py docstring).
+        repos.register(reg)
         if allow is not None:
             reg.restrict(allow)
         return reg
