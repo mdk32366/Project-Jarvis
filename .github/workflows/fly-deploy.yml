@@ -27,6 +27,27 @@ jobs:
         working-directory: backend
         run: pytest -q
 
+  ui-test:
+    # The UI had NO test runner until 2026-08-01. The "Unauthorized" latch lived
+    # entirely in front-end state — a cleared token beside a stale `user` — so a
+    # pytest-only suite could not have caught it, and did not. Untested front-end
+    # is how that shipped; this job is what stops the next one.
+    name: Run UI tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install deps
+        working-directory: ui
+        run: npm ci
+      - name: Run vitest
+        working-directory: ui
+        run: npm test
+
   migrations:
     name: Migration bootstrap (fresh Postgres)
     # The pytest suite builds its schema with create_all() on SQLite and never
@@ -64,7 +85,7 @@ jobs:
 
   deploy:
     name: Deploy app
-    needs: [test, migrations]   # deploy ONLY if tests AND a fresh-DB migration pass
+    needs: [test, ui-test, migrations]   # deploy ONLY if backend + UI tests AND a fresh-DB migration pass
     # deploy exclusively on a real push to main — PRs and manual dispatch run tests only
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
