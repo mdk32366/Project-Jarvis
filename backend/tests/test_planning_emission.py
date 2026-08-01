@@ -25,7 +25,8 @@ def ctx(db):
 
 @pytest.fixture(autouse=True)
 def _no_llm(monkeypatch):
-    monkeypatch.setattr("app.handlers.planning._classify", lambda content: None)
+    monkeypatch.setattr("app.handlers.planning._classify",
+                        lambda content, target="jarvis": None)
 
 
 @pytest.fixture

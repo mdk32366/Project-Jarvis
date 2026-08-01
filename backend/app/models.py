@@ -288,6 +288,26 @@ class Milestone(Base):
     # and collapsing them overstates progress.
     status: Mapped[str] = mapped_column(String(16), default="open")
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # ── Inception dates (TDD project-inception §4.3, §4.4) ───────────────────
+    # THE FABRICATION GUARD, IN SCHEDULING FORM. A date JARVIS elicited or the
+    # owner floated during an interview is `proposed` and no baseline exists;
+    # only `ratify_plan` writes `baseline_date`. **You cannot slip from a date
+    # you never agreed to** — before ratification the brief says nothing about
+    # dates at all. The difference between "proposed" and "agreed" is a STORED
+    # FACT, not a tone, which is the same discipline that killed the netstatus
+    # stub and the fabricated-green audit rows.
+    #
+    # Set once at ratification; moves ONLY through an explicit, logged
+    # re-baseline (`BaselineReset`). A re-baseline that isn't logged is
+    # indistinguishable from hiding a slip.
+    baseline_date: Mapped[date | None] = mapped_column(Date, nullable=True, default=None)
+    # The live plan. Moves via `replan`, which writes a `Replan` row FIRST.
+    # NOTE the column name shadows SQL's CURRENT_DATE keyword; SQLAlchemy quotes
+    # reserved identifiers, and the CI fresh-Postgres gate is what proves it.
+    current_date: Mapped[date | None] = mapped_column(Date, nullable=True, default=None)
+    # none | proposed | ratified
+    date_status: Mapped[str] = mapped_column(String(16), default="none")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     project: Mapped["Project"] = relationship(back_populates="milestones")
@@ -810,6 +830,109 @@ class CapabilityMember(Base):
     capability: Mapped[str] = mapped_column(String(64), primary_key=True)
     component: Mapped[str] = mapped_column(String(64), primary_key=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class Replan(Base):
+    """One logged movement of a milestone's date. APPEND-ONLY.
+
+    **A replan is an EVENT, not a field edit** (TDD project-inception §4.4).
+    "Why did milestone 4 slip three weeks" is answerable only because the move
+    was captured as a thing that happened, with a from, a to, and a reason. A
+    system that overwrote the cell can tell you where the date is now and
+    nothing about how it got there — which is the difference between a record
+    you can reconstruct and one you can only read.
+
+    `reason` is NOT NULL **at the column**, deliberately. Enforcing it only in
+    the tool leaves the silent edit one direct-write away, and the guard is
+    supposed to be structural.
+    """
+
+    __tablename__ = "replan"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    milestone_id: Mapped[int] = mapped_column(
+        ForeignKey("milestone.id", ondelete="CASCADE"), index=True
+    )
+    from_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    to_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BaselineReset(Base):
+    """A snapshot taken before a baseline is overwritten. APPEND-ONLY.
+
+    `reset_baseline` exists for the rare legitimate re-baseline — the plan
+    genuinely changed, rather than merely slipped. The whole prior baseline is
+    snapshotted into `snapshot` BEFORE the overwrite, so **even the act of
+    moving the baseline is recoverable**. Without this, a re-baseline and a
+    concealed slip look identical after the fact.
+
+    `reason` NOT NULL at the column, same reasoning as `Replan`.
+    """
+
+    __tablename__ = "baseline_reset"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), index=True
+    )
+    # JSON of the prior baselines, as text — a snapshot is read whole or not at
+    # all, so it needs no queryable structure.
+    snapshot: Mapped[str] = mapped_column(Text, default="")
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PlanRisk(Base):
+    """A risk named at inception, as a ROW rather than prose (§4.6).
+
+    A risk buried in a plan document is inert — nobody re-reads section 9. A
+    risk as a row can be RESURFACED WHEN IT BITES: "you flagged Duffel
+    live-mode activation as a risk at inception; it is now blocking milestone
+    4." That sentence is only possible because the risk was stored as a thing
+    with a link, not as a paragraph.
+
+    `milestone_id` is nullable: a risk may threaten the whole project rather
+    than one checkpoint, and forcing a link would invent precision.
+    """
+
+    __tablename__ = "plan_risk"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), index=True
+    )
+    milestone_id: Mapped[int | None] = mapped_column(
+        ForeignKey("milestone.id", ondelete="SET NULL"), nullable=True, default=None
+    )
+    description: Mapped[str] = mapped_column(Text)
+    # open | realized | retired. `retired` is not `realized`: a risk that
+    # stopped applying is a different outcome from one that came true, and
+    # collapsing them would overstate how much went wrong.
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PlanAssumption(Base):
+    """A stated assumption — the thing that, if false, breaks the plan (§4.6).
+
+    `break_assumption` flips `holding` -> `broken` and the brief surfaces it
+    ONCE. An assumption that turned out false is exactly the sort of thing
+    worth a single un-repeated flag: repeating it daily would train the owner
+    to skip the line, and the line is the whole value.
+    """
+
+    __tablename__ = "plan_assumption"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("project.id", ondelete="CASCADE"), index=True
+    )
+    description: Mapped[str] = mapped_column(Text)
+    # holding | broken
+    status: Mapped[str] = mapped_column(String(16), default="holding", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class PlanningSession(Base):

@@ -54,6 +54,68 @@ REQUIRED_SLOTS = ("problem", "goals", "non_goals", "approach", "rejected",
 CONDITIONAL_SLOTS = ("data_model",)
 ALL_SLOTS = REQUIRED_SLOTS + CONDITIONAL_SLOTS
 
+# ── Slot sets per session type (inception §4.1, §4.2) ────────────────────────
+# INCEPTION IS A SESSION TYPE, NOT A SECOND ENGINE. It reuses this gate, this
+# note accumulation, and this refuse-until-substantive discipline; only the slot
+# set differs. Building it any other way rebuilds the gate, and a second gate is
+# a second thing that can be bypassed.
+#
+# This dict is the refactor that made that reuse possible. Before it,
+# `session_readiness` read the module-level REQUIRED_SLOTS and had no idea what
+# kind of session it was judging — so a richer slot set could not have been
+# expressed without either a parallel readiness function (a second gate) or
+# widening the one slot set for everyone (weakening the engine inception
+# extends). Neither is acceptable; keying the slot set by session type is.
+#
+# `project_plan` takes a SUBSET of the base slots — deliberately. It carries
+# problem/goals/non_goals/approach/rejected/open_questions but NOT `tests` or
+# `data_model`: a project plan is not a technical design, and requiring a test
+# plan for "restore the boat" would be a bar that gets routed around rather than
+# met (§5.4's warning about a floor so high it blocks real work).
+_BASE_REQUIRED = ("problem", "goals", "non_goals", "approach", "rejected",
+                  "open_questions")
+
+PROJECT_PLAN_REQUIRED = _BASE_REQUIRED + (
+    "objectives",     # what the project is FOR — the durable "why"
+    "milestones",     # >= 2 checkpoints
+    "risks",          # >= 1 named risk
+    "assumptions",    # >= 1 stated assumption
+)
+PROJECT_PLAN_CONDITIONAL = ("tasks",)   # may be "none yet", recorded as such
+
+
+@dataclass(frozen=True)
+class SlotSet:
+    required: tuple[str, ...]
+    conditional: tuple[str, ...]
+
+    @property
+    def all(self) -> tuple[str, ...]:
+        return self.required + self.conditional
+
+
+SLOT_SETS: dict[str, SlotSet] = {
+    "jarvis": SlotSet(REQUIRED_SLOTS, CONDITIONAL_SLOTS),
+    "new_project": SlotSet(REQUIRED_SLOTS, CONDITIONAL_SLOTS),
+    "project_plan": SlotSet(PROJECT_PLAN_REQUIRED, PROJECT_PLAN_CONDITIONAL),
+}
+
+
+# Every slot any session type can use. The tool SCHEMA is static and cannot know
+# which session is open, so it advertises the union; the per-session set is
+# enforced at RUNTIME in `add_planning_note`, where the session is known.
+EVERY_SLOT: tuple[str, ...] = tuple(
+    dict.fromkeys(s for ss in SLOT_SETS.values() for s in ss.all)
+)
+
+
+def slot_set_for(target: str | None) -> SlotSet:
+    """The slot set a session of this type is judged against. Unknown types fall
+    back to the base set — fail toward the STRICTER, more technical bar rather
+    than toward an empty one, since an unrecognised type is a bug and a bug
+    should not silently relax a gate."""
+    return SLOT_SETS.get((target or "jarvis"), SLOT_SETS["jarvis"])
+
 # The question that would fill each gap. The gate returns these WITH the missing
 # slots (§5.3) — a refusal that names what is missing and how to fix it is
 # actionable; one that just says "incomplete" is a dead end, and a dead end is
@@ -69,6 +131,13 @@ SLOT_QUESTIONS: dict[str, str] = {
                   "explicitly none?",
     "tests": "What would prove this works? What would you check?",
     "open_questions": "What's still unresolved? What are you unsure about?",
+    # Project-plan slots (inception §4.2)
+    "objectives": "What is this project FOR? What's the durable reason it exists?",
+    "milestones": "What are the checkpoints? Name at least two, with the date you'd "
+                  "propose for each.",
+    "risks": "What could go wrong? Name at least one real risk to this plan.",
+    "assumptions": "What are you assuming? What has to be true for this plan to hold?",
+    "tasks": "What are the concrete next actions — or is it genuinely 'none yet'?",
 }
 
 # Why the refusal, for the two slots where "you left a field blank" is the wrong
@@ -80,6 +149,18 @@ SLOT_REFUSAL_WHY: dict[str, str] = {
     "open_questions": ("An empty open-questions is evidence of insufficient thought, not of "
                        "thoroughness. A design with no uncertainty in it is one nobody "
                        "pushed on."),
+    # The inception analogue of the pair above, and unfakeable for the same
+    # reason: you cannot generate a real risk or a real assumption from a
+    # project NAME. Both require having thought about what could go wrong and
+    # what the plan is standing on.
+    "risks": ("A plan with no risk is a plan nobody stress-tested. You cannot name a "
+              "real risk without having thought about what could go wrong, which is "
+              "exactly why an empty one is evidence rather than an omission."),
+    "assumptions": ("Assumptions are the things that, if false, break the plan. Not "
+                    "stating any doesn't mean there aren't any — it means they haven't "
+                    "been found yet."),
+    "milestones": ("A plan with fewer than two checkpoints isn't a timeline, it's a "
+                   "deadline. Two is the minimum that can show progress."),
 }
 
 # ── Placeholder detection (§5.3) ─────────────────────────────────────────────
@@ -105,8 +186,8 @@ _PLACEHOLDER_RE = re.compile(
 # statement; "to be determined" is the thing the gate exists to refuse.
 _NOT_APPLICABLE_RE = re.compile(
     r"""(?ix)
-    ^\W*(?:N/?A|none|not\s+applicable|no\s+(?:schema|state|data[\s_-]?model|table)
-        (?:\s+change(?:s)?)?)\W*$
+    ^\W*(?:N/?A|none(?:\s+yet)?|not\s+applicable|nothing\s+yet|
+        no\s+(?:schema|state|data[\s_-]?model|table|tasks?)(?:\s+change(?:s)?)?)\W*$
     """,
 )
 
@@ -133,6 +214,22 @@ def _substantive(text: str) -> str:
     to write more.
     """
     return re.sub(r"\s+", " ", _PLACEHOLDER_RE.sub(" ", text or "")).strip()
+
+
+def _count_entries(text: str) -> int:
+    """How many distinct things were named in a slot.
+
+    Notes are joined with a blank line by `compose_slots`, and a single note may
+    itself list several — so count both note boundaries and line/bullet
+    boundaries, whichever yields more. Generous on purpose: the bar is "did you
+    name two checkpoints", not "did you format them the way I expect".
+    """
+    body = (text or "").strip()
+    if not body:
+        return 0
+    by_note = len([p for p in body.split("\n\n") if p.strip()])
+    by_line = len([ln for ln in body.splitlines() if ln.strip()])
+    return max(by_note, by_line)
 
 
 @dataclass
@@ -272,10 +369,20 @@ def _judge_slot(slot: str, text: str, min_chars: int) -> SlotVerdict:
         return SlotVerdict(slot, False,
                            "an alternative is named but no reason it lost", q)
 
+    # `milestones` needs >= 2 checkpoints (§4.2). Counted as separate captured
+    # entries or lines, NOT by parsing dates: dates do not become real until
+    # ratification in step 3, and enforcing date-shape here would be behaviour
+    # running ahead of its step. Step 1 makes the columns; it does not make them
+    # move.
+    if slot == "milestones" and _count_entries(text) < 2:
+        return SlotVerdict(slot, False,
+                           "fewer than two checkpoints named", q)
+
     return SlotVerdict(slot, True, "", q)
 
 
-def session_readiness(notes, *, min_chars: int | None = None) -> Readiness:
+def session_readiness(notes, *, target: str | None = None,
+                      min_chars: int | None = None) -> Readiness:
     """Judge whether a session has enough substance to be written down (§5.3).
 
     Returns WHAT IS MISSING AND THE QUESTION THAT FILLS IT, not a bare bool —
@@ -286,27 +393,28 @@ def session_readiness(notes, *, min_chars: int | None = None) -> Readiness:
     is whichever is failing loudly at the time.
     """
     min_chars = settings.planning_min_slot_chars if min_chars is None else min_chars
+    slot_set = slot_set_for(target)
     slots = compose_slots(notes)
     unclassified = sum(1 for n in notes if not n.slot)
 
-    verdicts = [_judge_slot(s, slots.get(s, ""), min_chars) for s in REQUIRED_SLOTS]
+    verdicts = [_judge_slot(s, slots.get(s, ""), min_chars) for s in slot_set.required]
 
-    # `data_model` is satisfied either by real content OR by an explicit
-    # not-applicable — recorded, not assumed. "No schema change" is a design
-    # statement; silence is not.
-    dm = slots.get("data_model", "")
-    if dm.strip():
-        if _NOT_APPLICABLE_RE.match(dm.strip()):
-            # The recorded not-applicable — the one slot where a short answer is
-            # a legitimate one, because "this needs no schema change" IS the
-            # design statement. Note it must be the WHOLE content: an N/A buried
-            # in a paragraph is not a decision, and "TBD" is never one.
-            verdicts.append(SlotVerdict("data_model", True, "explicitly not applicable"))
+    # CONDITIONAL slots are satisfied either by real content OR by an explicit
+    # not-applicable — recorded, not assumed. "No schema change" and "no tasks
+    # yet" are both design statements; SILENCE IS NOT, which is the whole
+    # distinction. Applied generically over the set rather than hardcoded to
+    # `data_model`, so inception's `tasks` inherits the rule instead of getting
+    # a second copy of it.
+    for slot in slot_set.conditional:
+        text = slots.get(slot, "")
+        if not text.strip():
+            verdicts.append(SlotVerdict(slot, False, "empty", SLOT_QUESTIONS.get(slot, "")))
+        elif _NOT_APPLICABLE_RE.match(text.strip()):
+            # It must be the WHOLE content: an N/A buried in a paragraph is not
+            # a decision, and "TBD" is never one.
+            verdicts.append(SlotVerdict(slot, True, "explicitly not applicable"))
         else:
-            verdicts.append(_judge_slot("data_model", dm, min_chars))
-    else:
-        verdicts.append(SlotVerdict("data_model", False, "empty",
-                                    SLOT_QUESTIONS["data_model"]))
+            verdicts.append(_judge_slot(slot, text, min_chars))
 
     missing = [v for v in verdicts if not v.filled]
     return Readiness(
