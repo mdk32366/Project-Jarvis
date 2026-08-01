@@ -302,6 +302,61 @@ def check_github_writes(db: Session, c: Component) -> CheckResult:
     )
 
 
+def check_planning_sessions(db: Session, c: Component) -> CheckResult:
+    """*Is a planning session rotting?* (TDD #2 §8)
+
+    The realistic failure is not a crash — it is a session STARTED AND FORGOTTEN:
+    real thinking captured, never written up, quietly ageing out of relevance.
+    That is worth surfacing precisely because nothing else will; there is no
+    error, no exception, no user complaint.
+
+    NEVER `down`, capped at `degraded` — a stale planning session is not a system
+    fault. Same amber ceiling as `project_hygiene` and `github_writes`, and
+    stated for the same reason: inflating bookkeeping to `down` teaches the eye
+    to skip the page.
+
+    ONE fault code (`session_stalled`) covering both a forgotten session and the
+    more-than-one-open case, following the `github_writes` precedent — a
+    CheckResult carries one code, the two can co-occur, and the detail names
+    which applies rather than forcing a misreport.
+    """
+    from app.models import PlanningSession
+
+    stale_days = _cfg(c).get("stale_days", 7)
+    sessions = db.query(PlanningSession).all()
+    if not sessions:
+        return CheckResult(c.name, "unknown", "no_evidence",
+                           "no planning sessions have ever been opened",
+                           checked_at=_now())
+
+    open_ones = [s for s in sessions if s.status == "open"]
+    if not open_ones:
+        last = max((_aware(s.updated_at) for s in sessions if s.updated_at), default=None)
+        return CheckResult(c.name, "ok", None,
+                           f"no open session ({len(sessions)} closed)",
+                           checked_at=_now(), last_success_at=last)
+
+    cutoff = _now() - timedelta(days=stale_days)
+    stalled = [s for s in open_ones
+               if (_aware(s.updated_at) or _aware(s.created_at) or _now()) < cutoff]
+
+    if len(open_ones) > 1 or stalled:
+        bits = []
+        if len(open_ones) > 1:
+            bits.append(f"{len(open_ones)} sessions open at once")
+        if stalled:
+            bits.append(f"{len(stalled)} untouched for {stale_days}+ days "
+                        f"(#{stalled[0].id}: {stalled[0].topic[:60]})")
+        return CheckResult(c.name, "degraded", "session_stalled", "; ".join(bits),
+                           checked_at=_now(),
+                           last_failure_at=_aware(open_ones[0].updated_at))
+
+    s = open_ones[0]
+    return CheckResult(c.name, "ok", None,
+                       f"one open session, active (#{s.id}: {s.topic[:60]})",
+                       checked_at=_now(), last_success_at=_aware(s.updated_at))
+
+
 def check_project_hygiene(db: Session, c: Component) -> CheckResult:
     """Are the project records still telling the truth? (project-tracking TDD §7)
 
@@ -405,6 +460,7 @@ _CHECKS = {
     "project_hygiene": check_project_hygiene,
     "health_evaluator": check_health_evaluator,
     "github_writes": check_github_writes,
+    "planning_sessions": check_planning_sessions,
 }
 # components whose up-status is the app itself (postgres/anthropic liveness is
 # really "is the app up") get app_up when they have no more specific check.

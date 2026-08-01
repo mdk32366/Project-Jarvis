@@ -32,8 +32,9 @@ enforce depth mechanically would either block real work or produce a bar so low
 it is theatre.
 
 BUILT BEFORE EMISSION, DELIBERATELY (§9). A system that emits, with a gate
-bolted on afterwards, is how gates end up bypassable. There is nothing in this
-build that can emit; the gate is proven first.
+bolted on afterwards, is how gates end up bypassable. The gate shipped alone in
+#58 and was proven refusing before anything could write; emission (#59) now
+CALLS it rather than carrying its own copy of the rules.
 """
 
 from __future__ import annotations
@@ -173,6 +174,74 @@ class Readiness:
         return "\n".join(lines)
 
 
+# ── Emission (§7.1) ──────────────────────────────────────────────────────────
+# VERBATIM AND FIRST, every time. This is the KEEL boundary made visible in the
+# artifact itself: a document that LOOKS build-ready and is not is worse than no
+# document, because the reader spends their trust before discovering the gap.
+# The banner is not a courtesy line — it is the thing that keeps a JARVIS-drafted
+# design from being mistaken for a Builder-ready spec, which is the exact seam
+# the Planner/Builder split exists to hold.
+BANNER = (
+    "> Drafted in a JARVIS planning session on {date}. Planner-ready, NOT\n"
+    "> build-ready — bring to a design session before implementation."
+)
+
+# The emitted document's section order. Mirrors the slot set so a reader who
+# knows the gate knows the shape.
+_SECTIONS = (
+    ("problem", "1. Problem"),
+    ("goals", "2. Goals"),
+    ("non_goals", "3. Non-goals"),
+    ("approach", "4. Approach"),
+    ("rejected", "5. Alternatives considered and rejected"),
+    ("data_model", "6. Data model"),
+    ("tests", "7. Test plan"),
+    ("open_questions", "8. Open questions"),
+)
+
+
+def compose_document(session, notes, *, date: str) -> str:
+    """Compose the emitted markdown: banner, sections, provenance.
+
+    PROVENANCE PAIRS WITH THE GATE, and the pairing is the point (§7.1.3). The
+    gate refuses thin content; provenance makes thin content VISIBLE even when it
+    passes — session id, dates, channels, note count. A document assembled from
+    four notes in one sitting and one assembled from thirty across a week and
+    three channels read identically without it, and the first is exactly what the
+    07-20 artifact was. Together they are two layers against one failure: a
+    placeholder document passed off as thought-through.
+    """
+    slots = compose_slots(notes)
+    channels = sorted({n.channel for n in notes if n.channel})
+
+    parts = [
+        BANNER.format(date=date),
+        "",
+        f"# TDD — {session.topic}",
+        "",
+    ]
+    for slot, heading in _SECTIONS:
+        body = slots.get(slot, "").strip()
+        parts += [f"## {heading}", "", body or "_(not recorded)_", ""]
+
+    parts += [
+        "---",
+        "",
+        "## Provenance",
+        "",
+        f"- Planning session: #{session.id}",
+        f"- Opened: {session.created_at}",
+        f"- Emitted: {date}",
+        f"- Channels used: {', '.join(channels) or 'none recorded'}",
+        f"- Notes captured: {len(notes)}",
+        "",
+        "_This document is the residue of a conversation, not a single-turn "
+        "generation. The note count and channel spread above are the evidence._",
+        "",
+    ]
+    return "\n".join(parts)
+
+
 def compose_slots(notes) -> dict[str, str]:
     """Compose slot text from notes. The notes are the record; this is a view.
 
@@ -212,9 +281,9 @@ def session_readiness(notes, *, min_chars: int | None = None) -> Readiness:
     Returns WHAT IS MISSING AND THE QUESTION THAT FILLS IT, not a bare bool —
     the refusal is meant to move the session forward.
 
-    NOTHING HERE EMITS. `emit_tdd` does not exist yet, by design: the gate is
-    built and proven before anything can write, so it cannot be the thing bolted
-    on afterwards (§9).
+    Emission CALLS this; it does not re-implement it. A second readiness rule is
+    a second thing that can disagree with the first, and the one that gets fixed
+    is whichever is failing loudly at the time.
     """
     min_chars = settings.planning_min_slot_chars if min_chars is None else min_chars
     slots = compose_slots(notes)
