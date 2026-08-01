@@ -246,7 +246,8 @@ the orchestrator **commits** (send, book, create with invites) — under the gat
 | Ideas | capture_idea, list_ideas, get_idea, **create_project_from_idea** (gated) | GitHub Contents API + `POST /user/repos` |
 | Projects | create_project, promote_idea, list_projects, project_status, add_milestone, complete_milestone, drop_milestone, set_project_status, attach_document, supersede_document | DB only |
 | Repos | **commit_document** (branch + PR, never `main`, never merges; ungated but registered **top-level** so the voice allowlist excludes it — see below), **create_project_repo** (**GATED** — creates a repo, seeds the scaffold; public by default) | GitHub |
-| Planning | start_planning, add_planning_note, planning_status, next_planning_question, abandon_planning (the interview engine — **no emit path exists yet, by design**) | DB + Haiku classify |
+| Planning | start_planning, add_planning_note, planning_status, next_planning_question, abandon_planning (the interview engine), emit_tdd (**top-level**, not voice-reachable) | DB + Haiku classify |
+| Inception | propose_milestone_date, ratify_plan (**the only routine path that writes a baseline**), replan, reset_baseline, project_timeline | DB only |
 | Callbacks | call_me_back, pending_callbacks, cancel_callback | Twilio (via worker) |
 | Watches | watch_for, list_watches, cancel_watch | LLM judge (worker) |
 | Infra | fleet_health, fleet_spend | Fly Machines + GraphQL |
@@ -347,16 +348,33 @@ type falls back to the **stricter** base set — a bug must not silently relax a
 asserts the base types still gate on their own slots, because that regression would be invisible
 from inception's own tests.
 
-**Schema (migration `0028`), no behaviour yet**: `milestone.baseline_date` / `current_date` /
+**Dates, baseline, and the timeline** (`app/inception.py` + `app/handlers/inception.py`, steps 3–4):
+`propose_milestone_date` records a floated date as `proposed` and **writes no baseline**;
+`ratify_plan` is the one-way gate that sets `baseline_date = current_date`, once. **Only
+`ratify_plan` and `reset_baseline` may write a baseline** — greppped in test as well as exercised,
+because the tempting shortcut (set it when the date is first proposed, it's simpler) destroys the
+guarantee while looking like a tidy-up. Before ratification nothing can slip and the timeline says
+so. `replan` writes the `replan` row **before** moving `current_date` — asserted by failing the log
+write and checking the date did not move — and never touches the baseline. `reset_baseline`
+snapshots the whole prior baseline **before** overwriting, because an unlogged re-baseline is
+indistinguishable from hiding a slip. `slippage_days` returns `None`, not `0`, for anything
+unratified: zero is a claim of on-time, `None` is "nothing to measure". An *open* milestone slips
+by today's reckoning rather than its plan date, or a stalled project would report as on-plan.
+`project_timeline` states **facts, never a verdict** — the day count, with an enumerated
+`JUDGMENT_WORDS` list asserted absent, so breaking §6 requires consciously deleting a list.
+Milestones create **no reminders** (§4.5): a milestone date is a plan the timeline reads, a task
+date pings, and collapsing them means either every milestone nags or tasks stop reminding.
+
+**Schema (migration `0028`)**: `milestone.baseline_date` / `current_date` /
 `date_status` (`none`/`proposed`/`ratified`), plus `replan`, `baseline_reset`, `plan_risk`,
 `plan_assumption`. **The fabrication guard in scheduling form** — a date elicited in an interview is
 `proposed` and sets no baseline; only ratification writes `baseline_date`, so *you cannot slip from
 a date you never agreed to*. A replan is a **logged event, not a field edit**: `replan.reason` and
 `baseline_reset.reason` are `NOT NULL` **at the column**, because enforcing it only in the tool
 leaves the silent edit one direct write away. Risks and assumptions are **rows, not prose**, so a
-risk can be resurfaced when it bites rather than sitting inert in section 9. Dates do not move until
-step 3; steps 3–7 (ratification, replan/timeline, resurfacing, emit, brief) follow as their own
-orders.
+risk can be resurfaced when it bites rather than sitting inert in section 9. **Steps 1–4 shipped**
+(#61, #62); steps 5–7 — risk/assumption resurfacing tools, `emit_project_plan` via the real
+`commit_document`, and brief integration — follow as their own orders.
 
 **Planning sessions** (`app/planning.py` + `app/handlers/planning.py`, `docs/TDD-planning-sessions.md`):
 the interview engine. A session is an **object, not a conversation** — notes accumulate into slots
