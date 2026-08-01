@@ -1,7 +1,10 @@
 # TDD — Repo Scaffolding & Document Commits
 
-**Status:** Draft, ready to build
-**Date:** 2026-07-21
+**Status:** Draft, **reconciled against the code 2026-08-01** — see §11. Several
+§4–§8 claims were written without reading the shipped GitHub paths and are false
+or unachievable as stated. Read §11 before building; the affected sections carry
+inline markers.
+**Date:** 2026-07-21 (draft) / 2026-08-01 (reconciliation pass)
 **Series:** 3 of 3 (project tracking → planning sessions → **repo scaffolding**)
 **Depends on:** TDD #1 (`project`, `project_document`), TDD #2 (emission),
 existing `GITHUB_TOKEN` and the ideas commit path
@@ -61,6 +64,15 @@ document commits into it are ungated like any other.
 
 ### 4.2 Token scope — a real prerequisite
 
+> **RECONCILED 2026-08-01 — the premise below is FALSE.** `create_project_from_idea`
+> (`app/handlers/ideas.py:195`) already calls `POST /user/repos` with the single
+> `GITHUB_TOKEN` and creates repos successfully in production. A classic PAT with
+> `repo` scope *does* permit creating repositories under the owner's own account.
+> `GITHUB_ADMIN_TOKEN` is therefore **not a prerequisite** and no owner action is
+> blocked on minting one. The blast-radius argument for splitting tokens survives
+> on its own merits and may still be worth doing — but it must be re-argued as a
+> defence-in-depth choice, not inherited as a capability requirement. See §11.2.
+
 The existing `GITHUB_TOKEN` has `repo` scope, set for the ideas commit sink.
 **`repo` does not permit repository creation.** A classic PAT needs `public_repo`
 for public repos, or full `repo` plus account-level create permission; a
@@ -81,6 +93,13 @@ Owner action: generate on desktop, set as a Fly secret, record in the password
 manager at creation. Fly secrets are write-only once set.
 
 ### 4.3 Repo visibility — KEEL doctrine
+
+> **RECONCILED 2026-08-01 — UNRESOLVED CONFLICT, needs ratification before build.**
+> Shipped code defaults the opposite way: `_create_project_from_idea` reads
+> `private = bool(args.get("private", True))` — **private by default** — and
+> `tests/test_ideas.py:294` pins `private is True`. This section says public by
+> default. Both cannot stand, and this is a security-relevant default that must
+> not be settled by whichever code gets written last. See §11.3.
 
 New project repos are created **public** by default, per current KEEL doctrine:
 the Planner AI (browser chat) can only connect directly to public repos, so a
@@ -124,6 +143,17 @@ preventing drift is a special kind of failure.
 
 ### 4.5 Secret scanning — mandatory, pre-commit
 
+> **RECONCILED 2026-08-01 — the ordering claim is already unachievable, and the
+> scope is wider than "every document".** There is no scanner anywhere in
+> `backend/app/` today, and **three GitHub write paths already ship**: the
+> `commit_idea` job, and the two repo-seed PUTs inside `create_project_from_idea`.
+> The scanner is a **retrofit**, not a precondition, and it must cover those
+> existing writers — not only `commit_document`. This matters more than it sounds:
+> idea bodies are free text captured from SMS and voice and written to GitHub
+> **verbatim**, which is exactly where a pasted credential would land. See §11.4.
+> This is the highest-value item in the TDD and it is independent of everything
+> else here — it should ship first and on its own.
+
 Every document is scanned **before** the commit call, not after:
 
 - high-entropy strings above a length threshold
@@ -156,6 +186,19 @@ Everything else here reuses TDD #1's schema.
 
 Migration `0024_github_writes.py`.
 
+> **RECONCILED 2026-08-01.** Both "additions" already exist and need no
+> migration: `Project.repo_url` (`String(400)`) and `ProjectDocument.url`
+> (`String(400)`) shipped with TDD #1 in migration 0024. **`github_write_log` is
+> the only real schema work here.**
+>
+> The migration number is wrong and so is inception's. `0024` is
+> `0024_projects`; live head is `0025_capability_rollup`. In the ratified build
+> order (#2 → #3 → inception) the slots are **0026 planning sessions, 0027 github
+> writes, 0028 inception** — note that inception's reconstruction "corrected"
+> itself to 0026, which only holds if it lands *first*, contradicting its own
+> dependency order. All three drafts cite stale numbers; confirm against the live
+> head at build time, every time. See §11.5.
+
 ---
 
 ## 6. Tools
@@ -182,6 +225,16 @@ path — it supplies the tier.
 
 ### 6.2 `create_project_repo`
 
+> **RECONCILED 2026-08-01 — this is a REFACTOR, not a new build.** Everything
+> below exists in `_create_project_from_idea`: gated registration via
+> `ideas.register_gated`, a `pregate` that refuses unknown/already-promoted/
+> unconfigured/unnamed, a `summarize` that reads back name and visibility, repo
+> creation, scaffold seeding, and idempotence on 422-already-exists. The work is
+> to **generalise it from `idea` to `project`** and keep the idea path working
+> over the same seam — not to write it again. Writing it again produces two
+> gated repo-creation paths, and the second one is the one nobody remembers to
+> audit. See §11.6.
+
 Gated: confirmation with readback of repo name, visibility, and owner before
 anything is created. Uses `GITHUB_ADMIN_TOKEN` exclusively.
 
@@ -197,6 +250,21 @@ repo from a network failure must be recoverable by re-running.
 ---
 
 ## 7. Health check — `github_writes`
+
+> **RECONCILED 2026-08-01 — there is no `github` component at all today.** The
+> GitHub half of Ideas is entirely invisible to health: `capture_idea`,
+> `list_ideas` and `get_idea` all map to `postgres` in `_TOOL_COMPONENT`, which is
+> honest for the DB write and says nothing about whether the commit landed. Adding
+> this check means adding a **component**, and the PR #50 guards then require a
+> runbook for every fault code it can emit and none for any code it cannot.
+>
+> **Read the write log, not `actions_audit` — and that is load-bearing, not
+> incidental.** The routine exercise path for GitHub is the `commit_idea` **job**
+> (`app/jobs.py:264`), not a tool call, so an audit-derived liveness check would be
+> starved on day one — the calendar latch, rebuilt from scratch, in the same week
+> it was swept. Reading `github_write_log` sidesteps it, on one condition that must
+> be stated as an invariant: **every GitHub write path writes a row, the job
+> included.** See §11.7.
 
 - `ok` — no failed writes in the trailing 7 days
 - `degraded` — any `ok=false` in `github_write_log` in 7 days
@@ -267,3 +335,137 @@ precondition.
 - **Should `Project-Jarvis` document commits go through the same gate as code?**
   Currently no — they are docs, on a branch, reviewed as a PR. If a document
   commit ever lands in a path that CI reads, revisit.
+
+---
+
+## 11. Reconciliation against the code — 2026-08-01
+
+The pre-work note (`PREWORK-project-management-arc.md`) instructed: *"Read the
+existing code before speccing the build… do not design around a capability that
+is partly built."* This is that pass. It was warranted — **five of this TDD's
+claims are false or unachievable as written, and one of them would have blocked
+the build on owner action that isn't needed.**
+
+The general finding is worth stating before the specifics: this TDD was drafted
+as greenfield, and **it is not greenfield.** A working, gated, production-proven
+GitHub repo-creation path already exists under the Ideas agent. Building §6.2 as
+specified would produce a *second* gated repo-creation path beside the first.
+
+### 11.1 What actually exists today
+
+| Capability | State | Where |
+|---|---|---|
+| Repo creation (`POST /user/repos`), **gated**, with pregate + readback + 422-idempotence | **SHIPPED** | `handlers/ideas.py:173` |
+| Scaffold seeding (`README.md`, `docs/idea.md`) via Contents API | **SHIPPED**, but see §11.8 | `handlers/ideas.py:207` |
+| Document commit to a fixed repo (`commit_idea` job), create-or-update with blob sha | **SHIPPED** | `handlers/ideas.py:230` |
+| `Project.repo_url`, `ProjectDocument.url`, `attach_document`, tier enforcement | **SHIPPED** (TDD #1) | `models.py`, `handlers/projects.py:408` |
+| Secret scanner | **DOES NOT EXIST** | — |
+| Branch + PR (Git Refs / Pulls API) | **DOES NOT EXIST** | — |
+| `github_write_log` | **DOES NOT EXIST** | — |
+| Any `github` health component | **DOES NOT EXIST** | — |
+
+Every existing write is a Contents API `PUT` straight at the default branch.
+Nothing in the codebase has ever created a branch or opened a PR.
+
+### 11.2 The two-token prerequisite is not a prerequisite (§4.2)
+
+`repo` scope creates repos fine, and has been doing so in production. The
+argument that survives is narrower and worth keeping honestly: a single token
+means the *common* path (idea commits) holds creation rights it never uses.
+That is a real defence-in-depth point. It is **not** a capability blocker, and
+it should not be presented to the owner as owner-action-required.
+
+### 11.3 Visibility default — doc and code disagree (§4.3) — **NEEDS RATIFICATION**
+
+Code: private by default, pinned by a test. Doc: public by default, on the KEEL
+argument that a Planner AI in a browser chat can only connect to public repos.
+
+Both positions are coherent; they cannot both be the default. This is the one
+item in the pass that is a **decision, not a finding**, and it is the owner's to
+make. Flagged rather than resolved. Whichever way it goes, the losing side's test
+gets updated deliberately and the reason recorded here — a security-relevant
+default that flips because someone edited a fixture is how defaults rot.
+
+### 11.4 The scanner is a retrofit with live exposure (§4.5)
+
+"Scanner before any write path exists" cannot be satisfied — the write paths
+shipped first. Worse than a missed ordering: **idea bodies are captured from SMS
+and voice as free text and committed to GitHub verbatim.** That is a live path
+from "owner pastes a token into a note" to "token in a git history," today, with
+no scanner between them.
+
+The build-order consequence is that the scanner **stops being step 2 of TDD #3
+and becomes its own first deliverable**, covering `commit_idea_to_repo` and the
+two seed PUTs. It needs nothing else in this TDD to be useful, and it retires a
+real exposure rather than a hypothetical one.
+
+### 11.5 Every migration number in the arc is stale (§5)
+
+`0024` is `0024_projects`; head is `0025_capability_rollup`. Planning sessions
+cites `0023` (taken by `0023_relay_accepted`). Inception cites `0026`, which is
+only free if it lands before #2 and #3 — contradicting its own dependency order.
+Correct sequence for the ratified build order: **0026 / 0027 / 0028.** The
+standing rule already recorded in the pre-work holds and is now demonstrated
+three times over: **numbers are indicative, never reserved.**
+
+### 11.6 §6.2 is a generalisation, not a build
+
+`_create_project_from_idea` → `create_project_repo(project, name, visibility)`,
+with the idea path preserved over the same seam. Note that TDD #1's
+`_promote_idea` and Ideas' `_create_project_from_idea` are already deliberately
+orthogonal — tracking-row vs. GitHub-repo, documented in `Idea.status`. The
+refactor must not collapse them; it should let one moment do both, which is
+exactly what inception §11 anticipates ("create repo → seed rows → commit plan →
+ratify").
+
+### 11.7 The health check must read the write log, or it is born starved (§7)
+
+Stated in §7 above. Recording the reasoning here because it is the design-note
+checklist (`design-note-latch-failures.md` §5, Q3 — *"is the routine exercise
+path the same path the check reads?"*) applied at design time and returning a
+non-obvious answer. The routine GitHub exercise path is a **job**, and jobs write
+no `actions_audit` rows. An audit-derived check here would be `unknown` forever
+or latched on its first failure. The write log is the correct substrate precisely
+because the job can write to it.
+
+### 11.8 A live defect found during the pass — partial repo seeding reports success
+
+Not a doc conflict; a bug in shipped code, found by reading it.
+
+`_create_project_from_idea` seeds `README.md` and `docs/idea.md` in a loop
+(`ideas.py:207-217`). A failed `PUT` is **`log.warning`'d and swallowed** — the
+loop continues, `idea.promoted_url` is set, and the tool returns
+`"Created the project repo: <url>"`. A repo created with a missing or empty
+scaffold reports unqualified success, and `promoted_url` being non-empty means a
+retry is *refused* as already-promoted.
+
+This is the proxy-signal family, not the latch family (`design-note-latch-failures.md`
+§3): it reports the *creation* status while claiming the *seeding* outcome, the
+same shape as `relay_accepted` reading the HTTP status instead of the response
+body. It has been wrong since the path shipped, not transiently.
+
+Fix belongs with the §6.2 refactor: collect the seed outcomes, and either report
+partial success honestly or make the operation re-runnable by not marking
+promoted until the scaffold is complete. **`ideas.py:132` `_explain_repo_error`
+has the milder version of the same shape** — 401 raises `ToolFault` (audited as a
+fault) while 403 and 422 `return` a string (audited `ok`), so a rate-limited or
+rejected creation currently looks like a successful tool call to the audit
+substrate.
+
+### 11.9 Revised build order
+
+Supersedes §8. The reordering is not cosmetic: it puts the one item with live
+exposure first, and refuses to spend effort on a second repo-creation path.
+
+| # | Work | Change from §8 |
+|---|---|---|
+| 1 | **Secret scanner, standalone** — retrofit onto `commit_idea_to_repo` + the two seed PUTs | Promoted; scope widened to existing writers |
+| 2 | Fix §11.8 — partial-seed reporting + `_explain_repo_error` fault classing | **New** |
+| 3 | Migration 0027, `github_write_log`; backfill the existing write paths into it | Was step 1; `repo_url`/`url` dropped (exist) |
+| 4 | `commit_document` — branch + PR (Git Refs + Pulls API), tier→path enforcement | Genuinely new; was step 3 |
+| 5 | Scaffold template stored + versioned in-repo | Unchanged |
+| 6 | **Generalise** `create_project_from_idea` → `create_project_repo` | Was "build, gated"; now a refactor |
+| 7 | `github` component + `github_writes` check reading the write log + runbooks | Unchanged, with §11.7's substrate pinned |
+
+Steps 1 and 2 are independent of the project-management arc and can ship without
+TDD #2. **§11.3 must be ratified before step 6**, not during it.
