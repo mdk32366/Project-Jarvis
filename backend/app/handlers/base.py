@@ -213,6 +213,7 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         scheduling.register_gated(reg)    # create_event
         travel.register_gated(reg)        # book_flight (+ TOTP second factor)
         ideas.register_gated(reg)         # create_project_from_idea (creates a repo)
+        repos.register_gated(reg)         # create_project_repo (creates a repo)
         # get_current_datetime is ungated and universal — registered at top level
         # AND in the sub-agent branch (TDD §4.1: both branches).
         datetime_tools.register(reg)

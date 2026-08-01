@@ -29,6 +29,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.handlers.base import Context, Registry, ToolFault
 from app.models import Idea
+from app.secretscan import scan_for_secrets
 
 log = logging.getLogger(__name__)
 
@@ -165,7 +166,13 @@ def _promote_pregate(args: dict, ctx: Context) -> Optional[str]:
 
 
 def _summarize_promote(args: dict) -> str:
-    vis = "private" if args.get("private", True) else "public"
+    # THE DEFAULT HERE MUST TRACK `_create_project_from_idea`'s. It is a
+    # separate `.get(..., default)` on the same argument, so flipping only the
+    # handler would have produced a readback that says "private" while the code
+    # creates "public" — the confirmation gate lying about an irreversible,
+    # outward-facing action, which is the one thing the readback exists to
+    # prevent. Pinned by a test that asserts the two defaults agree.
+    vis = "private" if args.get("private", False) else "public"
     name = (args.get("project_name") or "?").strip()
     return f"create a new {vis} GitHub repo '{name}' from idea #{args.get('idea_id')}"
 
@@ -186,8 +193,27 @@ def _create_project_from_idea(args: dict, ctx: Context) -> str:
     name = (args.get("project_name") or "").strip()
     if not name:
         return "I need a project name to create the repo."
-    private = bool(args.get("private", True))
+    # PUBLIC BY DEFAULT — ratified 2026-08-01 (TDD #3 §4.3 / §11.3). KEEL
+    # doctrine: a Planner AI in a browser chat can only connect to public repos,
+    # so a private day-one repo cannot be brought into a design session. An
+    # explicit `private=true` from the caller is still honored.
+    # `_summarize_promote` carries the SAME default so the gate's readback and
+    # the action cannot disagree.
+    private = bool(args.get("private", False))
     description = (args.get("description") or f"Seeded from JARVIS idea #{idea.id}: {idea.title}")[:350]
+
+    # SCAN BEFORE THE SEED IS PUBLISHED. The idea body is free text captured
+    # from SMS and voice and committed verbatim — the most likely place in the
+    # whole system for a pasted credential to arrive. Under the old private
+    # default that was contained; public at the moment of commit, it is not.
+    # This scan is the precondition that made uniform-public acceptable, and it
+    # runs before any GitHub call so a finding costs nothing but a refusal.
+    readme, idea_doc = _readme_md(name, idea), _idea_md(idea)
+    findings = scan_for_secrets(readme) + scan_for_secrets(idea_doc)
+    if findings:
+        where = "; ".join(f"{f.pattern_name} on line {f.line}" for f in findings[:5])
+        return (f"I won't publish that idea — it looks like it contains a secret: {where}. "
+                f"No repo was created. Remove the credential and ask me again.")
 
     headers = _github_headers()
     try:
@@ -204,9 +230,13 @@ def _create_project_from_idea(args: dict, ctx: Context) -> str:
                 return "GitHub created something unexpected — no repo name came back."
 
             # Seed the repo. The first PUT creates the default branch.
+            # NOTE these are the SAME strings the scanner cleared above, not a
+            # re-render. Scanning one rendering and publishing another is a gap
+            # even when the renderer is deterministic — the guarantee should be
+            # "these exact bytes were scanned", not "bytes equal to these were".
             for path, content, msg in (
-                ("README.md", _readme_md(name, idea), f"seed: {name}"),
-                ("docs/idea.md", _idea_md(idea), "seed: original idea"),
+                ("README.md", readme, f"seed: {name}"),
+                ("docs/idea.md", idea_doc, "seed: original idea"),
             ):
                 pr = client.put(
                     f"{_API}/repos/{full}/contents/{path}", headers=headers,
