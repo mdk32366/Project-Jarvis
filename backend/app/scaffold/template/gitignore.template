@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+
+# Env / secrets
+.env
+.env.local
+*.log
+
+# Credential downloads. One stray `git add -A` would otherwise publish a live
+# credential to a public repo.
+client_secret*.json
+client_secrets*.json
+
+# OS
+.DS_Store
+
+# Archives. A code snapshot committed once can never be fully removed from
+# history.
+*.zip
+*.tar.gz
+*.tgz

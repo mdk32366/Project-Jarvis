@@ -355,6 +355,25 @@ its output is bound for `github_write_log`, which is stored *and* rendered on th
 a leak there leaks twice. Built and proven before any writer exists (§8), which stopped being
 prudence and became a safety property when public-by-default repo visibility was ratified (§11.3).
 
+**Scaffold template** (`app/scaffold/`, TDD #3 §4.4): the standard new-project structure —
+`README.md`, `ARCHITECTURE.md`, `docs/README.md`, `docs/archive/.gitkeep`,
+`docs/operational/.gitkeep`, `.gitignore` — stored as **tracked files** under
+`app/scaffold/template/`, never as a string in code. That is the whole point: a structure
+regenerated from memory each time drifts, and drift in the thing whose job is preventing drift is
+a special kind of failure. Because the template is tracked, a scaffold change is a reviewable diff.
+`render_scaffold(project_name, description, now)` substitutes `{{PROJECT_NAME}}` /
+`{{DESCRIPTION}}` / `{{DATE}}` and returns the file set; the placeholder key set is **derived from
+the template**, so a token nobody supplies raises rather than shipping literal `{{...}}` into a
+repo. Pure — no network, no DB, no repo — which is why the structure is fully proven offline
+before step 6's gated repo creation touches anything (the same detect/enforce split as
+`secretscan` vs `commit_document`). `docs/README.md` carries the tier convention verbatim and is
+asserted byte-identical to the template. Two runtime hazards are guarded: the template stores
+`gitignore.template` (a literal `.gitignore` there would be a *live* gitignore for its own
+subtree), and `render_scaffold` **refuses to render an incomplete template** — `.dockerignore`
+excludes `*.md`, three of the six files are markdown, and an image missing them would seed repos
+with no README while every offline test passed. `.dockerignore` carries a negation for the
+template path; the completeness check is what makes a regression of it loud.
+
 **Document commits** (`app/handlers/repos.py`, TDD #3 §4.1/§6.1): `commit_document(project, title,
 body, tier, kind)` — **this is where the scanner stops being detection and becomes refusal.**
 `scan_for_secrets` runs on body *and* title before any GitHub client is constructed; a finding

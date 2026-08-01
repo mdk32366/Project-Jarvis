@@ -10,3 +10,11 @@ backend/static
 .git
 .github
 *.md
+# ...but NOT the scaffold template. Its README/ARCHITECTURE/docs/README are
+# content the app SHIPS into new repos, not repo documentation — and
+# `docs/README.md` carries the tier convention itself. Excluding them would make
+# render_scaffold emit a scaffold with no README and no convention file in
+# production while every offline test passed, because tests read the source tree
+# and production reads the image. Belt to the braces in app/scaffold/__init__.py,
+# which refuses to render an incomplete template rather than emitting one.
+!backend/app/scaffold/template/**
