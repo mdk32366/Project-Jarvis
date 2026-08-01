@@ -245,7 +245,7 @@ the orchestrator **commits** (send, book, create with invites) — under the gat
 | Contacts | whoami, lookup_contact, save_contact, list_contacts, sync_google_contacts, google_status | Google People |
 | Ideas | capture_idea, list_ideas, get_idea, **create_project_from_idea** (gated) | GitHub Contents API + `POST /user/repos` |
 | Projects | create_project, promote_idea, list_projects, project_status, add_milestone, complete_milestone, drop_milestone, set_project_status, attach_document, supersede_document | DB only |
-| Repos | **commit_document** (branch + PR, never `main`, never merges; ungated but registered **top-level** so the voice allowlist excludes it — see below) | GitHub |
+| Repos | **commit_document** (branch + PR, never `main`, never merges; ungated but registered **top-level** so the voice allowlist excludes it — see below), **create_project_repo** (**GATED** — creates a repo, seeds the scaffold; public by default) | GitHub |
 | Callbacks | call_me_back, pending_callbacks, cancel_callback | Twilio (via worker) |
 | Watches | watch_for, list_watches, cancel_watch | LLM judge (worker) |
 | Infra | fleet_health, fleet_spend | Fly Machines + GraphQL |
@@ -373,6 +373,31 @@ subtree), and `render_scaffold` **refuses to render an incomplete template** —
 excludes `*.md`, three of the six files are markdown, and an image missing them would seed repos
 with no README while every offline test passed. `.dockerignore` carries a negation for the
 template path; the completeness check is what makes a regression of it loud.
+
+**Repo creation** (`create_project_repo`, `app/handlers/repos.py`, TDD #3 §4.3/§6.2 — **GATED**):
+creates a repository for a tracked project and seeds the versioned scaffold. Gated because
+creation is irreversible in the way a PR is not — the name is taken permanently, it is visible,
+and undoing it is a manual deletion. **The readback states name, visibility, and owner**; that is
+the owner's one chance to stop an unwanted public repo before it exists, so visibility in the
+readback is non-negotiable. Idempotent: an existing repo is reported and *adopted* (`repo_url`
+set), never re-seeded — re-seeding would clobber real work in a repo somebody already used. A
+partial seed is reported **as partial**, deliberately not repeating the §11.8 defect where the
+ideas path swallows failed PUTs and claims success.
+
+**Repo visibility: PUBLIC by default on both creation paths** — ratified 2026-08-01 (§4.3 / §11.3).
+KEEL doctrine: a Planner AI in a browser chat can only connect to public repos, so a private
+day-one repo cannot be brought into a design session. `create_project_from_idea`'s default flipped
+from private with it. **The secret scanner is the precondition that made public acceptable, and
+the two may not be separated**: every byte of the scaffold, and the README + idea markdown the
+idea path seeds, passes `scan_for_secrets` *before any GitHub client is constructed*. Idea bodies
+are free text captured from SMS and voice and committed verbatim — the likeliest place a pasted
+credential arrives, and contained under the old private default in a way it is not under a public
+one. Both scan-precedes-write paths are negative-validated in test. The seed publishes **the exact
+bytes that were scanned**, not a re-render. Two defaults govern one argument — the handler's and
+`_summarize_promote`'s — and a test asserts they agree, because a flip of only the handler would
+make the gate say "private" while creating "public". **Going private is owner action**, prompted by
+the project close-out; no code path here changes an existing repo's visibility, asserted as an
+absence (no `PATCH`).
 
 **Document commits** (`app/handlers/repos.py`, TDD #3 §4.1/§6.1): `commit_document(project, title,
 body, tier, kind)` — **this is where the scanner stops being detection and becomes refusal.**

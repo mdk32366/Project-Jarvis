@@ -288,10 +288,21 @@ def test_confirm_creates_repo_seeds_readme_and_reports_url(db, monkeypatch):
 
     reply = run(db, channel="sms", thread_key="+15551230000", user_text="confirm", actor="+15551230000")
 
-    # repo created with the right name + private default
+    # Repo created with the right name, and PUBLIC by default.
+    #
+    # CHANGED DELIBERATELY 2026-08-01, not because a fixture got in the way.
+    # This line asserted `private is True` from the day the path shipped. The
+    # default was flipped by ratified decision (TDD #3 §4.3 / §11.3): a Planner
+    # AI in a browser chat can only connect to public repos, so a private
+    # day-one repo cannot be brought into a design session. The safety
+    # precondition that made public acceptable — the secret scanner — shipped
+    # first (#53) and now runs over the seeded content before this PUT.
+    #
+    # A security-relevant default that flips because someone edited a fixture is
+    # how defaults rot, so the reason lives here next to the assertion.
     assert sink["post_url"].endswith("/user/repos")
     assert sink["post_json"]["name"] == "node-narrator"
-    assert sink["post_json"]["private"] is True
+    assert sink["post_json"]["private"] is False
     # README seeded with the idea's content
     put_paths = [u for u, _ in sink["puts"]]
     assert any(u.endswith("/contents/README.md") for u in put_paths)

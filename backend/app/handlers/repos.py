@@ -43,6 +43,7 @@ from app.handlers.base import Context, Registry, ToolFault
 from app.handlers.ideas import _slug
 from app.handlers.projects import DOC_TIERS, _attach_document, _find_project
 from app.models import GithubWriteLog
+from app.scaffold import ScaffoldError, render_scaffold
 from app.secretscan import SecretFinding, scan_for_secrets
 
 log = logging.getLogger(__name__)
@@ -263,6 +264,178 @@ def _commit_document(args: dict, ctx: Context) -> str:
             f"and opened a PR: {pr_url}. Nothing merged — that's yours to review.")
 
 
+# ── create_project_repo (GATED) ──────────────────────────────────────────────
+def _owner() -> str:
+    """The account new repos are created under.
+
+    Derived from `jarvis_repo` rather than called for: `summarize` runs with no
+    Context and must not do I/O — a readback that needs a network call is a
+    readback that can fail or hang at the moment the owner is being asked to
+    approve something irreversible.
+    """
+    return (settings.jarvis_repo or "").split("/")[0] or "your GitHub account"
+
+
+def _summarize_create_repo(args: dict) -> str:
+    """The readback. Visibility is stated explicitly and is non-negotiable —
+    it is the owner's one chance to catch an unwanted public repo BEFORE it
+    exists, and creation is not reversible in the way a PR is."""
+    vis = (args.get("visibility") or "public").strip().lower()
+    name = (args.get("name") or "?").strip()
+    return f"create a new {vis} GitHub repo '{name}' under {_owner()}"
+
+
+def _create_repo_pregate(args: dict, ctx: Context) -> Optional[str]:
+    """Refuse-outright checks BEFORE the gate is raised — things that should
+    never reach the owner as "confirm or cancel"."""
+    if not (args.get("name") or "").strip():
+        return "I need a name for the repo — what should I call it?"
+    if not settings.github_token:
+        return "I can't create a GitHub repo — GITHUB_TOKEN isn't configured."
+    p, err = _find_project(ctx.db, args.get("project"))
+    if err:
+        return err
+    if p.repo_url:
+        return f"{p.name} already has a repo: {p.repo_url}."
+    vis = (args.get("visibility") or "public").strip().lower()
+    if vis not in ("public", "private"):
+        return "Visibility has to be either public or private."
+    return None
+
+
+def _create_project_repo(args: dict, ctx: Context) -> str:
+    """GATED — runs only after the confirmation gate clears.
+
+    Creates the repo, seeds the versioned scaffold (#55), records `repo_url`.
+
+    PUBLIC BY DEFAULT, ratified (TDD §4.3 / §11.3): a Planner AI in a browser
+    chat can only connect to public repos, so a private day-one repo cannot be
+    brought into a design session. **The scanner is the precondition that made
+    that acceptable** — every byte is scanned before any GitHub call, and the
+    two may not be separated.
+    """
+    import httpx
+
+    p, err = _find_project(ctx.db, args.get("project"))
+    if err:
+        return err
+    name = (args.get("name") or "").strip()
+    if not name:
+        return "I need a name for the repo."
+    if not settings.github_token:
+        return "Can't create a repo — GITHUB_TOKEN isn't set."
+    visibility = (args.get("visibility") or "public").strip().lower()
+    private = visibility == "private"
+    description = (args.get("description") or p.summary or "")[:350]
+
+    # ── SCAN BEFORE ANYTHING EXISTS (§1.1). The scaffold is static, so a
+    # finding here is unlikely — but the scan is the INVARIANT, not an
+    # optimization. A public repo write without a preceding scan is exactly the
+    # hazard the ratified ordering forbids, and "it's probably fine" is how an
+    # ordering constraint becomes a comment nobody honors.
+    try:
+        files = render_scaffold(name, description)
+    except ScaffoldError as e:
+        _log_write(ctx.db, operation="create_repo", target=name, ok=False, error=str(e))
+        raise ToolFault(f"Couldn't build the project scaffold: {e}")
+
+    findings = [f for sf in files for f in scan_for_secrets(sf.content)]
+    if findings:
+        names = ",".join(sorted({f.pattern_name for f in findings}))
+        _log_write(ctx.db, operation="create_repo", target=name, ok=False,
+                   error=f"blocked by secret scan: {names}")
+        return _refusal_message(findings)
+
+    headers = _headers()
+    try:
+        with httpx.Client(timeout=_TIMEOUT) as client:
+            r = client.post(f"{_API}/user/repos", headers=headers,
+                            json={"name": name, "private": private,
+                                  "description": description, "auto_init": False})
+
+            # ── IDEMPOTENCE (§6.2). A half-created repo from a network failure
+            # must be recoverable by re-running, so an existing repo is reported
+            # and adopted — never overwritten. Re-seeding would clobber real work
+            # in a repo somebody has already used.
+            if r.status_code == 422 and "already exists" in (r.text or "").lower():
+                g = client.get(f"{_API}/repos/{_owner()}/{name}", headers=headers)
+                html_url = (g.json() or {}).get("html_url", "") if g.status_code == 200 else ""
+                if html_url and not p.repo_url:
+                    p.repo_url = html_url
+                    ctx.db.commit()
+                _log_write(ctx.db, operation="create_repo", target=f"{_owner()}/{name}",
+                           ok=True, error="already existed — adopted, scaffold untouched")
+                return (f"A repo called '{name}' already exists{f': {html_url}' if html_url else ''}. "
+                        f"I've recorded it against {p.name} and left its contents alone.")
+
+            if r.status_code == 401:
+                raise ToolFault("GitHub rejected the token. Check GITHUB_TOKEN.")
+            if r.status_code not in (200, 201):
+                raise ToolFault(f"GitHub wouldn't create the repo ({r.status_code}): {r.text[:200]}")
+
+            repo = r.json() or {}
+            full = repo.get("full_name")
+            html_url = repo.get("html_url", "")
+            if not full:
+                raise ToolFault("GitHub created something unexpected — no repo name came back.")
+
+            # Seed the scaffold. The first PUT creates the default branch.
+            failed: list[str] = []
+            for sf in files:
+                pr = client.put(
+                    f"{_API}/repos/{full}/contents/{sf.path}", headers=headers,
+                    json={"message": f"scaffold: {sf.path}",
+                          "content": base64.b64encode(sf.content.encode("utf-8")).decode("ascii")},
+                )
+                if pr.status_code not in (200, 201):
+                    failed.append(sf.path)
+    except ToolFault as e:
+        _log_write(ctx.db, operation="create_repo", target=name, ok=False, error=str(e))
+        raise
+    except Exception as e:  # noqa: BLE001 — a tool must never crash the turn
+        _log_write(ctx.db, operation="create_repo", target=name, ok=False, error=str(e)[:2000])
+        log.error("create_project_repo %s failed: %s", name, e)
+        raise ToolFault(f"Couldn't create the project repo: {e}")
+
+    p.repo_url = html_url
+    ctx.db.commit()
+
+    # A PARTIAL SEED IS REPORTED AS PARTIAL. This is the §11.8 defect — the
+    # ideas path swallows failed seed PUTs and returns unqualified success —
+    # deliberately not repeated on the new path.
+    if failed:
+        _log_write(ctx.db, operation="create_repo", target=full, ref=html_url, ok=False,
+                   error=f"scaffold incomplete: {', '.join(failed)}")
+        return (f"Created {html_url} ({visibility}), but {len(failed)} scaffold file(s) "
+                f"didn't land: {', '.join(failed)}. Worth checking before you use it.")
+
+    _log_write(ctx.db, operation="create_repo", target=full, ref=html_url, ok=True)
+    return (f"Created the {visibility} repo {html_url} and seeded the standard scaffold "
+            f"({len(files)} files). Recorded against {p.name}.")
+
+
+_CREATE_REPO_SCHEMA = {
+    "name": "create_project_repo",
+    "description": (
+        "Create a NEW GitHub repository for an existing tracked project and seed it with "
+        "the standard scaffold (README, ARCHITECTURE, docs/ convention). PUBLIC by default. "
+        "IRREVERSIBLE — the system requires the user's explicit confirmation first. ASK for "
+        "the repo name if they didn't give one; never invent it."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "project": {"type": "string", "description": "Tracked project name or id."},
+            "name": {"type": "string", "description": "Repo name the user chose."},
+            "visibility": {"type": "string", "enum": ["public", "private"],
+                           "description": "Default public."},
+            "description": {"type": "string", "description": "Optional repo description."},
+        },
+        "required": ["project", "name"],
+    },
+}
+
+
 _SCHEMA = {
     "name": "commit_document",
     "description": (
@@ -299,3 +472,22 @@ def register(reg: Registry) -> None:
     Fail-closed by construction.
     """
     reg.register(_SCHEMA, _commit_document)
+
+
+def register_gated(reg: Registry) -> None:
+    """Gated tools — top-level registry only (the confirmation gate runs in
+    `orchestrator.run`; sub-agents refuse gated tools).
+
+    Creating a named repository is irreversible in the way a PR is not: the name
+    is taken permanently, it is visible, and undoing it is a manual deletion.
+    That is squarely the irreversible-action class, and it gets the standard
+    treatment — including a readback that states the VISIBILITY, which is the
+    owner's one chance to stop an unwanted public repo before it exists.
+    """
+    reg.register(
+        _CREATE_REPO_SCHEMA,
+        _create_project_repo,
+        gated=True,                       # notional None -> always confirm
+        summarize=_summarize_create_repo,
+        pregate=_create_repo_pregate,
+    )
