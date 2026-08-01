@@ -62,7 +62,12 @@ def test_github_write_log_migration_roundtrips(tmp_path):
     """
     db = tmp_path / "migrate.db"
 
-    up = _alembic(db, "upgrade", "head")
+    # Upgrade to THIS revision, not to `head`. The first version of this test
+    # asserted the global head was 0026 — which made it a tripwire on every
+    # future migration rather than a test of this one, and 0027 duly broke it.
+    # A test that fails when unrelated correct work lands is a test that gets
+    # weakened to shut it up.
+    up = _alembic(db, "upgrade", "0026_github_write_log")
     assert up.returncode == 0, f"upgrade failed:\n{up.stdout}\n{up.stderr}"
     assert _has_table(db, "github_write_log")
     assert _version(db) == "0026_github_write_log"

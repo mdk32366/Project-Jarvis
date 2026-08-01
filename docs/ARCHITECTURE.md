@@ -246,6 +246,7 @@ the orchestrator **commits** (send, book, create with invites) — under the gat
 | Ideas | capture_idea, list_ideas, get_idea, **create_project_from_idea** (gated) | GitHub Contents API + `POST /user/repos` |
 | Projects | create_project, promote_idea, list_projects, project_status, add_milestone, complete_milestone, drop_milestone, set_project_status, attach_document, supersede_document | DB only |
 | Repos | **commit_document** (branch + PR, never `main`, never merges; ungated but registered **top-level** so the voice allowlist excludes it — see below), **create_project_repo** (**GATED** — creates a repo, seeds the scaffold; public by default) | GitHub |
+| Planning | start_planning, add_planning_note, planning_status, next_planning_question, abandon_planning (the interview engine — **no emit path exists yet, by design**) | DB + Haiku classify |
 | Callbacks | call_me_back, pending_callbacks, cancel_callback | Twilio (via worker) |
 | Watches | watch_for, list_watches, cancel_watch | LLM judge (worker) |
 | Infra | fleet_health, fleet_spend | Fly Machines + GraphQL |
@@ -299,7 +300,7 @@ flowchart LR
 
 ## 8. Database
 
-Postgres on Fly (SQLite in dev/tests). 34 tables in `backend/app/models.py`:
+Postgres on Fly (SQLite in dev/tests). 36 tables in `backend/app/models.py`:
 
 | Group | Tables |
 |---|---|
@@ -307,7 +308,7 @@ Postgres on Fly (SQLite in dev/tests). 34 tables in `backend/app/models.py`:
 | Memory | `persona_profile`, `preferences`, `memories`, `memory_embeddings`, `episodes`, `episode_quotes` |
 | Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` (per-*tool*), `request_log` (per-*request* — one coarse row per top-level request; retention 90d + row cap) |
 | Work | `jobs`, `tasks`, `ideas`, `watches`, `outbound_calls` |
-| Projects | `project`, `milestone`, `project_document` (multi-session arcs — see below), `github_write_log` (one row per attempted GitHub write; the health substrate for GitHub, see below) |
+| Projects | `project`, `milestone`, `project_document` (multi-session arcs — see below), `github_write_log` (one row per attempted GitHub write; the health substrate for GitHub, see below), `planning_session` + `planning_note` (the interview engine — see below) |
 | Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` (+ `request_id`, and a descriptive `trigger` that no health check reads), `location_requests` (the server-initiated ask a ping answers) |
 | App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below), `scheduler_heartbeat` (briefing-scheduler proof-of-life + catch-up state) |
 | Health | `component` (topology inventory), `remediation` (fault→runbook), `health_result` (transient current status), `capability` + `capability_member` (the user-facing rollup — see below), `evaluator_heartbeat` (proof-of-life for health checking *itself*) |
@@ -328,6 +329,35 @@ looks like progress). Promotion from an idea is a status change plus a link, nev
 delete — `ideas.status` is orthogonal to the older `ideas.promoted_url`, which records that a
 GitHub *repo* exists. All tools ungated (reversible bookkeeping must not dilute the gate) and all
 voice-reachable, because "where am I" is a question asked from a boat.
+
+**Planning sessions** (`app/planning.py` + `app/handlers/planning.py`, `docs/TDD-planning-sessions.md`):
+the interview engine. A session is an **object, not a conversation** — notes accumulate into slots
+across channels, so an idea by SMS at the dock, three more by voice on the drive, and the real work
+at a keyboard are one session. `planning_note` is **append-only and verbatim**: a misclassified note
+is *reclassified* (its `slot` changes), never edited, because the raw capture is the evidence a real
+argument happened and evidence the judged party can edit is not evidence. At most one `open` session
+— refused on **ambiguity**, not tidiness: with two open, a stray SMS has no unambiguous home.
+
+**The completeness gate (`session_readiness`) is the invention; everything else is plumbing.** It
+exists because on 2026-07-20 JARVIS was asked for a TDD and produced one with every section present
+and every section a placeholder — a document's *shape* is trivially generatable, its *content* is
+the residue of an argument. The gate judges **substance, not presence**: placeholder tokens are
+stripped and what remains is measured against `planning_min_slot_chars` (120, a setting because §11
+admits it is arbitrary). Two slots are treated as unfakeable — `rejected` needs an alternative **and
+why it lost** (an alternative without a reason is a list), and an empty `open_questions` is
+*evidence of insufficient thought, not of thoroughness*, which the refusal says out loud.
+`data_model` is required unless explicitly marked not-applicable, and that marking is recorded —
+"no schema change" is a design statement, silence is not. The gate returns **what is missing and the
+question that fills it**, so refusal moves the session forward. It catches empty, **not shallow**
+(§5.4), and that ceiling is stated rather than implied.
+
+**Nothing can emit yet, deliberately (§9)** — `emit_tdd` is a later build. Emission built first
+produces a system that emits with a gate bolted on afterwards, which is how gates end up bypassable;
+a test asserts no emit path exists so the ordering is a fact rather than an intention. Note
+classification uses Haiku and **fails to unclassified, never to a guess**: since the gate reads slot
+content, a confidently wrong slot quietly pads another slot's substance and is a way *through* the
+gate. Voice-reachable for capture and interrogation (§4.2); when `emit_tdd` lands it must **not** be
+added to `VOICE_TOOLS_PHASE1` — reviewing a design by having it read aloud is not review.
 
 > **TDD #3 (repo scaffolding & document commits) is COMPLETE** as of 2026-08-01 — steps 1–7
 > shipped in PRs #53–#57. The five subsections below are its surface: the write log, the secret

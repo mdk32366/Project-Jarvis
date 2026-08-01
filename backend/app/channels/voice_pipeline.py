@@ -131,6 +131,18 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "set_project_status",
     "attach_document",
     "supersede_document",
+    # Planning sessions (TDD #2 §4.2). Voice's role is CAPTURE AND INTERROGATE —
+    # a thought on the drive, and JARVIS asking the next open question. That is
+    # the whole reason the session is an object rather than a conversation.
+    # Voice is deliberately BAD at revision (no scrollback, no "go back to §5"),
+    # and §4.2 says emission needs a keyboard — reviewing a design by having it
+    # read aloud is not review. There is nothing to emit yet, so nothing to
+    # exclude yet; when `emit_tdd` lands it must NOT be added here.
+    "start_planning",
+    "add_planning_note",
+    "planning_status",
+    "next_planning_question",
+    "abandon_planning",
     # travel — read, booking, and document creation.
     "list_trips",
     "search_flights",

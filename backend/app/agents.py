@@ -120,6 +120,14 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "Use complete_milestone when a checkpoint lands; if the title is ambiguous it "
         "will ask, and you should pass the question on rather than picking one. "
         "Parking a project requires a reason, ideally a resumption condition. "
+        "PLANNING SESSIONS are for thinking something through, not for producing a "
+        "document on request. If the user wants to work out a design, use "
+        "start_planning and then add_planning_note as thoughts arrive — capture their "
+        "OWN words and reasoning, never a tidied summary. Ask ONE question at a time "
+        "(next_planning_question); a session that feels like a form gets abandoned. "
+        "When they say why an option is WRONG, that is the most valuable thing they "
+        "will say — file it in the 'rejected' slot WITH the reason it lost. "
+        "There is no way to emit a document yet, and you must not imply there is. "
         "For a request to be alerted when some condition becomes true LATER, use watch_for "
         "(list_watches / cancel_watch to manage them) — this is different from call_me_back, "
         "which rings unconditionally after a delay. "
@@ -130,6 +138,8 @@ DEFAULT_AGENTS: dict[str, Agent] = {
          "create_project", "promote_idea", "list_projects", "project_status",
          "add_milestone", "complete_milestone", "drop_milestone",
          "set_project_status", "attach_document", "supersede_document",
+         "start_planning", "add_planning_note", "planning_status",
+         "next_planning_question", "abandon_planning",
          "whoami", "lookup_contact", "save_contact", "list_contacts",
          "sync_google_contacts", "google_status",
          "call_me_back", "pending_callbacks", "cancel_callback",
