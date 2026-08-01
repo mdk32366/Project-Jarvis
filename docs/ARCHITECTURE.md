@@ -298,7 +298,7 @@ flowchart LR
 
 ## 8. Database
 
-Postgres on Fly (SQLite in dev/tests). 33 tables in `backend/app/models.py`:
+Postgres on Fly (SQLite in dev/tests). 34 tables in `backend/app/models.py`:
 
 | Group | Tables |
 |---|---|
@@ -306,7 +306,7 @@ Postgres on Fly (SQLite in dev/tests). 33 tables in `backend/app/models.py`:
 | Memory | `persona_profile`, `preferences`, `memories`, `memory_embeddings`, `episodes`, `episode_quotes` |
 | Safety/audit | `contacts_whitelist` (the auth boundary), `pending_confirmations`, `actions_audit` (per-*tool*), `request_log` (per-*request* — one coarse row per top-level request; retention 90d + row cap) |
 | Work | `jobs`, `tasks`, `ideas`, `watches`, `outbound_calls` |
-| Projects | `project`, `milestone`, `project_document` (multi-session arcs — see below) |
+| Projects | `project`, `milestone`, `project_document` (multi-session arcs — see below), `github_write_log` (one row per attempted GitHub write; the health substrate for GitHub, see below) |
 | Domain | `trips`, `flight_offers` (only these offer_ids are bookable), `contacts`, `google_documents` (only these doc_ids are appendable), `location_pings` (+ `request_id`, and a descriptive `trigger` that no health check reads), `location_requests` (the server-initiated ask a ping answers) |
 | App | `users`, `agent_configs`, `runtime_settings` (behavioral overrides — see below), `scheduler_heartbeat` (briefing-scheduler proof-of-life + catch-up state) |
 | Health | `component` (topology inventory), `remediation` (fault→runbook), `health_result` (transient current status), `capability` + `capability_member` (the user-facing rollup — see below), `evaluator_heartbeat` (proof-of-life for health checking *itself*) |
@@ -327,6 +327,32 @@ looks like progress). Promotion from an idea is a status change plus a link, nev
 delete — `ideas.status` is orthogonal to the older `ideas.promoted_url`, which records that a
 GitHub *repo* exists. All tools ungated (reversible bookkeeping must not dilute the gate) and all
 voice-reachable, because "where am I" is a question asked from a boat.
+
+**GitHub writes** (`github_write_log`, `docs/TDD-repo-scaffolding.md` §5/§7/§11): one row per
+*attempted* write — `operation` (`create_repo` / `commit_doc` / `open_pr`), `target`, `ref`, `ok`,
+`error`. It exists because a partial write is currently invisible: the shipped repo-seeding loop in
+`create_project_from_idea` swallows a failed `PUT` and still reports success (§11.8), so a
+half-seeded repo reads as a whole one. **The table is also the health substrate for GitHub, by
+design rather than convenience** — the routine thing that exercises GitHub is the `commit_idea`
+*job*, and jobs write no `actions_audit` rows, so an audit-derived liveness check would be starved
+from birth: `unknown` forever, or latched on its first failure with nothing able to clear it (the
+calendar latch, rebuilt). Reading this log sidesteps that on one invariant that must hold as
+writers are added: **every GitHub write path writes a row here, the job included.** The table
+landed ahead of its writers (steps 3/5) so they have somewhere to write. `error` never holds a
+secret.
+
+**Secret scanner** (`app/secretscan.py`, TDD #3 §4.5): a pure classifier — text in, findings out,
+no network, no file reads, no logging. Catches named token prefixes (`ghp_`, `github_pat_`,
+`duffel_`, `sk-ant-`, `xoxb-`, `AIza`, Twilio SID), private-key headers, and high-entropy strings
+(≥32 chars, ≥4.5 bits/char — a floor above `log2(16)=4.0` so hex digests are excluded *by
+construction*, which is what keeps it off the SHAs and UUIDs a design document is full of). It is
+**not** a registered tool and takes no audit row: it is an internal function, not a component with
+liveness. Detection and enforcement are deliberately separate — the scanner reports, the *writer*
+aborts — so the classifier is testable offline and the refusal is asserted at the call site.
+**A finding carries a pattern name and a location, never the matched value**, asserted in test:
+its output is bound for `github_write_log`, which is stored *and* rendered on the status page, so
+a leak there leaks twice. Built and proven before any writer exists (§8), which stopped being
+prudence and became a safety property when public-by-default repo visibility was ratified (§11.3).
 
 **Health model** (`app/health.py`, TDD §4): a relational map of the deterministic topology.
 `component` is the inventory — every agent, external API, subsystem, and data feed — each row

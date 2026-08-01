@@ -810,3 +810,43 @@ class CapabilityMember(Base):
     capability: Mapped[str] = mapped_column(String(64), primary_key=True)
     component: Mapped[str] = mapped_column(String(64), primary_key=True)
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class GithubWriteLog(Base):
+    """One row per attempted GitHub write, successful or not (TDD #3 §5).
+
+    Exists so a failed or PARTIAL write is diagnosable after the fact. The
+    motivating defect is recorded in `docs/TDD-repo-scaffolding.md` §11.8: the
+    shipped repo-seeding loop swallows a failed PUT and reports unqualified
+    success, so a half-seeded repo is currently indistinguishable from a whole
+    one. A per-write row makes that difference visible without having to trust
+    the summary line a tool returned.
+
+    THIS TABLE IS ALSO THE HEALTH SUBSTRATE, and that is a design decision, not
+    a convenience (§7, §11.7). The routine thing that exercises GitHub is the
+    `commit_idea` JOB, and jobs write no `actions_audit` rows — so an
+    audit-derived liveness check would be starved from birth and could only ever
+    read `unknown`, or latch on its first failure and never clear. Reading this
+    log instead sidesteps that, on one invariant that must hold as writers are
+    added: **every GitHub write path writes a row here, the job included.**
+
+    `error` NEVER holds a secret. The scanner reports a pattern name and a
+    location, never the matched value (`app/secretscan.py`), and a refusal
+    recorded here carries the same. A diagnostic that leaks the credential it
+    caught has reintroduced the exposure it exists to prevent.
+    """
+
+    __tablename__ = "github_write_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # create_repo | commit_doc | open_pr
+    operation: Mapped[str] = mapped_column(String(16), index=True)
+    # Repo full-name, or "owner/repo:path" — where the write was aimed.
+    target: Mapped[str] = mapped_column(String(400), default="")
+    # Branch or PR ref, when the operation has one.
+    ref: Mapped[str] = mapped_column(String(400), default="")
+    ok: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
