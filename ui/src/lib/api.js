@@ -13,10 +13,26 @@ export function setToken(token) {
 }
 
 export class ApiError extends Error {
-  constructor(status, message) {
+  constructor(status, message, detail = "") {
     super(message);
     this.status = status;
+    // The backend's own words, kept alongside the human-facing message. Swallowing
+    // this is what made the 2026-08-01 latch a misdiagnosis risk: the screen said
+    // "Unauthorized" with total confidence and zero detail, so the real cause
+    // (expiry, then a latch) was invisible from the surface.
+    this.detail = detail;
   }
+}
+
+// A 401 has to reach React state, not just localStorage. `setToken(null)` alone
+// clears storage while `AuthProvider`'s `user` stays truthy in memory — and
+// `ProtectedRoute` gates on `user`, so nothing redirects and every later request
+// goes out header-less and re-401s. That was the latch. AuthProvider registers
+// here so the two are cleared together.
+let onUnauthorized = null;
+
+export function setUnauthorizedHandler(fn) {
+  onUnauthorized = fn;
 }
 
 async function request(path, { method = "GET", body, form, auth = true } = {}) {
@@ -37,8 +53,22 @@ async function request(path, { method = "GET", body, form, auth = true } = {}) {
   const res = await fetch(`/api${path}`, { method, headers, body: payload });
 
   if (res.status === 401) {
+    const hadToken = Boolean(token);
+    let detail = "";
+    try {
+      detail = (await res.json()).detail ?? "";
+    } catch {
+      /* non-JSON error body */
+    }
     setToken(null);
-    throw new ApiError(401, "Unauthorized");
+    // Clear the in-memory identity too, so ProtectedRoute fails its gate and
+    // redirects — without this the app latches: header-less requests forever and
+    // no way out but a manual reload.
+    onUnauthorized?.();
+    const message = hadToken
+      ? `Your session has expired — please sign in again.${detail ? ` (${detail})` : ""}`
+      : detail || "Not authenticated — please sign in.";
+    throw new ApiError(401, message, detail);
   }
   if (!res.ok) {
     let detail = res.statusText;
@@ -47,7 +77,7 @@ async function request(path, { method = "GET", body, form, auth = true } = {}) {
     } catch {
       /* non-JSON error body */
     }
-    throw new ApiError(res.status, detail);
+    throw new ApiError(res.status, detail, detail);
   }
   if (res.status === 204) return null;
   return res.json();

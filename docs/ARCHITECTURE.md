@@ -513,9 +513,22 @@ load-bearing for health when the client is the thing whose reliability is in que
 React SPA (`ui/`, Vite + React Router + TanStack Query), built into the image and served
 by FastAPI itself — one origin, no separate frontend deploy.
 
+**UI auth, and the 401 contract** (`src/lib/api.js`, `src/lib/auth.jsx`): a 401 from any
+API call clears BOTH the stored token and the in-memory `user` identity, via a handler
+`AuthProvider` registers with the API layer. Both, together, is the contract —
+`ProtectedRoute` gates on `user`, so clearing storage alone left the app **latched**: no
+redirect fired, every later request went out with no `Authorization` header and re-401'd,
+and only a manual page reload escaped (2026-08-01; the third latch of that family after
+the relay body and calendar liveness). The error surface carries the backend's own
+`detail` rather than a hardcoded string, and distinguishes an expired session from a
+generic auth failure — swallowing that detail is what made the latch a misdiagnosis risk.
+Pinned by `ui/src/test/auth-latch.test.jsx`; **UI tests run in CI** (`ui-test` job, and
+`deploy` needs it) because this bug lived entirely in front-end state and a pytest-only
+suite could not have caught it.
+
 | Route | Page |
 |---|---|
-| `/login` | JWT login |
+| `/login` | JWT login (HS256, `access_token_expire_minutes` = 24h, no refresh flow) |
 | `/` | Chat with JARVIS |
 | `/memory` | Browse/audit/correct memories |
 | `/status` | **Exception-first health page** — polls `/api/status/full` every 30s; shows only non-ok components (detail + joined runbook + evidence), healthy collapses to one line, `unknown` rendered distinctly (never green), stale-poll indicator |
