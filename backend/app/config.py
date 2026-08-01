@@ -291,6 +291,18 @@ class Settings(BaseSettings):
     # secret — it is this application's public source repository.
     jarvis_repo: str = "mdk32366/Project-Jarvis"
 
+    # ── Planning sessions (TDD #2) ───────────────────────────────────────────
+    # At most one OPEN session at a time. The reason is ambiguity, not tidiness:
+    # with two open sessions a stray SMS has no unambiguous home, and guessing
+    # wrong files real thinking under the wrong topic.
+    planning_sessions_concurrent: int = 1
+    # The substance floor for a required slot. ARBITRARY BY ADMISSION (TDD §11) —
+    # it is a setting precisely so it can be tuned from real sessions rather than
+    # defended as if it were derived. What it buys is the distance between
+    # "placeholder" and "someone typed something real"; it cannot judge depth,
+    # and §5.4 says so outright.
+    planning_min_slot_chars: int = 120
+
     # ── Travel ───────────────────────────────────────────────────────────────
     # Trips are learned from confirmation emails — no airline credentials, no
     # scraping. duffel_api_key is TEST MODE search+booking; never make the live

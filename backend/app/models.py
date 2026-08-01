@@ -812,6 +812,83 @@ class CapabilityMember(Base):
     is_primary: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
+class PlanningSession(Base):
+    """A planning session — a durable, stateful thing, not a request (TDD #2 §4.1).
+
+    THE FAILURE THIS EXISTS FOR: asked to write a TDD on 2026-07-20, JARVIS
+    produced a document with every section present and every section a
+    placeholder. That is not a prompt bug. A document's *shape* is trivially
+    generatable; its *content* is the residue of a multi-turn argument. She was
+    asked for a deliverable when she should have been asked for a conversation,
+    so the shape arrived with nothing to fill it.
+
+    THE DURABLE THING IS ACCUMULATED SLOT STATE, NOT THE TRANSCRIPT. That is what
+    makes this work across channels: an idea by SMS at the dock, three more by
+    voice on the drive, and the real work at a keyboard are one session. Nothing
+    depends on a single continuous conversation.
+
+    `target` is the routing decision made at session START rather than at emit —
+    a new capability for JARVIS goes to her own `docs/`, a new project gets its
+    own repo — because the session should know where it is going while that is
+    still cheap to change.
+    """
+
+    __tablename__ = "planning_session"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    topic: Mapped[str] = mapped_column(Text)
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project.id", ondelete="SET NULL"), nullable=True, default=None, index=True
+    )
+    # jarvis | new_project
+    target: Mapped[str] = mapped_column(String(16), default="jarvis")
+    # open | emitted | abandoned
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    emitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_document.id"), nullable=True, default=None
+    )
+
+    notes: Mapped[list["PlanningNote"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+
+class PlanningNote(Base):
+    """One captured thought, filed into a slot. APPEND-ONLY AND VERBATIM.
+
+    `content` is never rewritten — not on reclassification, not on emit, not to
+    tidy it up. A misclassified note has its `slot` changed; its text does not
+    move. The raw capture is the EVIDENCE that a real conversation happened, and
+    a system whose evidence can be edited by the thing being judged has no
+    evidence at all. Same discipline as `EpisodeQuote`, for the same reason.
+
+    Slot *content* is composed from these notes at readiness/emit time. The notes
+    are the record; the composition is a view over them.
+    """
+
+    __tablename__ = "planning_note"
+    __table_args__ = (
+        Index("ix_planning_note_session_slot", "session_id", "slot"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("planning_session.id", ondelete="CASCADE"), index=True
+    )
+    # NULL means unclassified — deliberately nullable rather than defaulted to a
+    # catch-all slot, so an unclassified note is visibly unplaced in
+    # `planning_status` instead of quietly padding a real slot's substance.
+    slot: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    content: Mapped[str] = mapped_column(Text)
+    channel: Mapped[str] = mapped_column(String(16), default="web")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    session: Mapped["PlanningSession"] = relationship(back_populates="notes")
+
+
 class GithubWriteLog(Base):
     """One row per attempted GitHub write, successful or not (TDD #3 §5).
 
