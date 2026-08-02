@@ -635,6 +635,14 @@ page would prove the evaluator alive by the act of asking. Faults: `evaluator_st
 is recomputing — every other reading is suspect) and `rollup_incoherent` (a capability names a
 missing or disabled component).
 
+**Admin: agent prompts are visible, not just editable** (`ui/src/pages/AdminPage.jsx`): each agent
+row shows its `system_prompt` in a collapsed disclosure with the character count, and states *"No
+system prompt set"* when there is none. Editing was always possible via the row's `edit` link; the
+prompt itself was never rendered, so nothing indicated one existed. That is load-bearing rather than
+cosmetic — **`seed_agents` deliberately never overwrites `system_prompt`** (an admin who tunes prose
+keeps their wording), so the Admin UI is the *only* route by which a prompt change reaches
+production. An invisible control on the only path is a gap in the path.
+
 **Fly fleet report legibility** (`app/handlers/infra.py`): both halves of the same rule — *a health
 surface states what it measures and under what assumptions*. The **credit balance escalates only
 under a stated prepaid model**: `fly_balance_alert_threshold` (runtime overlay, default `None` =

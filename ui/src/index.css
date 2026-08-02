@@ -129,6 +129,10 @@ code { background: var(--bg); padding: 0.1rem 0.35rem; border-radius: 4px; }
 .tool-check { display: inline-flex; align-items: center; gap: .3rem; font-size: .9rem; }
 .agent-list { list-style: none; padding: 0; }
 .agent-list .agent { border-top: 1px solid #eee; padding: .6rem 0; }
+.agent-prompt { margin: .35rem 0; font-size: .85rem; }
+.agent-prompt summary { cursor: pointer; color: #555; }
+.agent-prompt pre { white-space: pre-wrap; word-break: break-word; margin: .4rem 0 0;
+  padding: .5rem; background: #f6f6f6; border-radius: 6px; max-height: 20rem; overflow: auto; }
 table.audit { width: 100%; border-collapse: collapse; font-size: .85rem; }
 table.audit th, table.audit td { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #eee; vertical-align: top; }
 table.audit td.truncate { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

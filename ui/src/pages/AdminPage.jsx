@@ -361,6 +361,24 @@ export default function AdminPage() {
                     </span>
                   </div>
                   <div className="hint">{a.description}</div>
+                  {/* THE PROMPT IS SHOWN, NOT JUST EDITABLE. Editing it was
+                      always possible via `edit`, but the collapsed row listed
+                      name/description/tools and never the prompt — so there was
+                      nothing to tell you a prompt existed, let alone what it
+                      said. A capability you cannot see is one you do not have.
+                      Collapsed by default (the secretary's runs to ~2k chars)
+                      with the length on the summary, so the row stays scannable
+                      while the content is one click away and READABLE without
+                      entering an edit form you then have to cancel out of. */}
+                  {a.system_prompt ? (
+                    <details className="agent-prompt">
+                      <summary>System prompt ({a.system_prompt.length} chars)</summary>
+                      <pre>{a.system_prompt}</pre>
+                    </details>
+                  ) : (
+                    <div className="hint">No system prompt set — this agent runs on its
+                      description alone.</div>
+                  )}
                   <div>{a.tools.length ? a.tools.map((t) => <span key={t} className="tag">{t}</span>) : <span className="hint">no tools</span>}</div>
                 </div>
               )}
