@@ -77,6 +77,12 @@ ALLOWED_KEYS: dict[str, _Key] = {
     # 1 is unusable; above ~10 the caller believes the line is dead. Tuned live
     # because the right value is a per-speaker judgement found only on real calls.
     "voice_speech_timeout_seconds":    _Key("int", min=1, max=10),
+    # Fly credit floor, in whole dollars. Behavioural, not secret, not
+    # safety-critical: it gates whether a balance ESCALATES, never an action.
+    # Live-tunable because the billing model can change without a deploy — and
+    # clearing the override (empty value) correctly returns to the autopay
+    # default of None, which is how you say "this tenancy is not prepaid".
+    "fly_balance_alert_threshold":     _Key("int", min=1, max=100000),
 }
 
 _TRUE = {"1", "true", "yes", "on", "t"}
