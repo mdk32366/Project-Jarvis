@@ -86,7 +86,31 @@ _ENTROPY_THRESHOLD = 4.5
 
 # Characters that can appear inside a credential-looking blob. Splitting on
 # anything else keeps ordinary prose from being scored as one long token.
-_TOKEN_RE = re.compile(r"[A-Za-z0-9+/=_\-]{%d,}" % _ENTROPY_MIN_LEN)
+#
+# `=` IS NOT A TOKEN CHARACTER. THE REAL REFUSAL THAT PROVED IT (2026-08-02):
+# scanning the repo archive flagged five lines of `.env.template` as
+# high-entropy. None were secrets — `JARVIS_MODEL`, `CALENDAR_TIMEZONE`,
+# `IDEAS_REPO`, `COMPLIANCE_EMAIL` — but with `=` in the class, `KEY=value`
+# scored as ONE token, so an ordinary assignment became a 37-character blob
+# whose two halves were individually harmless and jointly "high entropy".
+#
+# That mattered beyond the noise: env-file-shaped content is exactly what a
+# design document about configuration contains, so `commit_document` would have
+# refused legitimate documents. §11 said to tune from real refusals rather than
+# imagination — this is the first one, and it is the tuning.
+#
+# Detection is not weakened. Named prefixes (`sk-ant-`, `ghp_`, …) never depended
+# on tokenisation, and a raw high-entropy VALUE is still its own token once the
+# split happens at the `=`.
+#
+# TRAILING BASE64 PADDING WAS CONSIDERED AND DROPPED AS INERT. `…{32,}={0,2}`
+# looks like it lets padding carry a short body over the floor; it does not —
+# `{32,}` applies to the body, so the padding only ever extends a match that
+# already qualified. It changed no verdict, only a span. I wrote a test asserting
+# it mattered, planted its removal, and watched the test fail BOTH ways, which is
+# what surfaced that the element was doing nothing. A pattern element that cannot
+# change an answer is worse than absent: it reads as protection.
+_TOKEN_RE = re.compile(r"[A-Za-z0-9+/_\-]{%d,}" % _ENTROPY_MIN_LEN)
 
 # TODO(§4.5): value-match against known Fly secret values ("anything matching the
 # values of known Fly secret names, if resolvable"). NOT built here, and the

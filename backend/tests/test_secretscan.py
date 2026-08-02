@@ -156,6 +156,76 @@ def test_real_high_entropy_secret_trips_the_floor():
     assert "high_entropy" in _names(doc)
 
 
+def test_an_env_file_shaped_document_is_clean(monkeypatch):
+    """THE FIRST REAL REFUSAL (2026-08-02), and the tuning it earned.
+
+    Scanning the repo archive flagged five lines of `.env.template` as
+    high-entropy. None were secrets — model ids, a timezone, a repo name, an
+    email — but `=` was an interior token character, so `KEY=value` scored as ONE
+    token and an ordinary assignment became a 37-character blob whose two halves
+    were individually harmless.
+
+    That mattered beyond the noise: env-file-shaped content is exactly what a
+    design document about configuration contains, so `commit_document` would
+    have refused legitimate documents. §11 said tune from real refusals rather
+    than imagination; this is the refusal.
+    """
+    doc = "\n".join([
+        "JARVIS_MODEL=claude-opus-4-5-20260101",
+        "JARVIS_ROUTER_MODEL=claude-haiku-4-5-20251001",
+        "CALENDAR_TIMEZONE=America/Los_Angeles",
+        "IDEAS_REPO=mdk32366/jarvis-ideas",
+        "COMPLIANCE_EMAIL=someone@example.com",
+        "DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/app",
+    ])
+    assert scan_for_secrets(doc) == []
+
+
+def test_equals_is_not_an_interior_token_character():
+    """The mechanism, pinned directly: two halves each below the length floor
+    must not be scored as one token because an `=` joins them."""
+    left, right = "aB3dE5fG7hJ9kL1mN3pQ5r", "sT7uV9wX1yZ3aB5cD7eF9g"
+    assert len(left) < 32 and len(right) < 32
+    assert len(left) + len(right) + 1 > 32, "precondition: the joined form clears the floor"
+    assert scan_for_secrets(f"{left}={right}") == []
+
+
+def test_a_real_secret_in_an_assignment_is_still_caught():
+    """Detection is not weakened — the named prefixes never depended on
+    tokenisation in the first place."""
+    assert "anthropic_key" in _names("ANTHROPIC_API_KEY=sk-ant-"
+                                     "api03-AAAAbbbbCCCCddddEEEEffff")
+    assert "github_token" in _names("GITHUB_TOKEN=ghp_ABCDEFGHIJ0123456789xyz")
+
+
+def test_a_raw_high_entropy_value_in_an_assignment_is_still_caught():
+    """The other half of not-weakened: once the split happens at the `=`, the
+    VALUE is its own token and is scored on its own merits."""
+    assert "high_entropy" in _names("SOME_TOKEN=kJ8xQ2mZ7vB4nR6tY1wE3sD5fG9hL0pA8cX2uI4o")
+
+
+def test_a_padded_base64_blob_is_still_caught_on_its_body():
+    """Dropping `=` from the token class does not blind the scanner to padded
+    base64 — the body carries the match on its own.
+
+    RECORDED BECAUSE THE FIRST VERSION OF THIS TEST WAS WRONG. It claimed
+    trailing padding counted toward the 32-char floor, and asserted a 30-char
+    body plus `==` would trip. It failed on the fixed code AND on a planted
+    over-correction — because `{32,}` applies to the BODY, so padding could never
+    carry a short body over. The element it was defending did nothing, and the
+    test only surfaced that by being planted against.
+
+    A short blob stays under the floor with or without padding; that is the
+    length rule working, not a gap.
+    """
+    body = "kJ8xQ2mZ7vB4nR6tY1wE3sD5fG9hL0pA8cX2uI4o"     # 40 chars, over the floor
+    assert "high_entropy" in _names(f"blob: {body}==")
+    assert "high_entropy" in _names(f"blob: {body}")
+
+    short = "kJ8xQ2mZ7vB4nR6tY1wE3sD5fG9hL0"              # 30 chars, under it
+    assert scan_for_secrets(f"blob: {short}==") == [], "padding must not fake up length"
+
+
 def test_short_random_strings_are_ignored():
     """Below the length floor, entropy is not evidence of anything. A 22-char
     nonce is exactly the shape `secrets.token_urlsafe(16)` produces and appears
