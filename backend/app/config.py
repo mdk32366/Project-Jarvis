@@ -302,6 +302,11 @@ class Settings(BaseSettings):
     # "placeholder" and "someone typed something real"; it cannot judge depth,
     # and §5.4 says so outright.
     planning_min_slot_chars: int = 120
+    # Days past baseline before a milestone earns a brief line. NOT 0: a
+    # one-day slip on a multi-month plan is noise, and a brief that reports
+    # noise is one the owner stops reading — which costs more than the line
+    # was worth. Exception-first means silence is the default.
+    project_slippage_brief_days: int = 2
 
     # ── Travel ───────────────────────────────────────────────────────────────
     # Trips are learned from confirmation emails — no airline credentials, no

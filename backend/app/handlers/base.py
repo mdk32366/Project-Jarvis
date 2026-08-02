@@ -200,8 +200,9 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # (delegate) and governs the one irreversible action (trading) behind the
         # confirmation gate. All read-only/domain tools live in specialist agents.
         from app import agents
-        from app.handlers import (datetime_tools, finance, ideas, planning, repos,
-                                  scheduling, secretary, selfstatus, travel)
+        from app.handlers import (datetime_tools, finance, ideas, inception,
+                                  planning, repos, scheduling, secretary,
+                                  selfstatus, travel)
 
         agents.register_delegate(reg, db)
         finance.register_trading(reg)
@@ -230,6 +231,8 @@ def build_registry(include_delegate: bool = False, db=None, allow: set[str] | No
         # emit_tdd: same reasoning as commit_document — top-level so the voice
         # allowlist excludes it. Reviewing a design read aloud is not review.
         planning.register_top_level(reg)
+        # emit_project_plan: same reasoning — an outward write stays off voice.
+        inception.register_top_level(reg)
         if allow is not None:
             reg.restrict(allow)
         return reg
