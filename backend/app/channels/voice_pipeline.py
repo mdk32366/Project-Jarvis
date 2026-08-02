@@ -154,6 +154,12 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "replan",
     "reset_baseline",
     "project_timeline",
+    # Risks and assumptions: naming a risk from the dock is exactly when it
+    # occurs to you. emit_project_plan is NOT here — it is the outward write.
+    "flag_risk",
+    "break_assumption",
+    "resolve_risk",
+    "list_plan_risks",
     # travel — read, booking, and document creation.
     "list_trips",
     "search_flights",

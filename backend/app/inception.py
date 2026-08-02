@@ -123,9 +123,95 @@ def render_timeline(project_name: str, rows: list[TimelineRow],
 
     if open_risks:
         lines.append(f"  Open risks ({len(open_risks)}):")
+        # (rendered below)
         lines += [f"    - {d}" for d in open_risks[:5]]
     if broken_assumptions:
         lines.append(f"  Assumptions now broken ({len(broken_assumptions)}):")
         lines += [f"    - {d}" for d in broken_assumptions[:5]]
 
     return "\n".join(lines)
+
+
+# ── Step 7: the brief line (§6) ──────────────────────────────────────────────
+def brief_project_lines(db, *, today: date | None = None) -> list[str]:
+    """Exception-first project lines for the morning brief.
+
+    **SILENCE IS THE DEFAULT.** A project on or ahead of baseline produces no
+    line at all. A project with no ratified baseline is INVISIBLE — there is
+    nothing agreed for it to slip from, which is the step-3 fabrication guard
+    arriving at the brief layer.
+
+    **FACT, NEVER JUDGMENT.** These lines carry a day count and no verdict, and
+    they are checked against the SAME `JUDGMENT_WORDS` list the timeline uses —
+    not a second copy. Two lists drift, and the one that drifts is the one
+    nobody is looking at.
+
+    An OPEN milestone slips by today's reckoning rather than its plan date, so a
+    STALLED project surfaces rather than reporting as on-plan. That is the
+    fabricated-green failure in another costume, and it is the case this whole
+    line exists to catch.
+    """
+    from app.config import settings
+    from app.models import Milestone, PlanAssumption, PlanRisk, Project
+
+    today = today or date.today()
+    floor = settings.project_slippage_brief_days
+    out: list[str] = []
+
+    projects = db.query(Project).filter(Project.status == "active").all()
+    for p in projects:
+        ms = db.query(Milestone).filter(
+            Milestone.project_id == p.id, Milestone.status == "open").all()
+        slipped = []
+        for m in ms:
+            d = slippage_days(m, today=today)
+            if d is not None and d >= floor:
+                slipped.append((m, d))
+        if not slipped:
+            continue                     # on or ahead of baseline -> no line
+
+        slipped.sort(key=lambda t: -t[1])
+        for m, d in slipped[:3]:
+            out.append(f"{p.name} — {m.title}: {d} days past baseline "
+                       f"(baseline {m.baseline_date}).")
+            # A risk that is now biting: linked to a milestone that is slipping.
+            bites = db.query(PlanRisk).filter(
+                PlanRisk.project_id == p.id, PlanRisk.milestone_id == m.id,
+                PlanRisk.status == "open", PlanRisk.plan_status == "live").all()
+            for r in bites:
+                out.append(f"  Risk flagged at inception, now on a slipping milestone: "
+                           f"{r.description}")
+
+    # Broken assumptions — SURFACED ONCE (§4.6). Stamped on surfacing so the
+    # brief does not re-alarm every morning; a repeated flag is one the owner
+    # learns to skip, and the flag is the whole value.
+    fresh = db.query(PlanAssumption).filter(
+        PlanAssumption.status == "broken",
+        PlanAssumption.surfaced_at.is_(None),
+        PlanAssumption.plan_status == "live").all()
+    for a in fresh:
+        out.append(f"An assumption no longer holds: {a.description}")
+
+    return out
+
+
+def mark_assumptions_surfaced(db, *, now=None) -> int:
+    """Stamp the assumptions `brief_project_lines` just reported.
+
+    Separate from composing them so a brief that FAILS to send does not consume
+    the one flag the owner was owed — the stamp belongs with delivery, not with
+    rendering.
+    """
+    from datetime import datetime, timezone
+
+    from app.models import PlanAssumption
+
+    rows = db.query(PlanAssumption).filter(
+        PlanAssumption.status == "broken",
+        PlanAssumption.surfaced_at.is_(None),
+        PlanAssumption.plan_status == "live").all()
+    for a in rows:
+        a.surfaced_at = now or datetime.now(timezone.utc)
+    if rows:
+        db.commit()
+    return len(rows)

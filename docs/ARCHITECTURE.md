@@ -247,7 +247,7 @@ the orchestrator **commits** (send, book, create with invites) — under the gat
 | Projects | create_project, promote_idea, list_projects, project_status, add_milestone, complete_milestone, drop_milestone, set_project_status, attach_document, supersede_document | DB only |
 | Repos | **commit_document** (branch + PR, never `main`, never merges; ungated but registered **top-level** so the voice allowlist excludes it — see below), **create_project_repo** (**GATED** — creates a repo, seeds the scaffold; public by default) | GitHub |
 | Planning | start_planning, add_planning_note, planning_status, next_planning_question, abandon_planning (the interview engine), emit_tdd (**top-level**, not voice-reachable) | DB + Haiku classify |
-| Inception | propose_milestone_date, ratify_plan (**the only routine path that writes a baseline**), replan, reset_baseline, project_timeline | DB only |
+| Inception | propose_milestone_date, ratify_plan (**the only routine path that writes a baseline**), replan, reset_baseline, project_timeline, flag_risk, break_assumption, resolve_risk, list_plan_risks, emit_project_plan (**top-level**, not voice-reachable) | DB + GitHub |
 | Callbacks | call_me_back, pending_callbacks, cancel_callback | Twilio (via worker) |
 | Watches | watch_for, list_watches, cancel_watch | LLM judge (worker) |
 | Infra | fleet_health, fleet_spend | Fly Machines + GraphQL |
@@ -331,7 +331,22 @@ delete — `ideas.status` is orthogonal to the older `ideas.promoted_url`, which
 GitHub *repo* exists. All tools ungated (reversible bookkeeping must not dilute the gate) and all
 voice-reachable, because "where am I" is a question asked from a boat.
 
-**Project inception** (`docs/TDD-project-inception.md`, steps 1–2 shipped): the capstone, and it is
+> **THE PROJECT-MANAGEMENT ARC IS COMPLETE** as of 2026-08-01 — TDD #1 (project tracking), TDD #2
+> (planning sessions / the interview engine), TDD #3 (repo scaffolding & document commits), and
+> **inception, the capstone**, all shipped across PRs #40 and #53–#63.
+>
+> Where the reconstructed inception TDD differed from what shipped, and why: **migration numbers**
+> — §5 says `0026`, which the github write log consumed; inception landed at `0028` with a follow-on
+> `0029` for the draft/surface markers (five stale numbers across the arc, which is why the standing
+> rule is *confirm against live head, never trust a draft*). **Emit is real, not stubbed** — §8's
+> "stub the commit until TDD #3 exists" is dead: TDD #3 shipped first, so `emit_project_plan` wires
+> to the actual `commit_document`. **§11's atomicity question is resolved**, not deferred — see
+> below. **§6.3's "emit calls `create_project_repo`" was not implementable as written**: that tool
+> is gated and the gate runs in the orchestrator, so calling it from inside an ungated tool would
+> execute an irreversible outward action with no confirmation. Emit refuses and points at the gated
+> tool instead.
+
+**Project inception** (`docs/TDD-project-inception.md`, **complete**): the capstone, and it is
 **a session type on the interview engine, not a second engine**. `planning_session.target` gains
 `project_plan`; the same table, the same cross-channel note accumulation, and the same gate apply,
 with a richer slot set — `objectives`, `milestones` (≥2), `risks`, `assumptions`, plus `tasks` as
@@ -372,9 +387,38 @@ date pings, and collapsing them means either every milestone nags or tasks stop 
 a date you never agreed to*. A replan is a **logged event, not a field edit**: `replan.reason` and
 `baseline_reset.reason` are `NOT NULL` **at the column**, because enforcing it only in the tool
 leaves the silent edit one direct write away. Risks and assumptions are **rows, not prose**, so a
-risk can be resurfaced when it bites rather than sitting inert in section 9. **Steps 1–4 shipped**
-(#61, #62); steps 5–7 — risk/assumption resurfacing tools, `emit_project_plan` via the real
-`commit_document`, and brief integration — follow as their own orders.
+risk can be resurfaced when it bites rather than sitting inert in section 9. **All seven steps
+shipped** (#61, #62, #63).
+
+**Emit, and the atomicity resolution** (`emit_project_plan`, §11): a `project_plan` session becomes a
+committed plan document **and** seeded live rows — or nothing at all. A GitHub PR and a DB
+transaction cannot share one transaction, so the sequence puts the **reversible half first**: seed
+rows as `draft` → commit the document via the real `commit_document` → **promote to `live` only on
+success**; on failure delete the drafts and leave the session `open`. Success is judged on **state**
+(a new `ProjectDocument` row), never on the prose the writer returned — deciding it by
+pattern-matching another tool's wording is the proxy-signal defect one layer up. Both failure modes
+are covered: `commit_document` can *raise* (a GitHub fault) or *refuse* by returning a string (no
+token, scanner hit), and a negative validation proved a plant survived the first test until the
+second was written. A draft row that outlives a failure is **visible** in `project_timeline`, never
+silent (§11.8). The draft marker is **row-level `plan_status`** rather than a session flag — not a
+style choice: seeded rows carry `project_id`, not `session_id`, so a session flag could never
+identify which rows were drafts. Emit is **top-level and therefore voice-excluded**: it is an
+outward write to a repo that is public by default. One note, one row, **verbatim** — no LLM
+extraction, because inventing structure from prose is the fabrication this arc spent seven steps
+refusing. Milestones are deliberately **not** seeded from prose: a milestone needs a title and a
+date, and manufacturing either would fabricate a commitment.
+
+**Brief integration** (`brief_project_lines`, §6): **exception-first — silence is the default.** A
+project on or ahead of baseline produces no line; a project with **no ratified baseline is
+invisible**, which is the step-3 fabrication guard arriving at the brief. Slippage past
+`project_slippage_brief_days` (default **2**, not 0 — a one-day slip is noise, and a brief that
+reports noise is one the owner stops reading) surfaces as a day count. **An open milestone slips by
+today's reckoning**, so a *stalled* project surfaces rather than reporting on-plan — fabricated-green
+in another costume. A risk linked to a slipping milestone resurfaces; a broken assumption surfaces
+**once**, stamped on **delivery** rather than compose, so a brief that fails to send cannot consume
+the single flag the owner was owed. The lines reuse the **same** `JUDGMENT_WORDS` list as the
+timeline — asserted un-forked, because two lists drift and the one that drifts is the one nobody is
+looking at.
 
 **Planning sessions** (`app/planning.py` + `app/handlers/planning.py`, `docs/TDD-planning-sessions.md`):
 the interview engine. A session is an **object, not a conversation** — notes accumulate into slots

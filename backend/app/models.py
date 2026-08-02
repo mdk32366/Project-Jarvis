@@ -911,6 +911,13 @@ class PlanRisk(Base):
     # stopped applying is a different outcome from one that came true, and
     # collapsing them would overstate how much went wrong.
     status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    # draft | live. The atomicity marker (inception §11): emit seeds rows as
+    # `draft`, commits the document, and promotes to `live` only on success —
+    # deleting the drafts if the commit fails. Defaults `live` so every OTHER
+    # creation path is unaffected; only the emit path ever writes `draft`.
+    # A surviving draft means a failed emit, and it is VISIBLE rather than
+    # silent, which is the §11.8 lesson applied to a two-system write.
+    plan_status: Mapped[str] = mapped_column(String(8), default="live", index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -932,6 +939,14 @@ class PlanAssumption(Base):
     description: Mapped[str] = mapped_column(Text)
     # holding | broken
     status: Mapped[str] = mapped_column(String(16), default="holding", index=True)
+    plan_status: Mapped[str] = mapped_column(String(8), default="live", index=True)
+    # When the brief first reported this assumption as broken. SURFACED ONCE
+    # (§4.6): an assumption that turned out false is worth a single un-repeated
+    # flag — repeating it every morning trains the owner to skip the line, and
+    # the line is the entire value. Stamped, not inferred, so "already told you"
+    # survives a restart.
+    surfaced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

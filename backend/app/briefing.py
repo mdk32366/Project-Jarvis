@@ -439,6 +439,19 @@ def gather_context(db: Session) -> str:
     # News — 2-3 headlines via Tavily. Omitted when unconfigured or slow/failing.
     if news and not news.startswith("("):
         sections.append(f"## News\n{news}")
+    # Projects — EXCEPTION-FIRST. Silence is the default: nothing appears unless a
+    # ratified milestone is past its baseline by more than the floor. An unratified
+    # project is invisible (nothing agreed to slip from), and the lines carry a day
+    # count and no verdict — the SAME JUDGMENT_WORDS guard the timeline uses, not a
+    # fork of it.
+    try:
+        from app.inception import brief_project_lines
+        project_lines = brief_project_lines(db)
+    except Exception as e:  # noqa: BLE001 — the brief must never fail on one section
+        log.warning("project brief lines failed: %s", e)
+        project_lines = []
+    if project_lines:
+        sections.append("## Projects\n" + "\n".join(project_lines))
     sections.append(f"## Recent notes/memory\n{fact_lines}")
     # Hosted apps — the Fly fleet. Suppress the _safe error shape "(" and any infra
     # bracket-sentinel "[" ("[infra not configured]", "[infra] No apps to watch")
@@ -560,4 +573,15 @@ def send_briefing(db: Session) -> str:
         return "no owner email configured"
     text = compose_briefing(db)
     send_email(to, "Your JARVIS morning briefing", text)
+
+    # Stamp broken assumptions as surfaced ONLY after the brief actually went out.
+    # Doing it at compose time would let a send failure consume the single flag
+    # the owner was owed — and "surfaced once" is worthless if the once was into
+    # a void.
+    try:
+        from app.inception import mark_assumptions_surfaced
+        mark_assumptions_surfaced(db)
+    except Exception as e:  # noqa: BLE001 — never fail a delivered brief on bookkeeping
+        log.warning("could not stamp surfaced assumptions: %s", e)
+
     return f"briefing emailed to {to}"
