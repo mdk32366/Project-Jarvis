@@ -339,6 +339,21 @@ class Settings(BaseSettings):
     fly_api_token_read: str = ""
     # Comma-separated Fly app names to report on in the briefing / infra tools.
     watched_fly_apps: str = "jarvis-mdk"
+    # THE BILLING MODEL IS STATE, NOT A CONSTANT. A Fly credit balance is only a
+    # signal under a PREPAID DRAWDOWN model (front cash, work through it, zero =
+    # service stops). Under autopay — card billed automatically, no buffer —
+    # $0.00 is the normal resting state between charges, and surfacing it daily
+    # is noise. Noise in a health surface trains the reader to skim the panel,
+    # which is the exact failure exception-first design exists to prevent.
+    #
+    # None (the default, autopay) = the balance never escalates to a fault.
+    # A dollar figure (prepaid) = at or below it IS a fault, because under a
+    # drawdown model that is an approaching cutoff.
+    #
+    # Deliberately NOT a hardcoded suppression of $0.00: if a prepaid project
+    # ever runs under JARVIS's watch again, that would silently hide a real
+    # cutoff warning. Same number, opposite meaning — so the model is stated.
+    fly_balance_alert_threshold: int | None = None
     # Per-app expected RUNNING machine count, e.g.
     # "jarvis-mdk:3,ffis-scrubber:1". Health flags DEGRADED only when started
     # drops below this. Apps not listed default to 1 (at least one must be up).

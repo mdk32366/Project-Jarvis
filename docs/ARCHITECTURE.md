@@ -635,6 +635,19 @@ page would prove the evaluator alive by the act of asking. Faults: `evaluator_st
 is recomputing — every other reading is suspect) and `rollup_incoherent` (a capability names a
 missing or disabled component).
 
+**Fly fleet report legibility** (`app/handlers/infra.py`): both halves of the same rule — *a health
+surface states what it measures and under what assumptions*. The **credit balance escalates only
+under a stated prepaid model**: `fly_balance_alert_threshold` (runtime overlay, default `None` =
+autopay) decides whether a balance is context or a fault. Under autopay `$0.00` is the normal
+resting state between charges, and reporting it daily is noise that trains the reader to skim the
+panel. Deliberately **not** a hardcoded `$0.00` suppression — the same number means the opposite
+under a drawdown model, so the model is recorded rather than guessed. The **fleet report names its
+own scope**: it iterates the `WATCHED_FLY_APPS` allowlist (it never enumerated an org), and now
+reconciles against the org so an app that exists but isn't watched reads as *"not on the watchlist"*
+rather than as a silent omission — the defect that had the owner doubting his own memory about
+`pharmfoldmdk` on 2026-08-01. Degrades honestly: if the org listing is unavailable it says so
+instead of implying completeness. Written report only; voice keeps its one-liner.
+
 **Runtime settings overlay** (`app/runtime_settings.py`, health TDD §7): a bounded
 allow-list of behavioral keys — `briefing_enabled/hour/minute/by_phone`, the four
 `quiet_hours_*` fields, `outbound_calls_enabled`, `max_outbound_calls_per_hour`, the

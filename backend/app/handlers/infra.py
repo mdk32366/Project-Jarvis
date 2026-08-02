@@ -186,7 +186,12 @@ def _fleet_health(args: dict, ctx: Context) -> str:
     # and email all keep it. Spoken aloud it is dreadful — enumerating every
     # app's machine states is exactly what makes an assistant sound like a robot.
     # So the channel decides, and `verbose` overrides.
-    table = "Fly fleet health:\n" + "\n".join(lines)
+    # The scope line goes on the WRITTEN report only. On voice the answer is a
+    # one-liner about what's degraded; reading a watchlist reconciliation aloud
+    # every time would be the noise this change exists to remove.
+    with httpx.Client(timeout=_TIMEOUT) as client:
+        scope = _scope_line(client, apps)
+    table = "Fly fleet health:\n" + "\n".join(lines) + f"\n{scope}"
     if ctx.channel != "voice" or args.get("verbose"):
         return table
 
@@ -202,6 +207,85 @@ def _fleet_health(args: dict, ctx: Context) -> str:
         rest = f" Everything else is up ({len(healthy)})." if healthy else ""
         return f"{degraded[0]} is degraded.{rest}"
     return f"{len(degraded)} apps are degraded: " + "; ".join(degraded) + "."
+
+
+def _balance_line(db, formatted: str, cents, org_name: str) -> str:
+    """Render the Fly credit balance, escalating ONLY under a stated prepaid model.
+
+    A credit balance is only a signal if the tenancy draws it down. Under autopay
+    it is the normal resting state between charges, so a daily "$0.00" is noise —
+    and noise in a health surface trains the reader to skim it, which is exactly
+    what exception-first design exists to prevent.
+
+    So the billing model is a stated parameter rather than an assumption baked
+    into a rendering. `None` (default) means autopay: report the number as plain
+    context, never as a fault. A threshold means prepaid: at or below it, this is
+    an approaching cutoff and says so.
+
+    Deliberately NOT a hardcoded suppression of `$0.00`. If a prepaid project ever
+    runs under JARVIS's watch again, suppression would silently hide a real
+    warning — the same number carrying the opposite meaning is precisely why the
+    model has to be recorded rather than guessed.
+    """
+    from app.runtime_settings import get_effective
+
+    try:
+        threshold = get_effective(db, "fly_balance_alert_threshold")
+    except Exception:  # noqa: BLE001 — a reporting tool must not fail on a setting
+        threshold = None
+
+    base = f"Fly credit balance: {formatted} (org: {org_name})"
+    if threshold is None:
+        return f"{base} — autopay, not a balance to draw down."
+
+    dollars = (cents / 100) if isinstance(cents, (int, float)) else None
+    if dollars is not None and dollars <= threshold:
+        return (f"⚠ {base} — at or below your ${threshold} floor. Under a prepaid "
+                f"model that is an approaching cutoff.")
+    return f"{base} — above your ${threshold} floor."
+
+
+def _org_apps(client) -> list[str]:
+    """Every app in the personal org. Raises on failure — the caller decides
+    whether an unavailable reconciliation is worth degrading over."""
+    q = "{ personalOrganization { apps { nodes { name } } } }"
+    r = _request(client, "POST", _GRAPHQL_URL, json={"query": q})
+    r.raise_for_status()
+    payload = r.json()
+    if payload.get("errors"):
+        raise RuntimeError(str(payload["errors"])[:200])
+    org = ((payload.get("data") or {}).get("personalOrganization")) or {}
+    return sorted(n.get("name", "") for n in ((org.get("apps") or {}).get("nodes") or []))
+
+
+def _scope_line(client, watched: list[str]) -> str:
+    """State what the fleet report is scoped to, and what it therefore omits.
+
+    THE DEFECT THIS CLOSES (2026-08-01): a live app the owner knew about —
+    `pharmfoldmdk` — was absent from the report, and the report gave nothing to
+    reconcile against, so he was left doubting his own memory. It is not an org
+    problem and not an enumeration bug: the report iterates the **WATCHED_FLY_APPS
+    allowlist** and never enumerated an org at all. It was silent about its own
+    boundary, which is the same family as a check that goes blind and keeps
+    reporting.
+
+    A live app must read as "exists, not watched", never as a silent omission.
+    Degrades honestly: if the org listing is unavailable, say the scope is the
+    watchlist and say the reconciliation could not be made — never imply
+    completeness that was not checked.
+    """
+    try:
+        org = _org_apps(client)
+    except Exception as e:  # noqa: BLE001
+        return (f"Watching {len(watched)} configured app(s). "
+                f"(Couldn't list the org to check for unwatched apps: {e})")
+
+    unwatched = [a for a in org if a not in set(watched)]
+    line = f"Watching {len(watched)} of {len(org)} app(s) in the org."
+    if unwatched:
+        line += (f" Not on the watchlist: {', '.join(unwatched)} — "
+                 f"add to WATCHED_FLY_APPS to include them.")
+    return line
 
 
 def _fleet_spend(args: dict, ctx: Context) -> str:
@@ -226,7 +310,8 @@ def _fleet_spend(args: dict, ctx: Context) -> str:
             bal = org.get("creditBalanceFormatted") or (
                 f"${org.get('creditBalance', 0)/100:.2f}" if org.get("creditBalance") is not None else "?"
             )
-            out.append(f"Fly credit balance: {bal} (org: {org.get('name', '?')})")
+            out.append(_balance_line(ctx.db, bal, org.get("creditBalance"),
+                                     org.get("name", "?")))
     except Exception as e:  # noqa: BLE001
         out.append(f"(credit balance unavailable: {e})")
 
