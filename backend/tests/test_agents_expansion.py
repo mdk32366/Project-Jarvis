@@ -651,3 +651,54 @@ def test_a_dead_job_emails_the_owner(db, monkeypatch):
     assert sent, "the job died SILENTLY — the user would never know"
     assert "People API" in sent[0]["body"]        # and it says HOW TO FIX IT
     assert "isn't enabled" in sent[0]["body"]
+
+
+# ── The prompt must keep up with the tools that need JUDGMENT ────────────────
+# Curated deliberately. Most of the secretary's 38 tools are self-describing
+# CRUD (list_ideas, cancel_task, google_status) and a prompt that enumerated
+# them all would be a manifest, not guidance. These are the ones where the
+# schema alone leaves a real decision unmade — when to reach for it unprompted,
+# or which of two similar-looking options is correct.
+#
+# THE DRIFT THIS CATCHES ALREADY HAPPENED (2026-08-02): inception step 5 added
+# flag_risk / break_assumption / resolve_risk / list_plan_risks / reset_baseline
+# to the roster and the prompt was never extended, so the secretary could call
+# them but would rarely offer them. seed_agents reconciles ROSTERS and never
+# touches system_prompt, so nothing else would ever have noticed.
+_JUDGMENT_TOOLS = (
+    "draft_email",              # returns a draft; the orchestrator sends it
+    "start_planning",           # a conversation, not a document request
+    "add_planning_note",        # capture their words, not a summary
+    "next_planning_question",   # one at a time
+    "propose_milestone_date",   # a proposal, never a baseline
+    "ratify_plan",              # only on explicit agreement
+    "replan",                   # needs the reason
+    "reset_baseline",           # rare; replan is usually right
+    "project_timeline",         # facts, not verdicts
+    "flag_risk",                # offer it, don't wait to be asked
+    "break_assumption",         # surfaces once
+    "resolve_risk",             # realized != retired
+    "watch_for",                # different from call_me_back
+    "whoami",                   # never ask for their own address
+    "lookup_contact",           # never ask twice for someone else's
+)
+
+
+def test_the_secretary_prompt_guides_every_tool_that_needs_judgment():
+    """A tool whose schema leaves a real decision unmade needs a line in the
+    prompt, or it ships reachable-but-unoffered."""
+    from app.agents import DEFAULT_AGENTS
+
+    prompt = DEFAULT_AGENTS["secretary"].system
+    missing = [t for t in _JUDGMENT_TOOLS if t not in prompt]
+    assert not missing, f"secretary prompt has no guidance for: {missing}"
+
+
+def test_the_judgment_list_only_names_tools_the_secretary_actually_has():
+    """The other half of the join — a curated list that drifts from the roster
+    is the dead-runbook defect in another costume."""
+    from app.agents import DEFAULT_AGENTS
+
+    roster = set(DEFAULT_AGENTS["secretary"].tools)
+    orphans = [t for t in _JUDGMENT_TOOLS if t not in roster]
+    assert not orphans, f"guidance list names tools not on the roster: {orphans}"
