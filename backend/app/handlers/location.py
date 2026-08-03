@@ -371,6 +371,19 @@ def _check_location_freshness(args: dict, ctx: Context) -> str:
                 f"fresh (stale after {stale_after} minutes).")
 
     layer = _attribute_layer(ctx.db)
+
+    if not active:
+        # REPORT ALWAYS, ESCALATE ONLY IN-HOURS — and the escalation here is the
+        # PHRASING, because an LLM judge reads this against the watch condition.
+        # §5.3 said "confirm, don't rebuild" on the grounds that the health check
+        # already suppresses out of hours. It does; but the watch reads THIS
+        # function, not that one, and this had no such branch. Stating the age
+        # without the stale phrasing keeps the report honest while making the
+        # condition unmatchable overnight — rather than leaving a structural fact
+        # to a judge that merely fails closed.
+        return (f"Last position fix {int(age)} minutes ago, outside active hours — "
+                f"not treated as a fault. Where it would point: {layer}.")
+
     return (f"No position fix has registered in {int(age)} minutes ({window}); "
             f"stale after {stale_after} minutes. Where it stopped: {layer}.")
 

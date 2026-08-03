@@ -125,7 +125,12 @@ def _check_watches(db) -> None:
     Never raises: a broken watch must not stop the job queue.
     """
     try:
-        from app.handlers.watches import check_watch, due_watches
+        from app.handlers.watches import check_watch, due_watches, rearm_system_watches
+
+        # BEFORE the due loop: a system watch whose condition has cleared goes
+        # back to `active` so it can catch the NEXT outage. Ordering matters —
+        # re-arming after would leave it a full tick behind.
+        rearm_system_watches(db)
 
         for w in due_watches(db):
             check_watch(db, w)

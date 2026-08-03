@@ -821,3 +821,220 @@ def test_the_researcher_finally_has_tools():
     sysprompt = DEFAULT_AGENTS["researcher"].system
     assert "UNTRUSTED" in sysprompt
     assert "want me to look it up?" in sysprompt   # honest about not searching
+
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+# ══ Step 5: the location absence watch ══════════════════════════════════════
+def _seeded_watch(db):
+    from app.handlers.watches import seed_system_watches
+    from app.models import Watch
+    seed_system_watches(db)
+    return db.query(Watch).filter_by(created_by="system").one()
+
+
+def test_the_system_watch_seeds_exactly_once_across_two_runs(db):
+    """Idempotent on (created_by, tool). Creating it twice on redeploy is a
+    double-ring, which is how a location alarm gets disabled."""
+    from app.handlers.watches import seed_system_watches
+    from app.models import Watch
+
+    assert seed_system_watches(db) == 1
+    assert seed_system_watches(db) == 0
+    assert db.query(Watch).filter_by(created_by="system").count() == 1
+
+
+def test_the_seed_guard_survives_an_edited_condition(db):
+    """THE REALISTIC VERSION OF THE BUG. A text-keyed guard looks correct right
+    up until someone rewords the prose and gets a second watch."""
+    from app.handlers.watches import seed_system_watches
+    from app.models import Watch
+
+    w = _seeded_watch(db)
+    w.condition = "no position fix in a while, reworded by a human"
+    db.commit()
+
+    assert seed_system_watches(db) == 0, "an edited condition produced a duplicate"
+    assert db.query(Watch).filter_by(created_by="system").count() == 1
+
+
+def test_the_seeded_watch_does_not_nag(db):
+    """recurring=False. The re-arm is what makes it repeatable — a watch that
+    rings every interval while stale is one the owner switches off."""
+    assert _seeded_watch(db).recurring is False
+
+
+def test_its_tool_resolves_in_the_registry(db):
+    """§0.1: check_watch sets status='error' TERMINALLY for a missing tool and
+    nothing sets it back. A watch seeded ahead of its tool is bricked silently."""
+    from app.handlers.base import build_registry
+    assert build_registry().has(_seeded_watch(db).tool)
+
+
+def _freshness_component(db):
+    from app.health import seed_health_topology
+    from app.models import Component
+    seed_health_topology(db)
+    return db.query(Component).filter_by(name="location_freshness").one()
+
+
+def test_a_done_system_watch_rearms_once_the_condition_clears(db, monkeypatch):
+    """THE DEAD-MAN'S-SWITCH TEST. recurring=False means one fire EVER; without
+    the re-arm the next outage never alerts, and you believe you have an alarm
+    that cannot go off again."""
+    from app.handlers.watches import rearm_system_watches
+    from app.models import LocationPing
+
+    w = _seeded_watch(db)
+    _freshness_component(db)
+    w.status, w.fire_count = "done", 1
+    w.last_fired_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    db.commit()
+
+    # Condition cleared: a fresh fix has landed.
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: True)
+    p = LocationPing(lat=48.49, lon=-122.68, source="tasker", trigger="pull")
+    db.add(p)
+    db.commit()
+
+    assert rearm_system_watches(db) == 1
+    db.refresh(w)
+    assert w.status == "active"
+    assert w.fire_count == 1, "history must survive the re-arm"
+    assert w.last_fired_at is not None
+
+
+def test_it_does_not_rearm_while_the_condition_still_holds(db, monkeypatch):
+    from app.handlers.watches import rearm_system_watches
+    from app.models import LocationPing
+
+    w = _seeded_watch(db)
+    _freshness_component(db)
+    w.status = "done"
+    db.commit()
+
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: True)
+    p = LocationPing(lat=48.49, lon=-122.68, source="tasker", trigger="pull")
+    db.add(p)
+    db.commit()
+    p.created_at = datetime.now(timezone.utc) - timedelta(hours=5)   # still stale
+    db.commit()
+
+    assert rearm_system_watches(db) == 0
+    db.refresh(w)
+    assert w.status == "done"
+
+
+def test_recovery_is_read_structurally_not_through_the_judge(db):
+    """§0.3. The LLM judge fails closed, so routing recovery through it means one
+    hiccup leaves the watch permanently done — silent, and indistinguishable from
+    'no outage since'. Structural, asserted structurally."""
+    import inspect
+    from app.handlers import watches
+
+    src = inspect.getsource(watches.rearm_system_watches)
+    assert "check_location_freshness" in src
+    assert "_fired(" not in src, "recovery is routed through the LLM judge"
+    assert "_fired" in src, "the docstring should say WHY the judge is not used"
+
+
+def test_a_user_watch_is_never_rearmed(db, monkeypatch):
+    """One-shot semantics are untouched for everything the owner created."""
+    from app.handlers.watches import rearm_system_watches
+    from app.models import LocationPing, Watch
+
+    _seeded_watch(db)
+    _freshness_component(db)
+    u = Watch(tool="check_location_freshness", condition="mine", opening="hi",
+              status="done", created_by="web")
+    db.add(u)
+    db.commit()
+
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: True)
+    db.add(LocationPing(lat=48.49, lon=-122.68, source="tasker", trigger="pull"))
+    db.commit()
+
+    rearm_system_watches(db)
+    db.refresh(u)
+    assert u.status == "done", "a user watch was re-armed"
+
+
+# ── §5.3 / §5.4 — this is the one that can place a call ─────────────────────
+def test_it_cannot_fire_at_3am_because_the_tool_says_ok(db, monkeypatch):
+    """§5.3: CONFIRM, don't rebuild. check_location_freshness already returns
+    fresh-or-not against the active-hours window, so the condition cannot be
+    true overnight — and the outbound quiet-hours guard is a SECOND layer
+    underneath. Two guards for one property is how they drift; this asserts the
+    first holds rather than adding a third."""
+    from app.handlers.location import _check_location_freshness
+    from app.models import LocationPing
+
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: False)
+    p = LocationPing(lat=48.49, lon=-122.68, source="tasker", trigger="pull")
+    db.add(p)
+    db.commit()
+    p.created_at = datetime.now(timezone.utc) - timedelta(hours=9)   # wildly stale
+    db.commit()
+
+    out = _check_location_freshness({}, Context(db=db, channel="watch", actor="system",
+                                                thread_key="w"))
+    assert "outside active hours" in out
+    assert "No position fix has registered" not in out, \
+        "the stale phrasing the condition matches must not appear overnight"
+
+
+def test_it_fires_at_most_once_per_outage(db, monkeypatch):
+    """recurring=False plus the re-arm: one ring per outage, not one per tick."""
+    from app.handlers.watches import check_watch
+    from app.models import OutboundCall
+
+    w = _seeded_watch(db)
+    _freshness_component(db)
+    monkeypatch.setattr("app.handlers.watches._fired", lambda c, o: True)
+    monkeypatch.setattr("app.channels.outbound_voice.schedule_call",
+                        lambda db, **kw: OutboundCall(id=1, to_number="+1", opening="x"))
+
+    check_watch(db, w)
+    db.refresh(w)
+    assert w.status == "done" and w.fire_count == 1
+
+    check_watch(db, w)          # a second tick inside the same outage
+    db.refresh(w)
+    assert w.fire_count == 1, "it rang twice in one outage"
+
+
+def test_a_failed_call_leaves_it_active_to_retry(db, monkeypatch):
+    """Audit-M4 behaviour, confirmed for the SEEDED watch rather than assumed:
+    a condition that fired but could not be called must not be consumed, or the
+    alarm fires once into the void and is spent."""
+    from app.handlers.watches import check_watch
+
+    w = _seeded_watch(db)
+    _freshness_component(db)
+    monkeypatch.setattr("app.handlers.watches._fired", lambda c, o: True)
+    monkeypatch.setattr("app.channels.outbound_voice.schedule_call", lambda db, **kw: None)
+
+    result = check_watch(db, w)
+    db.refresh(w)
+    assert "could not call" in result
+    assert w.status == "active", "a failed call consumed the watch"
+    assert w.fire_count == 0
+
+
+def test_the_rate_limit_floor_still_applies(db, monkeypatch):
+    """The re-arm does not bypass watch_min_interval_minutes — a watch that
+    re-armed and immediately re-fired would still be floored underneath."""
+    from app.handlers.watches import check_watch
+    from app.models import OutboundCall
+
+    w = _seeded_watch(db)
+    _freshness_component(db)
+    w.last_fired_at = datetime.now(timezone.utc)      # just rang
+    db.commit()
+    monkeypatch.setattr("app.handlers.watches._fired", lambda c, o: True)
+    monkeypatch.setattr("app.channels.outbound_voice.schedule_call",
+                        lambda db, **kw: OutboundCall(id=2, to_number="+1", opening="x"))
+
+    assert "rate-limited" in check_watch(db, w)
+    db.refresh(w)
+    assert w.fire_count == 0

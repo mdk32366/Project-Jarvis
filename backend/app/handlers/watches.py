@@ -196,6 +196,104 @@ def check_watch(db, w: Watch) -> str:
     return f"fired — queued call #{row.id}"
 
 
+SYSTEM_WATCH_TOOL = "check_location_freshness"
+
+
+def seed_system_watches(db) -> int:
+    """Seed the absence watch — the dead-man's-switch for the location loop.
+
+    IDEMPOTENT ON `(created_by, tool)`, deliberately not on the condition text.
+    The condition is prose and will be reworded; keying on it would look correct
+    right up until an edit produced a second watch, and two watches on one
+    condition is a double-ring the owner disables.
+
+    Returns the number of rows created (0 on every run after the first).
+    """
+    existing = (
+        db.query(Watch)
+        .filter(Watch.created_by == "system", Watch.tool == SYSTEM_WATCH_TOOL)
+        .first()
+    )
+    if existing is not None:
+        return 0
+
+    db.add(Watch(
+        tool=SYSTEM_WATCH_TOOL,
+        tool_args="{}",
+        condition=("no position fix has registered in over 30 minutes during active "
+                   "hours"),
+        opening=("This is JARVIS. Your phone has stopped reporting its position — "
+                 "I have not had a fix in over half an hour."),
+        every_minutes=15,          # two checks inside the 30-minute window
+        # NOT recurring. A watch that nags is one you disable, and a disabled
+        # location alarm is how you get six hours stale again. `rearm_system_watches`
+        # is what makes it repeatable — see there for why that lives in the engine.
+        recurring=False,
+        created_by="system",
+    ))
+    db.commit()
+    log.info("seeded system watch: %s", SYSTEM_WATCH_TOOL)
+    return 1
+
+
+def rearm_system_watches(db) -> int:
+    """Re-arm a fired system watch once its condition has CLEARED.
+
+    THE PROBLEM `recurring` CANNOT SOLVE. True rings every interval while the
+    condition holds — the nagging the design rejects. False sets `done` on the
+    first fire, forever — so the NEXT outage never alerts, and a dead-man's-switch
+    that dies after one use is worse than none, because you believe you have one.
+    What is wanted is fire once per OUTAGE, and neither setting expresses that.
+
+    So the re-arm lives here, in the engine, keyed on `(created_by='system', tool)`.
+    `recurring` stays False and one-shot semantics are untouched for every user
+    watch.
+
+    REJECTED, and recorded so it isn't reintroduced as a tidy-up: re-arming from
+    inside `check_location_freshness`. A health check that mutates a watch row
+    couples the status surface to the alerting surface, and the next person adding
+    a check would reasonably copy the pattern. **Checks read; the engine writes.**
+
+    THE CLEAR CONDITION IS READ STRUCTURALLY, never through `_fired`. The judge
+    fails closed by design, so routing recovery through it means one hiccup leaves
+    the watch permanently `done` — silent, and indistinguishable from "no outage
+    since". Recovery is a structural fact (`status == "ok"`); it is read as one.
+
+    `fire_count` and `last_fired_at` are left intact: they are the history, and
+    the only record the alarm ever went off.
+    """
+    from app.health_checks import check_location_freshness
+    from app.models import Component
+
+    done = (
+        db.query(Watch)
+        .filter(Watch.created_by == "system", Watch.status == "done")
+        .all()
+    )
+    if not done:
+        return 0
+
+    rearmed = 0
+    for w in done:
+        if w.tool != SYSTEM_WATCH_TOOL:
+            continue
+        c = db.query(Component).filter_by(name="location_freshness").first()
+        if c is None:
+            continue
+        try:
+            result = check_location_freshness(db, c)
+        except Exception as e:  # noqa: BLE001 — never break the worker on a check
+            log.warning("re-arm check failed for watch #%s: %s", w.id, e)
+            continue
+        if result.status == "ok":
+            w.status = "active"
+            rearmed += 1
+            log.info("re-armed system watch #%s (location_freshness cleared)", w.id)
+    if rearmed:
+        db.commit()
+    return rearmed
+
+
 def _fired(condition: str, observation: str) -> bool:
     """Has the condition been met?
 
