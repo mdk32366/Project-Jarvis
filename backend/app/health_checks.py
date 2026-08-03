@@ -141,6 +141,58 @@ def check_heartbeat(db: Session, c: Component) -> CheckResult:
                        last_success_at=beat)
 
 
+def check_location_freshness(db: Session, c: Component) -> CheckResult:
+    """*Is there a recent position fix at all?* — the end-to-end signal.
+
+    THE THIRD LOCATION CHECK, AND IT DELIBERATELY OVERLAPS THE OTHER TWO.
+    `location_pull_scheduler` asks "is the server asking?"; `location_responsiveness`
+    asks "is the phone answering in time?". Both can read healthy while the owner
+    still has no usable position — and both can read unhealthy while the feed is
+    perfectly fresh, which is exactly the state observed on 2026-08-03: 16%
+    fulfilment against a 120-second timeout, and a newest fix 16 minutes old.
+
+    Fulfilment-within-the-timeout is the wrong denominator for "do we know where he
+    is". This check reads ONE thing — the age of the newest ping — and nothing else.
+
+    OUT OF HOURS IS `ok`, NOT SUPPRESSED. The age is still stated in the detail;
+    only the escalation is withheld. A phone on a charger overnight is not a fault,
+    and reporting one nightly is how a panel gets ignored. Report always, escalate
+    only in-hours.
+    """
+    from app.handlers.location import age_minutes, in_active_hours, latest
+
+    stale_after = _cfg(c).get("stale_after_minutes") or _stale_after(db)
+    newest = latest(db)
+
+    if newest is None:
+        # No evidence is not health — and never_pinged is `unknown`, not `down`,
+        # because a phone that was never enrolled is not a phone that stopped.
+        return CheckResult(c.name, "unknown", "never_pinged",
+                           "no position fix has ever been recorded", checked_at=_now())
+
+    age = age_minutes(newest)
+    detail = f"newest fix {int(age)}m old (stale after {stale_after}m)"
+    last_ok = _aware(newest.created_at)
+
+    if not in_active_hours(db):
+        return CheckResult(c.name, "ok", None, f"{detail}; outside active hours",
+                           checked_at=_now(), last_success_at=last_ok)
+
+    if age <= stale_after:
+        return CheckResult(c.name, "ok", None, detail,
+                           checked_at=_now(), last_success_at=last_ok)
+    if age <= stale_after * 2:
+        return CheckResult(c.name, "degraded", "stale_during_active", detail,
+                           checked_at=_now(), last_success_at=last_ok)
+    return CheckResult(c.name, "down", "stale_during_active", detail,
+                       checked_at=_now(), last_success_at=last_ok)
+
+
+def _stale_after(db) -> int:
+    from app.runtime_settings import get_effective
+    return get_effective(db, "location_stale_after_minutes")
+
+
 def check_location_scheduler(db: Session, c: Component) -> CheckResult:
     """*Is the server asking?* — half one of the location split (TDD §7.1).
 
@@ -224,6 +276,18 @@ def check_location_responsiveness(db: Session, c: Component) -> CheckResult:
                            f"only {len(rows)} completed request(s); need {deg_min} to judge",
                            checked_at=_now())
 
+    # FULFILMENT IS COUNTED FROM `status`, NEVER FROM `responded_at`.
+    # Since 2026-08-03 `responded_at` is stamped on LATE closes too, so
+    # `responded_at is not None` now looks like a perfectly reasonable way to
+    # count "answered" — and would silently count every late answer as on-time,
+    # turning a correctly-red check green without a single fix arriving sooner.
+    # Guarded structurally in test.
+    from app.runtime_settings import get_effective
+    try:
+        timeout_s = get_effective(db, "location_pull_timeout_seconds")
+    except Exception:  # noqa: BLE001 — a check must never fail on a settings read
+        timeout_s = 120
+
     fulfilled = [r for r in rows if r.status == "fulfilled"]
     n = len(fulfilled)
     if n >= ok_min:
@@ -232,9 +296,38 @@ def check_location_responsiveness(db: Session, c: Component) -> CheckResult:
         status, fault = "degraded", "not_answering"
     else:
         status, fault = "down", "not_answering"
+
+    # SPLIT THE FAULT ON THE EVIDENCE — two failures, two machines, two runbooks.
+    # A phone that answers late has a working Tasker config (something answered)
+    # and a power-management problem. A silent phone has neither established.
+    # Sending the first down the second's checklist wastes the whole diagnosis on
+    # re-verifying a config that is demonstrably fine.
+    #
+    # Status tiers are UNCHANGED: a phone answering 50 minutes late against a
+    # 120-second timeout is still unresponsive. That was ratified when
+    # `close_request` was written and this does not reopen it — only the fault
+    # code and the detail change.
+    failures = [r for r in rows if r.status == "timeout"]
+    late = [r for r in failures if r.responded_at is not None]
+    detail = f"{n} of the last {len(rows)} requests answered"
+    if failures:
+        # Majority-of-failures, with NO new tunable — a threshold nobody ever
+        # tunes is a knob that rots. The counts go in the detail either way, so
+        # the reader sees the real split regardless of which code fired.
+        if fault is not None and len(late) * 2 > len(failures):
+            fault = "answering_late"
+        if late:
+            lags = sorted(
+                (_aware(r.responded_at) - _aware(r.requested_at)).total_seconds() / 60
+                for r in late if r.responded_at and r.requested_at)
+            median = lags[len(lags) // 2] if lags else 0
+            detail += (f"; {len(late)} of {len(failures)} failures answered late "
+                       f"(median {median:.0f}m, timeout {timeout_s}s)")
+        else:
+            detail += f"; {len(failures)} failures silent"
+
     return CheckResult(
-        c.name, status, fault,
-        f"{n} of the last {len(rows)} requests answered", checked_at=_now(),
+        c.name, status, fault, detail, checked_at=_now(),
         last_success_at=max((_aware(r.responded_at) for r in fulfilled
                              if r.responded_at), default=None),
         last_failure_at=max((_aware(r.requested_at) for r in rows
@@ -457,6 +550,7 @@ _CHECKS = {
     "heartbeat": check_heartbeat,
     "location_scheduler": check_location_scheduler,
     "location_responsiveness": check_location_responsiveness,
+    "location_freshness": check_location_freshness,
     "project_hygiene": check_project_hygiene,
     "health_evaluator": check_health_evaluator,
     "github_writes": check_github_writes,

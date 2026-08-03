@@ -93,6 +93,16 @@ def test_late_answer_is_recorded_but_does_not_un_timeout(client, db, _token):
     assert req.status == "timeout"
     assert db.get(LocationPing, r.json()["id"]).request_id == req.id
 
+    # TWO FACTS, TWO FIELDS (2026-08-03). `status` answers "did it arrive in
+    # time"; `responded_at` answers "when did it arrive". The PAIRING is the
+    # whole point: responded_at was previously written only on the `pending`
+    # branch, so it read NULL for exactly the late answers it would have been
+    # most useful for — and check_location_responsiveness could not tell
+    # "answered late" from "never answered", the two faults needing different
+    # runbooks and different machines. Nothing asserted this pairing before.
+    assert req.responded_at is not None, "a late answer left no arrival time"
+    assert req.status == "timeout", "recording the arrival must not un-timeout it"
+
 
 def test_unsolicited_ping_is_data_not_an_error(client, db, _token):
     """A manual force-run carries no nonce. It is still a real position."""
@@ -591,3 +601,22 @@ def test_the_guard_still_refuses_to_look_up_a_literal(client, db, _token, caplog
         r = _post_ping(client, {"lat": 48.5, "lon": -122.6, "nonce": junk})
         assert r.status_code == 200                        # the fix is never lost
         assert db.get(LocationPing, r.json()["id"]).request_id is None
+
+
+def test_a_retrying_phone_does_not_drift_its_own_latency(client, db, _token):
+    """FIRST ANSWER WINS. A phone that retries the same nonce must not overwrite
+    the first arrival — otherwise the measured latency climbs every time it
+    tries harder, and a struggling phone reads as a worsening one."""
+    req = new_request(db)
+    req.status = "timeout"
+    db.commit()
+
+    _post_ping(client, {"lat": 48.5, "lon": -122.6, "nonce": req.nonce})
+    db.expire_all()
+    first = db.query(LocationRequest).filter(LocationRequest.nonce == req.nonce).first().responded_at
+    assert first is not None
+
+    _post_ping(client, {"lat": 48.5, "lon": -122.6, "nonce": req.nonce})
+    db.expire_all()
+    second = db.query(LocationRequest).filter(LocationRequest.nonce == req.nonce).first().responded_at
+    assert second == first, "a retry overwrote the first arrival time"

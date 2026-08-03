@@ -339,7 +339,12 @@ _EMITTABLE_FAULTS = {
     "liveness":                {"call_failed"},
     "heartbeat":               {"heartbeat_stale"},
     "location_scheduler":      {"not_asking", "relay_rejected"},
-    "location_responsiveness": {"not_answering"},
+    # answering_late split off not_answering on 2026-08-03: same check, two
+    # failures, two machines. The config checklist and the power-management
+    # checklist are different, and sending one down the other's runbook is the
+    # mis-route the split exists to prevent.
+    "location_responsiveness": {"not_answering", "answering_late"},
+    "location_freshness":      {"stale_during_active", "never_pinged"},
     "project_hygiene":         {"record_stale"},
     "health_evaluator":        {"evaluator_stale", "rollup_incoherent"},
     # `no_evidence` is emitted alongside `unknown`, not a fault status — but it

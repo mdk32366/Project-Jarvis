@@ -89,6 +89,12 @@ _COMPONENTS: list[dict] = [
     # rather than inferred.
     {"name": "location_pull_scheduler", "kind": "data_feed", "depends_on": "worker_scheduler,autoremote",
      "check_type": "location_scheduler", "description": "Is JARVIS asking the phone for a fix?"},
+    # The end-to-end signal, deliberately overlapping its two siblings: both can
+    # read healthy while the owner has no usable position, and both can read
+    # unhealthy while the feed is fresh. Scoped to newest-ping age and nothing else.
+    {"name": "location_freshness", "kind": "data_feed", "depends_on": "",
+     "check_type": "location_freshness",
+     "description": "Is there a recent position fix at all?"},
     {"name": "location_responsiveness", "kind": "data_feed", "depends_on": "",
      "check_type": "location_responsiveness", "check_config": {"window": 6, "ok_min": 5, "degraded_min": 3},
      "description": "Is the phone answering when asked?"},
@@ -220,6 +226,37 @@ _REMEDIATIONS: list[dict] = [
                 "the question is upstream: did commit_document or create_project_repo actually "
                 "run? Check actions_audit for the tool call — its absence there means the tool "
                 "was never invoked, which is a different problem from a write that failed."},
+    {"component": "location_freshness", "fault_code": "stale_during_active", "severity": "warn",
+     "runbook": "No recent position fix during active hours. This check knows only that "
+                "fixes STOPPED — it cannot see which layer, and naming one would mis-route "
+                "the investigation. Run the tabled diagnostic "
+                "(docs/DIAGNOSTIC-location-stale-2026-08-03.md): one query over "
+                "location_requests LEFT JOIN location_pings splits it four ways — no "
+                "scheduled rows (the server stopped asking), relay_accepted=false "
+                "(dispatch), rows with no linked ping (phone silent), or rows with a "
+                "linked ping and a large latency (phone late). Do not read latency from "
+                "responded_at on historical rows; it is NULL for late answers before "
+                "2026-08-03."},
+    {"component": "location_freshness", "fault_code": "never_pinged", "severity": "info",
+     "runbook": "No position fix has ever been recorded — the phone has not been enrolled "
+                "yet. Expected on a fresh system and NOT a fault to chase. Enrolment is "
+                "docs/tasker-setup-and-recovery.md: AutoRemote installed, a Tasker event "
+                "profile filtering on the nonce regex ^[A-Za-z0-9_-]{22}$ (Use Regex ON, "
+                "Exact Message OFF), and the task POSTing to /api/location."},
+    {"component": "location_responsiveness", "fault_code": "answering_late", "severity": "warn",
+     "runbook": "The phone IS answering, but after the request has already timed out — so "
+                "the fixes arrive and are recorded, they are just late. THIS IS NOT THE "
+                "not_answering CHECKLIST AND MUST NOT BE MERGED WITH IT: if the Tasker "
+                "config were wrong, nothing would answer at all. Something answered, so "
+                "the config is demonstrably fine and re-checking it wastes the "
+                "diagnosis. Look at POWER MANAGEMENT on the phone: battery optimization "
+                "set to Unrestricted for BOTH Tasker and AutoRemote, the doze allowlist / "
+                "'allow background activity', and Tasker's exact-alarm permission. Also "
+                "ask what CHANGED since the last clean cadence — an OS update, an app "
+                "update, or a battery-saver toggle the phone may have applied on its own. "
+                "A bimodal latency spread (instant or ~1h, nothing between) points at "
+                "doze; a continuous spread points at ordinary delivery contention and may "
+                "not be actionable at all."},
     {"component": "location_responsiveness", "fault_code": "not_answering", "severity": "warn",
      "runbook": "The server is asking and the phone is not answering. PHONE-SIDE. Confirm AutoRemote "
                 "is installed and receiving (send a test from the AutoRemote web console); the Tasker "
@@ -406,8 +443,14 @@ _CAPABILITIES: list[dict] = [
 _CAPABILITY_MEMBERS: dict[str, list[tuple[str, bool]]] = {
     # Primary is responsiveness because it is the END-TO-END signal: a dead
     # scheduler eventually shows up here too, while the reverse is not true.
+    # `location_freshness` is NON-PRIMARY deliberately. It is arguably the more
+    # end-to-end signal — it is the one that answers "do we know where he is" —
+    # and there is a real case for making it primary instead of
+    # `location_responsiveness`. That is a Planner decision, it is not blocking,
+    # and flipping it here would change what turns the capability RED as a side
+    # effect of adding a check. Raised in the PR, not decided in it.
     "location": [("location_responsiveness", True), ("location_pull_scheduler", False),
-                 ("navigator", False)],
+                 ("location_freshness", False), ("navigator", False)],
     "calendar": [("google_calendar_svcacct", True), ("scheduling", False)],
     "morning_brief": [("worker_scheduler", True), ("gmail", False), ("twilio", False),
                       ("nws", False), ("google_calendar_svcacct", False),

@@ -123,6 +123,17 @@ def close_request(db, nonce: str) -> LocationRequest | None:
     the ping regardless. Leaving the request `timeout` while still linking the ping
     is deliberate — a chronically-late phone should read as unresponsive even
     though its fixes remain usable.
+
+    TWO FACTS, TWO FIELDS — and collapsing them is what left the field blank:
+
+        `status`       = did it arrive IN TIME?
+        `responded_at` = WHEN did it arrive?
+
+    `responded_at` used to be written only on the `pending` branch, so it read
+    NULL for exactly the case it would have been most useful for: a late answer.
+    `check_location_responsiveness` therefore could not tell "answered late" from
+    "never answered" — the two faults that need different runbooks and different
+    machines. It is now stamped on both branches.
     """
     req = db.query(LocationRequest).filter(LocationRequest.nonce == nonce).first()
     if req is None:
@@ -131,6 +142,11 @@ def close_request(db, nonce: str) -> LocationRequest | None:
         req.status = "fulfilled"
         req.responded_at = datetime.now(timezone.utc)
     else:
+        # FIRST ANSWER WINS. A retrying phone can deliver the same nonce more than
+        # once; overwriting would drift the measured latency upward on every
+        # retry, making a late phone look worse the harder it tries.
+        if req.responded_at is None:
+            req.responded_at = datetime.now(timezone.utc)
         log.info("location ping answered request %s late (status=%s)", req.id, req.status)
     return req
 

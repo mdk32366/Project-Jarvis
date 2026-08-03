@@ -286,3 +286,177 @@ def test_run_all_upserts_and_is_transient(db):
 def test_app_up_ok(db):
     seed_health_topology(db)
     assert check_app_up(db, _c(db, "postgres")).status == "ok"
+
+
+# ══ Location freshness (build order steps 1, 4, 4a) ═════════════════════════
+from datetime import date as _date  # noqa: E402
+
+
+def _freshness_component(db):
+    from app.health import seed_health_topology
+    from app.models import Component
+    seed_health_topology(db)
+    return db.query(Component).filter_by(name="location_freshness").one()
+
+
+def _ping(db, *, minutes_ago: int):
+    from app.models import LocationPing
+    p = LocationPing(lat=48.49, lon=-122.68, source="test", trigger="pull")
+    db.add(p)
+    db.commit()
+    p.created_at = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+    db.commit()
+    return p
+
+
+def test_freshness_never_pinged_is_unknown_not_down(db):
+    """No evidence is not health — and a phone never enrolled is not a phone that
+    stopped, so this is `unknown`, never `down`."""
+    from app.health_checks import check_location_freshness
+    r = check_location_freshness(db, _freshness_component(db))
+    assert r.status == "unknown" and r.fault_code == "never_pinged"
+
+
+def test_freshness_fresh_in_hours_is_ok(db, monkeypatch):
+    from app.health_checks import check_location_freshness
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: True)
+    _ping(db, minutes_ago=5)
+    r = check_location_freshness(db, _freshness_component(db))
+    assert r.status == "ok" and r.fault_code is None
+    assert "5m old" in r.detail
+
+
+def test_freshness_stale_in_hours_is_degraded(db, monkeypatch):
+    from app.health_checks import check_location_freshness
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: True)
+    _ping(db, minutes_ago=45)          # > 30, <= 60
+    r = check_location_freshness(db, _freshness_component(db))
+    assert r.status == "degraded" and r.fault_code == "stale_during_active"
+
+
+def test_freshness_very_stale_in_hours_is_down(db, monkeypatch):
+    from app.health_checks import check_location_freshness
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: True)
+    _ping(db, minutes_ago=180)         # > 60
+    r = check_location_freshness(db, _freshness_component(db))
+    assert r.status == "down" and r.fault_code == "stale_during_active"
+
+
+def test_freshness_stale_OUT_of_hours_is_ok_but_still_states_the_age(db, monkeypatch):
+    """A phone on a charger overnight is not a fault, and reporting one nightly is
+    how a panel gets ignored. REPORT ALWAYS, ESCALATE ONLY IN-HOURS — the age is
+    still in the detail, only the escalation is withheld.
+
+    This is the test the required plant targets: delete the in_active_hours branch
+    and it must go RED. If it stays green the fixture was in-hours by accident and
+    the suppression was never exercised.
+    """
+    from app.health_checks import check_location_freshness
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: False)
+    _ping(db, minutes_ago=600)         # wildly stale
+    r = check_location_freshness(db, _freshness_component(db))
+    assert r.status == "ok", "an overnight gap escalated"
+    assert r.fault_code is None
+    assert "600m old" in r.detail, "the age must still be stated as fact"
+    assert "outside active hours" in r.detail
+
+
+# ── Step 4: the answering_late split ────────────────────────────────────────
+def _resp_component(db):
+    from app.health import seed_health_topology
+    from app.models import Component
+    seed_health_topology(db)
+    return db.query(Component).filter_by(name="location_responsiveness").one()
+
+
+def _request(db, *, status, late_minutes=None, i=[0]):
+    from app.models import LocationRequest
+    i[0] += 1
+    now = datetime.now(timezone.utc)
+    r = LocationRequest(nonce=f"n{i[0]:022d}", trigger="scheduled", status=status,
+                        relay_accepted=True)
+    db.add(r)
+    db.commit()
+    r.requested_at = now - timedelta(minutes=120)
+    if status == "fulfilled":
+        r.responded_at = r.requested_at + timedelta(seconds=30)
+    elif late_minutes is not None:
+        r.responded_at = r.requested_at + timedelta(minutes=late_minutes)
+    db.commit()
+    return r
+
+
+def test_all_silent_failures_report_not_answering(db):
+    from app.health_checks import check_location_responsiveness
+    for _ in range(6):
+        _request(db, status="timeout")
+    r = check_location_responsiveness(db, _resp_component(db))
+    assert r.fault_code == "not_answering"
+    assert "6 failures silent" in r.detail
+
+
+def test_majority_late_failures_report_answering_late(db):
+    """Something answered, so the Tasker config is demonstrably fine — this must
+    route to the power-management runbook, not the config one."""
+    from app.health_checks import check_location_responsiveness
+    for _ in range(4):
+        _request(db, status="timeout", late_minutes=47)
+    for _ in range(2):
+        _request(db, status="timeout")
+    r = check_location_responsiveness(db, _resp_component(db))
+    assert r.fault_code == "answering_late"
+    assert "4 of 6 failures answered late" in r.detail
+    assert "median 47m" in r.detail and "timeout 120s" in r.detail
+
+
+def test_mixed_with_silent_in_the_majority_stays_not_answering(db):
+    from app.health_checks import check_location_responsiveness
+    for _ in range(2):
+        _request(db, status="timeout", late_minutes=30)
+    for _ in range(4):
+        _request(db, status="timeout")
+    r = check_location_responsiveness(db, _resp_component(db))
+    assert r.fault_code == "not_answering"
+
+
+def test_a_late_answer_does_not_change_the_status_tier(db):
+    """Ratified when close_request was written and NOT reopened here: a phone
+    answering 50 minutes late against a 120-second timeout is still unresponsive.
+    Only the fault code and the detail change."""
+    from app.health_checks import check_location_responsiveness
+    for _ in range(6):
+        _request(db, status="timeout", late_minutes=50)
+    r = check_location_responsiveness(db, _resp_component(db))
+    assert r.status == "down", "late answers must not soften the tier"
+    assert r.fault_code == "answering_late"
+
+
+def test_fulfilment_is_counted_from_status_never_from_responded_at(db):
+    """THE 4a.1 GUARD, and the reason it exists.
+
+    `responded_at` is now stamped on LATE closes too, so `responded_at is not
+    None` reads like a perfectly reasonable way to count "answered" — and would
+    count every late answer as on-time, turning a correctly-red check green
+    without a single fix arriving sooner. That is the fabricated-green move
+    design-note-answering-late.md warns against, one refactor away.
+
+    Structural, because a behavioural test alone would not stop the next person
+    writing the tempting filter.
+    """
+    import inspect
+    from app import health_checks
+
+    src = inspect.getsource(health_checks.check_location_responsiveness)
+    fulfil_line = [l for l in src.splitlines() if "fulfilled = [" in l]
+    assert fulfil_line, "could not find the fulfilment filter — guard is not reaching it"
+    assert 'r.status == "fulfilled"' in fulfil_line[0], \
+        "fulfilment must be counted from status"
+    assert "responded_at" not in fulfil_line[0], \
+        "fulfilment is being counted from responded_at — late answers would read on-time"
+
+    # And behaviourally: rows that answered late must NOT count as fulfilled.
+    from app.health_checks import check_location_responsiveness
+    for _ in range(6):
+        _request(db, status="timeout", late_minutes=45)
+    r = check_location_responsiveness(db, _resp_component(db))
+    assert "0 of the last 6 requests answered" in r.detail

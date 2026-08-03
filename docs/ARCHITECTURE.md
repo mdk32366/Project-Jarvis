@@ -635,6 +635,30 @@ page would prove the evaluator alive by the act of asking. Faults: `evaluator_st
 is recomputing — every other reading is suspect) and `rollup_incoherent` (a capability names a
 missing or disabled component).
 
+**Location health is THREE checks, not two** (`app/health_checks.py`): `location_pull_scheduler`
+("is the server asking?"), `location_responsiveness` ("is the phone answering in time?"), and
+**`location_freshness`** ("is there a recent fix at all?"). The third deliberately overlaps the
+other two, because both can read unhealthy while the feed is perfectly fresh — the state observed
+2026-08-03, at 16% fulfilment against a 120-second timeout with a newest fix 16 minutes old.
+Fulfilment-within-the-timeout is the wrong denominator for *do we know where he is*.
+`location_stale_after_minutes` (30, runtime-tunable) is a **health** threshold — "the feed has
+stopped" — and is deliberately distinct from `location_max_age_minutes`, a **consumer trust**
+threshold meaning "don't route from this fix"; they share a default and tune in opposite directions.
+Out of active hours the age is still reported but never escalates: a phone on a charger overnight is
+not a fault, and a nightly false alarm is how a panel gets ignored.
+
+**`answering_late` split from `not_answering`** on `location_responsiveness`: two failures, two
+machines, two runbooks. A phone answering late has a demonstrably working Tasker config — *something
+answered* — and a power-management problem; a silent phone has neither established. The runbook says
+so explicitly so the two are not "helpfully" merged. Status tiers are unchanged: 50 minutes late
+against a 120-second timeout is still unresponsive. The split is possible because `close_request`
+now stamps `responded_at` on **late** closes too (first answer wins, so a retrying phone doesn't
+drift its own latency) — previously it was written only on the `pending` branch and so read NULL for
+exactly the case it would have diagnosed. **`status` = did it arrive in time; `responded_at` = when
+it arrived.** Fulfilment is still counted from `status` and never from `responded_at`, guarded
+structurally: the latter now looks like a reasonable filter and would count every late answer as
+on-time, turning a correctly-red check green with no fix arriving sooner.
+
 **Prompt drift** (`docs/design-note-prompt-drift.md`): `seed_agents` reconciles tool **rosters** and
 deliberately never overwrites `system_prompt` — so every new tool reaches production and none of the
 prose explaining it does. A 2026-08-02 audit found **all nine agents still on their day-one seed**;
