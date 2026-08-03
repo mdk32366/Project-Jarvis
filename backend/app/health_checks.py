@@ -422,10 +422,18 @@ def check_prompt_guidance(db: Session, c: Component) -> CheckResult:
     Agents in the DB with no ledger entry are SKIPPED rather than failed. An
     agent created through the Admin UI has never been reviewed, so there is no
     basis to judge it — and inventing one would be the fabricated verdict this
-    codebase keeps refusing.
+    codebase keeps refusing. But the skip is SAID OUT LOUD in the detail, because
+    a silently-skipped agent is a hole shaped exactly like the one this check
+    exists to close.
+
+    NOTE the distinction the first cut of this check collapsed: "no ledger entry"
+    (unreviewed — cannot judge) is not the same as "reviewed, and every tool came
+    back self-describing" (judged; nothing to assert). `finance` and `scheduling`
+    are the second kind. Counting them as unreviewed undercounted coverage and
+    made the genuinely-unreviewed case invisible.
     """
     from app.models import AgentConfig
-    from app.prompt_review import guided_tools
+    from app.prompt_review import LEDGER, guided_tools
 
     rows = db.query(AgentConfig).all()
     if not rows:
@@ -434,14 +442,19 @@ def check_prompt_guidance(db: Session, c: Component) -> CheckResult:
 
     gaps: list[str] = []
     reviewed = 0
+    unreviewed: list[str] = []
     for r in rows:
-        expected = guided_tools(r.name)
-        if not expected:
-            continue                      # unreviewed agent — no basis to judge
+        if r.name not in LEDGER:
+            unreviewed.append(r.name)     # no basis to judge — but say so
+            continue
         reviewed += 1
+        expected = guided_tools(r.name)   # may be empty: reviewed, all self-describing
         missing = [t for t in expected if t not in (r.system_prompt or "")]
         if missing:
             gaps.append(f"{r.name} ({', '.join(missing)})")
+
+    skipped = (f"; {len(unreviewed)} not reviewed, not judged: "
+               + ", ".join(sorted(unreviewed))) if unreviewed else ""
 
     if not reviewed:
         return CheckResult(c.name, "unknown", "no_agents",
@@ -452,11 +465,12 @@ def check_prompt_guidance(db: Session, c: Component) -> CheckResult:
         return CheckResult(
             c.name, "degraded", "prompt_missing_guidance",
             f"{len(gaps)} of {reviewed} reviewed agent(s) missing guidance: "
-            + "; ".join(gaps),
+            + "; ".join(gaps) + skipped,
             checked_at=_now())
 
     return CheckResult(c.name, "ok", None,
-                       f"all {reviewed} reviewed agent(s) name their guided tools",
+                       f"all {reviewed} reviewed agent(s) name their guided tools"
+                       + skipped,
                        checked_at=_now())
 
 
