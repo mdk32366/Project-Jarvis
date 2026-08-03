@@ -702,3 +702,31 @@ def test_the_judgment_list_only_names_tools_the_secretary_actually_has():
     roster = set(DEFAULT_AGENTS["secretary"].tools)
     orphans = [t for t in _JUDGMENT_TOOLS if t not in roster]
     assert not orphans, f"guidance list names tools not on the roster: {orphans}"
+
+
+def test_the_travel_prompt_tracks_the_booking_kill_switch():
+    """The prompt and the kill switch must not drift apart in EITHER direction.
+
+    `book_flight` shipped, but booking is gated twice — `booking_enabled`
+    (default False, a hard-refused stub) and a separate live Duffel key, with
+    the vendor side not activated. So the architecturally-true "return the
+    offer_id to the orchestrator, which books" is operationally MISLEADING: it
+    promises a hand-off toward something that cannot complete.
+
+    This is the guard the prompt-drift audit earned. Flip `booking_enabled` to
+    True and this test fails, which is the point — enabling booking without
+    updating the prompt would leave the agent telling users it cannot do a thing
+    it can, the mirror of the defect it was written for.
+    """
+    from app.agents import DEFAULT_AGENTS
+    from app.config import settings
+
+    prompt = DEFAULT_AGENTS["travel"].system
+    if settings.booking_enabled:
+        assert "BOOKING IS CURRENTLY OFF" not in prompt, (
+            "booking is enabled but the travel prompt still says it is off — "
+            "the agent will refuse a capability it now has")
+    else:
+        assert "BOOKING IS CURRENTLY OFF" in prompt, (
+            "booking is disabled but the travel prompt does not say so — the "
+            "agent will promise a hand-off that cannot complete")

@@ -176,11 +176,36 @@ DEFAULT_AGENTS: dict[str, Agent] = {
         "the user's booked trips, learned from airline confirmation emails. This agent "
         "cannot itself book — booking is a gated, orchestrator-level action (like sending "
         "email), reached only after this agent's search results and the user's go-ahead.",
+        # THE PROMPT TRACKS THE KILL SWITCH, NOT JUST THE ARCHITECTURE.
+        #
+        # This seed used to say only "you cannot book yourself — return the
+        # offer_id(s) to the orchestrator, which books behind the confirmation
+        # gate and a TOTP code." Architecturally true, and OPERATIONALLY
+        # MISLEADING while booking is off: it points the agent at a hand-off
+        # toward a booking that cannot complete, so the user hears that
+        # something is under way when nothing will happen.
+        #
+        # Booking is gated TWICE — `booking_enabled` (default False, a
+        # hard-refused stub like enable_trading) and a separate live Duffel key
+        # — and per the owner (2026-08-02) the vendor side is not activated
+        # either. "Cannot book" is therefore the truth the user experiences, and
+        # the prompt leads with it.
+        #
+        # Found by a prompt-drift audit that ALMOST got this backwards: the
+        # production row still carried the older, quieter text, and "sync it to
+        # the seed" would have installed the misleading version as a fix. See
+        # docs/design-note-prompt-drift.md.
+        #
+        # WHEN BOOKING IS ENABLED this text must change, and
+        # test_the_travel_prompt_tracks_the_booking_kill_switch fails until it
+        # does — so the pair cannot drift silently in either direction.
         "You are JARVIS's travel assistant. Use list_trips for booked travel — JARVIS learns "
         "trips from confirmation emails sent to its inbox, so it holds no airline credentials "
         "and cannot access airline accounts. Use search_flights to research options; it "
-        "returns each offer's offer_id. You cannot book yourself — return the offer_id(s) to "
-        "the orchestrator, which books behind the confirmation gate and a TOTP code. Call "
+        "returns each offer's offer_id. BOOKING IS CURRENTLY OFF: say so plainly and offer to "
+        "open a task — never imply a booking is under way. (You would never book yourself in "
+        "any case: the offer_id goes to the orchestrator, which books behind the confirmation "
+        "gate and a TOTP code. That path is disabled until live booking is switched on.) Call "
         "whoami for the user's home airport and frequent-flyer numbers rather than asking.",
         ["list_trips", "search_flights", "whoami",
          "create_google_doc", "create_google_sheet"],
