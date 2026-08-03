@@ -58,13 +58,18 @@ prompt.
      real, the wiring was missing. The inverse — a name with no rule behind it —
      is what this note is about, and nothing catches it.
 
-WHAT WOULD CLOSE LIMIT 1, and it is cheap: a health component reading the LIVE
-rows and asserting the same rule this ledger asserts against the seed — every
-`guided` tool's name present in the production prompt, fault `prompt_missing_
-guidance`, listing the agents. That turns "green CI does not mean production is
-correct" from a documented caveat into something that goes amber when it is not.
-Safe against the travel precedent, because it checks NAMING, not wording. Queued,
-not built.
+LIMIT 1 IS NOW CLOSED (2026-08-03). `check_prompt_guidance` reads the LIVE agent
+rows and asserts the same rule this ledger asserts against the seed: every
+`guided` tool's name present in the production prompt, fault
+`prompt_missing_guidance`, agents named in the detail. It goes **amber** — never
+down, a prompt gap is not a system fault — and it is safe against the travel
+precedent because it judges **naming, not wording**, so production can hold the
+truer prose without being flagged as drift.
+
+The caveat above still holds for what CI alone tells you; what changed is that
+the gap is now MONITORED rather than merely documented. Limits 2 and 3 remain
+open by construction: nothing catches a prompt edited in production but not in
+seed, and nothing can tell real guidance from a bare list of tool names.
 
 DISPOSITIONS — exactly two, and the distinction is about the SCHEMA:
 
