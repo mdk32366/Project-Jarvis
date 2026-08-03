@@ -443,12 +443,20 @@ _CAPABILITIES: list[dict] = [
 _CAPABILITY_MEMBERS: dict[str, list[tuple[str, bool]]] = {
     # Primary is responsiveness because it is the END-TO-END signal: a dead
     # scheduler eventually shows up here too, while the reverse is not true.
-    # `location_freshness` is NON-PRIMARY deliberately. It is arguably the more
-    # end-to-end signal — it is the one that answers "do we know where he is" —
-    # and there is a real case for making it primary instead of
-    # `location_responsiveness`. That is a Planner decision, it is not blocking,
-    # and flipping it here would change what turns the capability RED as a side
-    # effect of adding a check. Raised in the PR, not decided in it.
+    # `location_freshness` is NON-PRIMARY. DECIDED 2026-08-03, on evidence rather
+    # than argument, and the evidence is the state the capability was in that day:
+    #
+    #     location_freshness       ok    newest fix 8m old
+    #     location_responsiveness  down  1 of 6 answered
+    #
+    # The loop was broken and the feed was still fresh. If freshness were primary
+    # the capability would have read GREEN through that, and the broken loop would
+    # have surfaced only once a fix finally went stale — i.e. as an outage rather
+    # than as a warning.
+    #
+    # RESPONSIVENESS LEADS; FRESHNESS LAGS. Primary belongs to the leading
+    # indicator. Freshness is the better end-to-end signal and the worse alarm,
+    # because by the time it turns the thing it was warning about has happened.
     "location": [("location_responsiveness", True), ("location_pull_scheduler", False),
                  ("location_freshness", False), ("navigator", False)],
     "calendar": [("google_calendar_svcacct", True), ("scheduling", False)],
