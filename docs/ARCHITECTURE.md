@@ -635,6 +635,18 @@ page would prove the evaluator alive by the act of asking. Faults: `evaluator_st
 is recomputing — every other reading is suspect) and `rollup_incoherent` (a capability names a
 missing or disabled component).
 
+**Prompt drift** (`docs/design-note-prompt-drift.md`): `seed_agents` reconciles tool **rosters** and
+deliberately never overwrites `system_prompt` — so every new tool reaches production and none of the
+prose explaining it does. A 2026-08-02 audit found **all nine agents still on their day-one seed**;
+the secretary's prompt covered ~5 tools while her roster had reached 47. Syncing to the seed is
+**not** the general rule: the seed reflects what the code can do, the prompt should reflect what
+actually works, and `travel`'s seed pointed at a booking hand-off that cannot complete
+(`booking_enabled` is a hard-refused stub and the live Duffel key is unset). The rule is *a prompt
+may name a capability the system can't deliver only if the tool says so when called* — silent
+failure means the prompt carries the warning; self-announcing failure means it can just point at the
+tool. Two guards enforce the pair: judgment-tool coverage in the secretary's prompt, and the travel
+prompt tied to `booking_enabled` in both directions.
+
 **Admin: agent prompts are visible, not just editable** (`ui/src/pages/AdminPage.jsx`): each agent
 row shows its `system_prompt` in a collapsed disclosure with the character count, and states *"No
 system prompt set"* when there is none. Editing was always possible via the row's `edit` link; the
