@@ -214,3 +214,31 @@ def test_both_fault_codes_join_a_runbook(db):
     fix = get_runbook(db, "prompt_guidance", "prompt_missing_guidance").runbook
     assert "OWNER ACTION" in fix.upper(), "the runbook must say a deploy will not fix it"
     assert "DIFF BEFORE WRITING" in fix.upper()
+
+
+def test_a_fully_self_describing_agent_counts_as_reviewed(db):
+    """`finance` and `scheduling` have ledger entries whose every tool came back
+    self-describing. That is a COMPLETED review with nothing to assert — not an
+    unreviewed agent. The first cut of this check collapsed the two, which both
+    undercounted coverage and hid the genuinely-unreviewed case."""
+    from app.health_checks import check_prompt_guidance
+    for n, spec in DEFAULT_AGENTS.items():
+        _agent_row(db, n, spec.system)
+
+    r = check_prompt_guidance(db, _component(db))
+    assert f"all {len(DEFAULT_AGENTS)} reviewed" in r.detail, \
+        f"agents with zero guided tools were counted as unreviewed: {r.detail}"
+
+
+def test_an_unreviewed_agent_is_named_not_silently_dropped(db):
+    """A skip nobody can see is the hole this component exists to close, wearing
+    a different hat."""
+    from app.health_checks import check_prompt_guidance
+    for n, spec in DEFAULT_AGENTS.items():
+        _agent_row(db, n, spec.system)
+    _agent_row(db, "some_ui_agent", "no ledger entry exists for me")
+
+    r = check_prompt_guidance(db, _component(db))
+    assert r.status == "ok"
+    assert "some_ui_agent" in r.detail, "the skipped agent is invisible"
+    assert "not reviewed" in r.detail
