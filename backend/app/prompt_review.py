@@ -39,6 +39,33 @@ prompt.
      guards.** That is the inverse drift. Named as a known gap; not built for
      without a case.
 
+  3. **The guidance guard's green can be earned trivially.** It passes when a
+     `guided` tool's NAME appears in the prompt — so a prompt that merely LISTS
+     tool names satisfies it while carrying no guidance at all. That is exactly
+     the manifest failure the curated-list design was rejected to avoid, and the
+     pass condition can be met without a single sentence of judgment.
+
+     Same family as `design-note-unwatched-instruments.md` §2.7: a guard whose
+     green can be reached by coincidence rather than by the property it is named
+     for. It cannot be mechanised — *"is this real guidance"* is a judgment, not
+     a property of the repo — so it is recorded rather than solved.
+
+     Found by the thing it describes: `set_project_status` was marked `guided`
+     while the prompt carried the parking rule ("requires a reason, ideally a
+     resumption condition") and never named the tool. Guidance present, tool
+     unattached — the agent reads the rule with nothing to bind it to. The fix
+     was to name the tool, not to downgrade the disposition: the judgment was
+     real, the wiring was missing. The inverse — a name with no rule behind it —
+     is what this note is about, and nothing catches it.
+
+WHAT WOULD CLOSE LIMIT 1, and it is cheap: a health component reading the LIVE
+rows and asserting the same rule this ledger asserts against the seed — every
+`guided` tool's name present in the production prompt, fault `prompt_missing_
+guidance`, listing the agents. That turns "green CI does not mean production is
+correct" from a documented caveat into something that goes amber when it is not.
+Safe against the travel precedent, because it checks NAMING, not wording. Queued,
+not built.
+
 DISPOSITIONS — exactly two, and the distinction is about the SCHEMA:
 
   `GUIDED`          the schema leaves a real decision unmade — when to reach for

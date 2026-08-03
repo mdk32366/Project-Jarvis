@@ -152,6 +152,19 @@ activation state, what a tool prints at runtime, whether two things that should
 move together actually do — not facts about the repo. CI cannot read them.
 Question 1 is enforceable precisely because it is a repo fact: a roster grew.
 
+**The guidance guard's green can also be earned trivially.** It passes when a
+`guided` tool's *name* appears in the prompt — so a prompt that merely lists tool
+names satisfies it while carrying no guidance at all: the manifest failure the
+curated-list design was rejected to avoid. *"Is this real guidance"* is a
+judgment, not a property of the repo, so it cannot be mechanised and is recorded
+rather than solved (`app/prompt_review.py`, limit 3).
+
+Found by the thing it describes: `set_project_status` was `guided` while the
+prompt carried the parking rule and never named the tool — **guidance present,
+tool unattached**, the agent reading a rule with nothing to bind it to. The fix
+was to name the tool, not to downgrade the disposition. The inverse — a name with
+no rule behind it — is what nothing catches.
+
 **And the enforcement reads the SEED, not production.** Green CI means the seed
 was reviewed, not that the live agent has the prose. The DB write remains an
 owner-authorised act, and a prompt edited in production but not in seed is
