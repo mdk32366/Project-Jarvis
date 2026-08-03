@@ -647,6 +647,21 @@ threshold meaning "don't route from this fix"; they share a default and tune in 
 Out of active hours the age is still reported but never escalates: a phone on a charger overnight is
 not a fault, and a nightly false alarm is how a panel gets ignored.
 
+**The location absence watch** (`seed_system_watches` / `rearm_system_watches`, `watches.py`): a
+seeded `Watch` on `check_location_freshness` — the dead-man's-switch for the pull loop. `recurring`
+cannot express *fire once per outage*: `True` nags every interval while stale, `False` fires once
+**ever**, so the next outage never alerts. The re-arm therefore lives in the **engine** — a `done`
+system watch returns to `active` once the condition clears, keyed on `(created_by="system", tool)`,
+with `recurring` left `False` so one-shot semantics are untouched for every user watch. Recovery is
+read **structurally** (the check's status), never through the LLM judge: the judge fails closed, so
+one hiccup would leave the watch permanently `done` — silent and indistinguishable from "no outage
+since". Seeded last at startup, after the tool registry and the component row exist, because
+`check_watch` marks a watch with a missing tool `error` **terminally** and it then stops being due.
+Two read-only tools back it: `check_location_freshness` (age, active-hours state, and **which layer
+stopped** — server / relay / phone-silent / phone-late, stated as fact with no cause guessed) and
+`location_ping_log` (which states its own retention horizon, since `location_pings` prunes and
+"no older pings" would otherwise read as "no older activity").
+
 **`answering_late` split from `not_answering`** on `location_responsiveness`: two failures, two
 machines, two runbooks. A phone answering late has a demonstrably working Tasker config — *something
 answered* — and a power-management problem; a silent phone has neither established. The runbook says

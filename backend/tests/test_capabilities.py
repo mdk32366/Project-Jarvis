@@ -541,3 +541,65 @@ def test_no_new_direct_handler_bypasses_are_introduced(db):
     assert offenders == [], (
         "direct handler calls bypass Registry.run_tool, so they write no audit row "
         "and can starve a liveness check into latching:\n  " + "\n  ".join(offenders))
+
+
+# ══ Step 7: does location_freshness reach the brief? ════════════════════════
+def _set_health(db, **statuses):
+    """Write current health_result rows directly — evaluate() reads stored
+    results, not live checks."""
+    from app.models import HealthResult
+    from datetime import datetime, timezone
+    for name, status in statuses.items():
+        row = db.get(HealthResult, name)
+        if row is None:
+            row = HealthResult(component=name)
+            db.add(row)
+        row.status = status
+        row.fault_code = None if status == "ok" else "stale_during_active"
+        row.checked_at = datetime.now(timezone.utc)
+    db.commit()
+
+
+def test_a_stale_location_freshness_reaches_the_brief(seeded):
+    """STEP 7 IS A TEST, NOT A FEATURE. `location_freshness` was made a member of
+    the `location` capability in #69, and the brief's Systems line is built from
+    the capability rollup — so the existing component->capability->brief path
+    already carries it. This asserts that rather than assuming it.
+    """
+    from app.capabilities import brief_line
+
+    _set_health(seeded, location_freshness="ok", location_responsiveness="ok",
+                location_pull_scheduler="ok", navigator="ok")
+    quiet = brief_line(seeded)
+
+    _set_health(seeded, location_freshness="degraded")
+    loud = brief_line(seeded)
+
+    assert "Location" in loud, "a stale fix did not reach the brief"
+    assert loud != quiet
+
+
+def test_the_brief_line_disappears_when_freshness_clears(seeded):
+    """THE REQUIRED PLANT, as a test: a line that renders regardless of status is
+    the exception-first design quietly becoming a table read."""
+    from app.capabilities import brief_line
+
+    _set_health(seeded, location_freshness="degraded", location_responsiveness="ok",
+                location_pull_scheduler="ok", navigator="ok")
+    assert "Location" in brief_line(seeded)
+
+    _set_health(seeded, location_freshness="ok")
+    cleared = brief_line(seeded)
+    assert "Location amber" not in cleared
+    assert "Location red" not in cleared
+
+
+def test_freshness_is_non_primary_so_it_ambers_rather_than_reds(seeded):
+    """Non-primary membership, decided on evidence in #70: freshness lags, so it
+    should not be the thing that turns the capability red on its own."""
+    from app.capabilities import brief_line
+
+    _set_health(seeded, location_freshness="down", location_responsiveness="ok",
+                location_pull_scheduler="ok", navigator="ok")
+    out = brief_line(seeded)
+    assert "Location amber" in out, f"expected amber from a non-primary fault, got: {out}"

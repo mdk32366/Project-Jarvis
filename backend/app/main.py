@@ -66,6 +66,24 @@ def _seed_first_user() -> None:
         db.close()
 
 
+def _seed_system_watches() -> None:
+    """Seed the location absence watch. Idempotent on (created_by, tool).
+
+    Seeded AFTER the agent roster so `check_location_freshness` is registered by
+    the time the first worker tick resolves it — a watch whose tool is missing is
+    set to `status="error"` TERMINALLY and stops being due, which is a
+    dead-man's-switch that is dead on arrival and says nothing about it.
+    """
+    from app.handlers.watches import seed_system_watches
+    db = SessionLocal()
+    try:
+        seed_system_watches(db)
+    except Exception as e:  # pragma: no cover
+        logger.warning("system watch seeding skipped: %s", e)
+    finally:
+        db.close()
+
+
 def _seed_agents() -> None:
     """Seed the default specialist roster if the agent_configs table is empty."""
     from app.agents import seed_agents
@@ -98,6 +116,9 @@ async def lifespan(app: FastAPI):
     _seed_first_user()
     _seed_agents()
     _seed_health_topology()
+    # Last: needs both the tool registry (agents) and the component row
+    # (health topology) to already exist.
+    _seed_system_watches()
     try:
         from app.database import SessionLocal as _SL
         from app import vectorstore
