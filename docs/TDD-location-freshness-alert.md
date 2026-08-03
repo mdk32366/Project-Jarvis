@@ -398,3 +398,49 @@ reads it.
   power-management runbook — which points the *investigation* at the right layer
   without pretending to name the cause. If the owner resolves it before this ships,
   keep a synthetic `answering_late` fixture as the regression.
+
+
+---
+
+## AMENDMENT — Step 7's component line is unreachable, and redundant (2026-08-03)
+
+Settled by a live read after PR #71. **No code changes; recorded so it is not
+re-derived or built by someone reading step 7 at face value.**
+
+### Unreachable by construction
+
+Effective values, read from the runtime overlay rather than the config defaults:
+
+| Setting | Effective |
+|---|---|
+| `briefing_hour` / `briefing_minute` | **04:00** |
+| `location_active_start_hour` | **07:00** |
+| `calendar_timezone` | `America/Los_Angeles` |
+
+The brief composes **three hours before active hours open** — wider than the
+30-minute gap the defaults imply, because of the 4 AM call setup.
+`check_location_freshness` returns `ok` outside active hours by design, so at the
+moment the brief is composed, freshness is **always** `ok`. Step 7's per-component
+line can never render. Not a bug in step 7 — a consequence of when the brief runs.
+
+### Redundant anyway
+
+The capability rollup already carries the signal, and carried it correctly through
+the 08-03 outage: **"Location amber"** fired off `location_responsiveness`, which
+is **not** hour-suppressed and caught the silences the freshness check was quiet
+about. The working line was already there before step 7 was specified.
+
+That is the non-primary decision (#70) paying off in the direction it was chosen
+for: responsiveness leads, freshness lags, and the leading indicator is what
+reaches the brief.
+
+### The component-detail path is deferred, not needed
+
+The brief has **no per-component detail path at all** — `brief_line` is capability
+granularity by design. Surfacing "location fix 41 minutes old" would mean building
+one, for a single consumer.
+
+**Trigger for building it, named so it is not re-derived:** a **second** component
+wanting per-component detail in the brief. Same discipline as `rearm_on_clear` —
+generalising to a mechanism before a second case exists is speculative, and the
+first case is already served by the capability line.

@@ -239,12 +239,33 @@ The 8-hour gap between 05:47 and 14:00 UTC is the active-hours boundary
 | Median latency | ~50 min | 9.3 min |
 | Shape | **bimodal** — instant or ~55 min | **continuous** |
 
-The owner confirmed nothing on the phone had changed. So this is not a new
-mechanism: **it is the previous power-management fix working.** Doze gating
-delivery into maintenance windows is what produces two clean clusters; remove
-the gate and you get ordinary variable delivery, which is what a continuous
-spread looks like. Re-running the power checklist would have been chasing a fix
-that had already landed.
+**AMENDED later the same day, once `responded_at` made latency readable. The
+conclusion stands; the reasoning that reached it does not.**
+
+> Not "bimodal → continuous". It is **bimodal with a ~55-minute mode → bimodal
+> with a ~13-second mode, plus a residue of complete silences.** A better result
+> reached by a worse argument: the original reading came from arrival CADENCE,
+> which cannot distinguish prompt answering from uniform lateness — a phone
+> answering every request 50 minutes late produces evenly-spaced arrivals and
+> looks identical from cadence alone. **Latency settled it; cadence never could
+> have.**
+
+**Carry the denominator.** The post-deploy sample is **5 prompt / 1 late / 3
+silent of 9**. Nine requests is thin, and without the n this hardens into a fact
+and gets cited against a future outage it does not cover.
+
+**THE FAULT CLASS MOVED, and that is the operational finding.** Before: answers
+arrived, too late → `answering_late` → power management. Now: a share of
+requests produce no ping at all → `not_answering` → delivery. **Do not run the
+power-management checklist against silences.** Nothing throttled an answer that
+came back in 13 seconds; doze DEFERS work, it does not drop it, so a
+doze-throttled phone answers late — which was the old mode. A phone that answers
+in 13 seconds when it answers at all was never throttled. It never got the
+message.
+
+The owner confirmed nothing on the phone had changed, so the 08-01
+power-management fix did work: it cleared the lateness. What it did not touch,
+and could not have, is the silences.
 
 ### The correlator check — the read that mattered most
 
