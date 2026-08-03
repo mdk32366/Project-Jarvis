@@ -620,3 +620,147 @@ def test_a_retrying_phone_does_not_drift_its_own_latency(client, db, _token):
     db.expire_all()
     second = db.query(LocationRequest).filter(LocationRequest.nonce == req.nonce).first().responded_at
     assert second == first, "a retry overwrote the first arrival time"
+
+
+# ══ Step 6: the watchable tools ═════════════════════════════════════════════
+from app.handlers.base import Context as _Ctx  # noqa: E402
+
+
+def _ctx(db):
+    return _Ctx(db=db, channel="web", actor="admin", thread_key="t")
+
+
+def _req(db, *, status, minutes_ago, late_minutes=None, accepted=True, trigger="scheduled"):
+    import secrets as _s
+    r = LocationRequest(nonce=_s.token_urlsafe(16), trigger=trigger, status=status,
+                        relay_accepted=accepted)
+    db.add(r)
+    db.commit()
+    now = datetime.now(timezone.utc)
+    r.requested_at = now - timedelta(minutes=minutes_ago)
+    if status == "fulfilled":
+        r.responded_at = r.requested_at + timedelta(seconds=20)
+    elif late_minutes is not None:
+        r.responded_at = r.requested_at + timedelta(minutes=late_minutes)
+    db.commit()
+    return r
+
+
+def _fix(db, *, minutes_ago):
+    p = LocationPing(lat=48.49, lon=-122.68, source="tasker", trigger="pull")
+    db.add(p)
+    db.commit()
+    p.created_at = datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)
+    db.commit()
+    return p
+
+
+def test_freshness_prose_states_the_age_and_the_window(db, monkeypatch):
+    """Two readers, two jobs: the LLM judge matches this against the condition
+    string, so age and active-hours state must both be plainly stated."""
+    from app.handlers.location import _check_location_freshness
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: True)
+    _fix(db, minutes_ago=7)
+    out = _check_location_freshness({}, _ctx(db))
+    assert "7 minutes ago" in out
+    assert "during active hours" in out
+    assert "fresh" in out
+
+
+def test_freshness_prose_names_the_window_when_outside_hours(db, monkeypatch):
+    from app.handlers.location import _check_location_freshness
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: False)
+    _fix(db, minutes_ago=200)
+    assert "outside active hours" in _check_location_freshness({}, _ctx(db))
+
+
+def test_never_enrolled_says_so(db, monkeypatch):
+    from app.handlers.location import _check_location_freshness
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: True)
+    assert "has ever been recorded" in _check_location_freshness({}, _ctx(db))
+
+
+# ── The four attribution branches — they must not collapse ──────────────────
+def test_attribution_server_not_asking(db):
+    from app.handlers.location import _attribute_layer
+    assert "isn't sending" in _attribute_layer(db)
+
+
+def test_attribution_relay_rejecting(db):
+    from app.handlers.location import _attribute_layer
+    for _ in range(3):
+        _req(db, status="timeout", minutes_ago=20, accepted=False)
+    assert "relay is rejecting" in _attribute_layer(db)
+
+
+def test_attribution_phone_not_answering(db):
+    from app.handlers.location import _attribute_layer
+    for _ in range(3):
+        _req(db, status="timeout", minutes_ago=20)
+    assert "isn't answering" in _attribute_layer(db)
+
+
+def test_attribution_phone_answering_late(db):
+    """THE BRANCH THAT MUST NOT COLLAPSE INTO THE ONE ABOVE. A phone answering
+    late has a demonstrably working config — something answered — and the alert
+    has to say which of the two it is, or the owner starts in the wrong place."""
+    from app.handlers.location import _attribute_layer
+    for _ in range(2):
+        _req(db, status="timeout", minutes_ago=40, late_minutes=25)
+    _req(db, status="timeout", minutes_ago=20)
+    out = _attribute_layer(db)
+    assert "answering late" in out
+    assert "isn't answering" not in out
+
+
+def test_the_stale_prose_carries_the_layer_into_the_alert(db, monkeypatch):
+    """`opening` is static, written once at watch creation. This observation is
+    the ONLY dynamic channel into the outbound call — if the layer isn't here,
+    the alert cannot name it."""
+    from app.handlers.location import _check_location_freshness
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: True)
+    _fix(db, minutes_ago=90)
+    for _ in range(2):
+        _req(db, status="timeout", minutes_ago=40, late_minutes=25)
+    out = _check_location_freshness({}, _ctx(db))
+    assert "90 minutes" in out
+    assert "Where it stopped:" in out
+    assert "answering late" in out
+
+
+def test_the_layer_is_stated_without_guessing_a_cause(db, monkeypatch):
+    """A guess wearing a fact's clothes is the netstatus-stub defect in alert
+    form. The tool names the layer and stops; the runbook owns the sub-layer."""
+    from app.handlers.location import _check_location_freshness
+    monkeypatch.setattr("app.handlers.location.in_active_hours", lambda db, now=None: True)
+    _fix(db, minutes_ago=90)
+    for _ in range(3):
+        _req(db, status="timeout", minutes_ago=20)
+    out = _check_location_freshness({}, _ctx(db)).lower()
+    for guess in ("tasker", "battery", "doze", "profile", "permission", "reboot"):
+        assert guess not in out, f"the alert guessed a cause: {guess}"
+
+
+# ── The retention horizon ───────────────────────────────────────────────────
+def test_ping_log_states_its_retention_horizon_when_full(db, monkeypatch):
+    """'No older pings' must not read as 'no older activity' — that is a
+    fabricated absence, and the horizon moves with the pull interval so the
+    reader cannot infer it."""
+    from app.config import settings
+    from app.handlers.location import _location_ping_log
+    monkeypatch.setattr(settings, "location_keep_pings", 5)
+    for i in range(6):
+        _fix(db, minutes_ago=i * 10)
+    out = _location_ping_log({"n": 3}, _ctx(db))
+    assert "retained pings" in out
+    assert "not evidence of an absence" in out
+
+
+def test_ping_log_is_quiet_about_retention_below_the_cap(db, monkeypatch):
+    from app.config import settings
+    from app.handlers.location import _location_ping_log
+    monkeypatch.setattr(settings, "location_keep_pings", 200)
+    _fix(db, minutes_ago=5)
+    out = _location_ping_log({}, _ctx(db))
+    assert "retained pings" not in out
+    assert "unsolicited" in out          # unlinked ping labelled honestly

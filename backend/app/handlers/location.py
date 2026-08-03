@@ -66,6 +66,24 @@ def record_ping(db, lat: float, lon: float, accuracy_m: float = 0.0,
 
     # Keep the table from growing without bound. We only ever care about the
     # latest fix; history is for debugging, not features.
+    #
+    # ASYMMETRY WORTH KNOWING BEFORE YOU TIDY IT: `location_pings` prunes,
+    # `location_requests` does NOT. So a `timeout` request whose answering ping
+    # has aged out reads as retroactively SILENT — the evidence is gone while the
+    # row that needs explaining remains, and "never answered" and "answered, then
+    # the proof expired" become indistinguishable.
+    #
+    # Step 4a (2026-08-03) fixed that incidentally rather than deliberately:
+    # `responded_at` lives on the request, which is the unpruned side, so the fact
+    # of a late answer now outlives the ping that carried it. That was a side
+    # effect of putting the field where §4.5 wanted it — recorded here because it
+    # is now load-bearing and nobody argued for it.
+    #
+    # `location_keep_pings` is DEPLOY-ONLY (not on the runtime allow-list) while
+    # `location_pull_interval_minutes` floors at 5. At 15-minute cadence 200 pings
+    # is ~50 hours; at 5-minute cadence it is ~16 — shorter than the 24-hour
+    # window the diagnostic order queries. Tightening the interval to chase a
+    # fault silently shortens the evidence available to chase it with.
     old = (
         db.execute(
             select(LocationPing)
@@ -287,6 +305,119 @@ def _where_am_i(args: dict, ctx: Context) -> str:
     return out
 
 
+def _attribute_layer(db, *, window_minutes: int = 90) -> str:
+    """Which LAYER of the pull loop is quiet — stated as fact, never as cause.
+
+    THE TOOL NAMES THE LAYER AND STOPS. Not "your Tasker profile is disabled":
+    that is a guess wearing a fact's clothes, and it is the netstatus-stub defect
+    in alert form. The runbooks own the sub-layer; the alert points at the layer
+    so the owner starts in the right place instead of the plausible one.
+
+    THE LAST TWO BRANCHES MUST NOT COLLAPSE. "Not answering" and "answering late"
+    are different machines with different checklists — a phone answering late has
+    a demonstrably working config, because something answered. Keeping them apart
+    is the whole point of the #69 split, and here it reaches the owner's ear
+    rather than the status page.
+    """
+    since = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+    rows = (
+        db.query(LocationRequest)
+        .filter(LocationRequest.trigger == "scheduled",
+                LocationRequest.requested_at >= since)
+        .all()
+    )
+    if not rows:
+        return "JARVIS isn't sending location requests"
+
+    accepted = [r for r in rows if r.relay_accepted]
+    if not accepted:
+        return "requests are going out but the relay is rejecting them"
+
+    answered_late = [r for r in accepted
+                     if r.status == "timeout" and r.responded_at is not None]
+    answered_at_all = [r for r in accepted if r.status == "fulfilled"] + answered_late
+    if not answered_at_all:
+        return "requests are being accepted but the phone isn't answering"
+    if answered_late:
+        return ("the phone is answering late — fixes arrive, but too stale to use")
+    return "requests are going out and being answered"
+
+
+def _check_location_freshness(args: dict, ctx: Context) -> str:
+    """Freshness as prose, for the absence watch to read.
+
+    TWO READERS, TWO JOBS. The LLM judge matches this against the watch's
+    condition string, so the AGE and the ACTIVE-HOURS state must be stated
+    plainly. The alert call carries it VERBATIM as the observation, so the layer
+    attribution has to be in here too — `opening` is written once at watch
+    creation and is static, which makes this the only dynamic channel into the
+    call. If the layer isn't in this string, the alert cannot name it.
+    """
+    from app.runtime_settings import get_effective
+
+    newest = latest(ctx.db)
+    active = in_active_hours(ctx.db)
+    window = "during active hours" if active else "outside active hours"
+
+    if newest is None:
+        return (f"No position fix has ever been recorded ({window}). "
+                f"The phone has not been enrolled yet.")
+
+    age = age_minutes(newest)
+    stale_after = get_effective(ctx.db, "location_stale_after_minutes")
+
+    if age <= stale_after:
+        return (f"Last position fix {int(age)} minutes ago ({window}); "
+                f"fresh (stale after {stale_after} minutes).")
+
+    layer = _attribute_layer(ctx.db)
+    return (f"No position fix has registered in {int(age)} minutes ({window}); "
+            f"stale after {stale_after} minutes. Where it stopped: {layer}.")
+
+
+def _location_ping_log(args: dict, ctx: Context) -> str:
+    """Recent position reports, newest first — the debugging view.
+
+    STATES ITS OWN RETENTION HORIZON when it is showing the full table. Without
+    that, "no older pings" reads as "no older activity", which is a fabricated
+    absence — and the horizon moves with the pull interval, so the reader cannot
+    infer it.
+    """
+    try:
+        n = max(1, min(int(args.get("n") or 20), 100))
+    except (TypeError, ValueError):
+        n = 20
+
+    rows = (
+        ctx.db.query(LocationPing)
+        .order_by(LocationPing.id.desc())
+        .limit(n)
+        .all()
+    )
+    if not rows:
+        return "No position reports recorded yet."
+
+    lines = []
+    for p in rows:
+        age = age_minutes(p)
+        when = (f"{int(age)}m ago" if age < 90 else f"{age / 60:.1f}h ago")
+        bits = [f"{when}: {p.lat:.4f}, {p.lon:.4f}"]
+        if p.accuracy_m:
+            bits.append(f"±{round(p.accuracy_m)}m")
+        if p.label:
+            bits.append(p.label)
+        bits.append(f"[{p.trigger or 'unknown'}]")
+        bits.append("linked" if p.request_id else "unsolicited")
+        lines.append("  " + " · ".join(bits))
+
+    total = ctx.db.query(LocationPing).count()
+    out = f"{len(rows)} most recent position report(s):\n" + "\n".join(lines)
+    if total >= settings.location_keep_pings:
+        out += (f"\n\nShowing from {total} retained pings — anything earlier has been "
+                f"pruned, so an absence above is not evidence of an absence of activity.")
+    return out
+
+
 def register(reg: Registry) -> None:
     reg.register(
         {
@@ -299,4 +430,35 @@ def register(reg: Registry) -> None:
             "input_schema": {"type": "object", "properties": {}},
         },
         _where_am_i,
+    )
+    reg.register(
+        {
+            "name": "check_location_freshness",
+            "description": (
+                "Whether a recent position fix has registered at all, how old the newest "
+                "one is, and — when it is stale — WHICH LAYER of the pull loop stopped "
+                "(server not asking / relay rejecting / phone not answering / phone "
+                "answering late). Reports the layer as fact and does not guess a cause."
+            ),
+            "input_schema": {"type": "object", "properties": {}},
+        },
+        _check_location_freshness,
+    )
+    reg.register(
+        {
+            "name": "location_ping_log",
+            "description": (
+                "Recent position reports from the phone, newest first, with each one's "
+                "age, accuracy, trigger, and whether it answered a request. Use when the "
+                "user asks whether their phone has been reporting, when JARVIS last heard "
+                "from it, or to check a suspected gap — this is the history behind "
+                "where_am_i's single latest fix."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {"n": {"type": "integer",
+                                     "description": "How many to show (default 20, max 100)."}},
+            },
+        },
+        _location_ping_log,
     )

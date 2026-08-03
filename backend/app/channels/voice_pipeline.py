@@ -191,6 +191,9 @@ VOICE_TOOLS_PHASE1: set[str] = {
     "get_traffic",
     "find_place",
     "where_am_i",
+    # "has my phone been reporting?" is a boat question; both are read-only.
+    "check_location_freshness",
+    "location_ping_log",
     # tailnet
     "tailscale_status",
     # watches: she acts while you're not thinking about her
