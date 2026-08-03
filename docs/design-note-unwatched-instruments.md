@@ -2,7 +2,8 @@
 
 **Status:** Named pattern + a working discipline. Written 2026-08-02 after four
 instances in one day, three of which were caught only because a deliberate
-defect was planted and the guard *stayed green*.
+defect was planted and the guard *stayed green*. Extended 2026-08-03 with the
+inverse case (§2.6) and a construction rule for plants (§2.7).
 
 **Prompted by:** the project-management arc (PRs #53–#64), where "break the
 instrument once to confirm it fires" stopped being a ritual and started
@@ -121,6 +122,45 @@ broke a test."
 The origin of the discipline, and the reason this note is about tests rather
 than about systems.
 
+### 2.6 The inverse — a tool reporting failure having changed something (2026-08-03)
+
+§2.4's twin, with the direction flipped. A `git commit` chained after a heredoc
+died on a bash parse error, and **nothing in that command ran** — but an edit
+from the *previous* command had already applied. The shell reported failure; the
+working tree was not in the state that failure implied.
+
+Read at face value, "the command failed" means "nothing happened." It did not.
+Had the retry not begun by checking `git status`, it would have re-applied an
+edit already present.
+
+**Both instances are the same rule, and it cuts both ways:**
+
+> **A tool's claim about itself is not evidence of what it did.**
+> §2.4: reported success, changed nothing.
+> §2.6: reported failure, changed something.
+
+§4.1 already says to verify the patch applied before interpreting the result.
+This is the other half: **verify what landed before re-running.** A failed
+command is not a rollback, and a multi-step command that dies partway is the
+normal case rather than the exotic one.
+
+### 2.7 A plant that cannot redden the branch it imitates (2026-08-03)
+
+Collapsing a four-branch attribution helper to a single constant reddened three
+of the four tests. The fourth stayed green — and the cause was the plant, not the
+code: **the planted value was that branch's correct output**, so its assertion
+passed legitimately.
+
+A single-value plant can never redden the branch whose value it returns.
+Re-planted with a value matching no branch, all four went red.
+
+The green was an artifact of plant choice rather than a coverage gap — but the
+only way to tell those apart was to run the second plant. Hence the construction
+rule now in §4:
+
+> **Plant a value no branch legitimately returns**, or you silently exempt one
+> and read the exemption as coverage.
+
 ---
 
 ## 3. What this class is NOT
@@ -162,7 +202,15 @@ alike. The questions differ, so the notes differ.
 4. **If it stays green, do not move on.** Work the table in §1. It is a finding
    every time.
 
-5. **Prefer plants that are the tempting shortcut.** The best ones are things a
+5. **Plant a value no branch legitimately returns** (§2.7). For a function that
+   selects among outcomes, a plant equal to one of them exempts that one and the
+   green reads as coverage. Pick something no correct path produces.
+
+6. **Verify what landed before re-running** (§2.6). A failed command is not a
+   rollback; a multi-step command that dies partway is the normal case. Check
+   the tree, not the exit code.
+
+7. **Prefer plants that are the tempting shortcut.** The best ones are things a
    future contributor would plausibly *do*: set the baseline when the date is
    first proposed (simpler); use one slot set for every session type (tidier);
    promote the rows and check afterwards (fewer branches). Those are the changes
