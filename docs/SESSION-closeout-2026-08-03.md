@@ -1,4 +1,4 @@
-# SESSION CLOSE-OUT — 2026-08-03 (location freshness arc complete)
+# SESSION CLOSE-OUT — 2026-08-03 (location freshness arc + KEEL V6)
 
 **Opened at:** `d199a10`, migration head `0029_plan_draft_status`, 828 tests.
 **Closed at:** `ae8d5f9` (PR #71), head **unchanged at `0029`**, **886 passed / 2
@@ -7,7 +7,8 @@ skipped**. No migration this arc.
 **Merged:** #69 (`6f0b594`, steps 1–4), #70 (`72d826c`, docs + primary ruling),
 #71 (`ae8d5f9`, steps 5–7).
 
-**The location freshness TDD is complete.**
+**The location freshness TDD is complete.** A KEEL documentation revision (V6)
+also shipped this session — see §7.
 
 ---
 
@@ -48,7 +49,7 @@ landed ahead of its fault map.
   closed; routing recovery through it leaves the watch permanently `done` — silent
   and indistinguishable from "no outage since."
 - **No component-detail path in the brief.** Deferred; trigger is a *second*
-  component wanting it.
+  component wanting it. See also §3 — step 7 turned out to be unreachable anyway.
 
 ---
 
@@ -77,6 +78,16 @@ Three of four branches went red; the fourth passed correctly because the planted
 constant was its right answer. Construction rule: **inject a value no branch can
 legitimately produce.** A partial red across a branch set looks like rigour and
 is a coverage gap.
+
+### Step 7 is unreachable by construction
+
+`briefing_hour` 06:30 against `location_active_start_hour` 07:00 — the brief
+composes thirty minutes *before* active hours open, so `location_freshness` reads
+`ok` every morning and the component line can never render. It is also redundant:
+the capability rollup already carries the signal, driven by
+`location_responsiveness`, which is not hour-suppressed. **Confirm the effective
+values, then record and stop** — building a detail path for a line that cannot
+render is worse than the gap.
 
 ### Evidence discipline
 
@@ -123,16 +134,17 @@ server.
 
 1. **`READ-ORDER-silent-leg-2026-08-03.md`** — `relay_accepted` on the three
    silent rows, clustering, active-hours edges; brief-timing confirmation for §7;
-   two doc amendments. Read-only.
-2. **Phone-side receipt — a TDD if Read 1 says delivery.** Tasker ACKs on
-   *receipt*, separately from the fix, splitting "never arrived" from "arrived,
-   didn't answer." Makes the currently-unobservable leg observable. **Not
-   decided** — recorded so it isn't re-derived.
+   two doc amendments. Read-only. **Issued, not yet reported back.**
+2. **Phone-side receipt — a TDD if (1) says delivery.** Tasker ACKs on *receipt*,
+   separately from the fix, splitting "never arrived" from "arrived, didn't
+   answer." **Blocked on (1):** writing the TDD before the layer is confirmed is
+   the §4.5 failure repeating — a specification resting on an unverified premise.
 3. **Prompt-drift enforcement gap.** The 08-02 audit synced eight agents and left
    two guards — `secretary` and `travel`. The other seven have the §5 checklist
    (process) and nothing that fails (enforcement). The mechanism that produced
    day-one prompts on all nine agents is still running against them.
-4. **KEEL deck + How-It-Works SVG at V3** while the five documents are at V5.
+4. **KEEL How-It-Works SVG** — still at V3, now three revisions behind. The deck
+   caught up this session (§7); the diagram did not.
 
 **Deferred, recorded:** `location_keep_pings` is deploy-only and not on the
 runtime allow-list — at the 5-minute interval floor, 200 pings is ~16 hours,
@@ -149,3 +161,46 @@ shorter than the diagnostic's own 24-hour window.
 - **First watch fire.** The absence watch is armed and can place an outbound call.
   More than one fire inside a single outage is a defect, to be reported before
   anything is touched.
+
+---
+
+## 7. KEEL V6 — the four-document split
+
+The five KEEL documents were revised to V6, and the deck rebuilt from V3 to match.
+
+**The change:** decisions were being written into `docs/README.md`. That worked
+only because we invented the convention and remembered it — nothing in the name
+says decisions live there, and the only way to find them was to open the file on
+the off chance. **A record nobody can find is a record that doesn't exist**, which
+is the exact failure Principle 7 was written to prevent, rebuilt one directory up.
+
+Four named documents now, each answering a distinct question:
+
+| File | Question |
+|---|---|
+| `architecture.md` | What am I looking at? |
+| `decisions.md` | Why is it like this? |
+| `findings.md` | How do we know? |
+| `testplan.md` | What would catch it if it broke? |
+
+**Knock-on changes:**
+
+- Principle 7 retitled: *Write it down where someone would look for it.*
+- `findings.md` gives Principle 8's rule a destination it never had — in V5 the
+  rule existed with no file to land in, which is the same unfindability defect.
+- `testplan.md` carries the §2.7 plant discipline in teachable form: break the
+  guard with a value **no correct version could produce.**
+- Checklist is now **16 steps** (splitting the docs from the decision log).
+  Cross-references updated in the demo script (Steps 11–15).
+- `decisions.md` is **one file**, not a folder — reversing V5. Reason: the Planner
+  reads the repo directly and takes one file in a single pass, where forty
+  separate files is worse for exactly the reader the log was built for. Split
+  trigger named in the doc rather than pre-built for.
+- **Deck rebuilt to V6, 21 → 24 slides.** Slide 7 of V3 said *"everything you
+  build is PRIVATE. Always"* — the direct opposite of Principle 10 and of the V5
+  documents. Anyone presenting from the V3 deck alongside the current handouts
+  would have contradicted themselves on stage. Also fixed: seven principles → ten,
+  the pre-flight `tar.gz` upload ritual → "upload nothing," and the gate demo four
+  moves → five, adding the override attempt (Principle 9).
+
+**Still outstanding:** `KEEL-How-It-Works-Diagram.svg` remains at V3.
