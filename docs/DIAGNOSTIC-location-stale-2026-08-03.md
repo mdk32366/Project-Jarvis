@@ -213,3 +213,68 @@ with its evidence, and — if L4 — **which** of the two phone checklists appli
 why. That last distinction is the entire reason the fault codes are being split;
 today it is a human reading it instead of the health check, but the question is
 the same one.
+
+---
+
+## OUTCOME — read 2026-08-03, after the freshness build deployed
+
+**Layer: L4, phone answering late. The correlator is healthy, and the presenting
+symptom resolved on its own.**
+
+### What the Step 1 rows said
+
+64 requests in 24h, every one `scheduled` with `relay_accepted = true` — L1, L2
+and L3 all clean. `ping_id` populated on `timeout` rows with large latencies:
+the late-answer signature. **47% answered at all, median 9.3 min, range
+0.2–116 min**, against a 120-second timeout. Fulfilment read 16%.
+
+The 8-hour gap between 05:47 and 14:00 UTC is the active-hours boundary
+(22:47 → 07:00 local, window 7–23). Working as designed, not a fault.
+
+### It was not the same fault as 08-01
+
+| | 08-01 | 08-03 |
+|---|---|---|
+| Answered at all | 26% | 47% |
+| Median latency | ~50 min | 9.3 min |
+| Shape | **bimodal** — instant or ~55 min | **continuous** |
+
+The owner confirmed nothing on the phone had changed. So this is not a new
+mechanism: **it is the previous power-management fix working.** Doze gating
+delivery into maintenance windows is what produces two clean clusters; remove
+the gate and you get ordinary variable delivery, which is what a continuous
+spread looks like. Re-running the power checklist would have been chasing a fix
+that had already landed.
+
+### The correlator check — the read that mattered most
+
+A late answer only reaches `close_request` if its nonce resolves, so a broken
+correlator would starve the late/silent distinction **at the source**: every
+request sweeps to `timeout` with nothing to close it, fixes keep landing
+unlinked, and `check_location_responsiveness` reads `not_answering` forever
+while the phone answers every time. That is a **latch**, not a slow signal — and
+left for a day it would have been indistinguishable from genuine intermittency.
+
+**Result: `0 unlinked of 31` solicited pings in 24h.** Every `trigger=pull` ping
+carries a `request_id`. Nothing of the 07-31 class (stray `%` prefix, literal
+`%armessage`). `location_log_nonce` was **not** flipped — there was nothing for
+it to name.
+
+### The finding moved
+
+The presenting question was "why are fixes stale." **They are not** — freshness
+read `ok` with a newest fix 8 minutes old. The stale window resolved on its own
+overnight, which makes the **loop** the real finding and made the linkage read
+more urgent rather than less.
+
+### Standing state at close
+
+- `location_freshness` — **ok**, and it is the lagging indicator.
+- `location_responsiveness` — **down / not_answering**, which on deploy day is an
+  artifact: `responded_at` is NULL on every pre-existing row, so the check falls
+  to the conservative code rather than guessing. Expected to become
+  `answering_late` once ~6 requests cycle with the new write in place.
+- `location_pull_scheduler` — **ok**.
+
+**Nothing owner-actionable on the phone.** The residual is ordinary delivery
+variance, not a lapsed exemption. Worth watching; not obviously worth fixing.
