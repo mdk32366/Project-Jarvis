@@ -105,3 +105,112 @@ def test_the_standalone_judgment_list_is_retired():
     src = (Path(__file__).parent / "test_agents_expansion.py").read_text(encoding="utf-8")
     assert "_JUDGMENT_TOOLS" not in src, \
         "the standalone judgment list still exists alongside the ledger"
+
+
+# ══ The LIVE check — what CI structurally cannot see ════════════════════════
+def _component(db):
+    from app.health import seed_health_topology
+    from app.models import Component
+    seed_health_topology(db)
+    return db.query(Component).filter_by(name="prompt_guidance").one()
+
+
+def _agent_row(db, name, prompt):
+    from app.models import AgentConfig
+    row = db.query(AgentConfig).filter_by(name=name).first()
+    if row is None:
+        row = AgentConfig(name=name, description="", tools="[]")
+        db.add(row)
+    row.system_prompt = prompt
+    db.commit()
+    return row
+
+
+def test_live_check_is_ok_when_every_guided_tool_is_named(db):
+    from app.health_checks import check_prompt_guidance
+    for n, spec in DEFAULT_AGENTS.items():
+        _agent_row(db, n, spec.system)
+
+    r = check_prompt_guidance(db, _component(db))
+    assert r.status == "ok" and r.fault_code is None
+    assert "name their guided tools" in r.detail
+
+
+def test_live_check_catches_a_production_prompt_the_seed_would_hide(db):
+    """THE WHOLE POINT. CI asserts this rule against the SEED, and the seed is
+    not what runs — editing DEFAULT_AGENTS turns CI green while production keeps
+    its old prompt. Here the seed is correct and production is stale, which is
+    precisely the state no CI guard can see."""
+    from app.health_checks import check_prompt_guidance
+    for n, spec in DEFAULT_AGENTS.items():
+        _agent_row(db, n, spec.system)
+    # Production regresses to a prompt with no location guidance.
+    _agent_row(db, "navigator", "You are JARVIS's navigator. Use get_traffic and find_place.")
+
+    r = check_prompt_guidance(db, _component(db))
+    assert r.status == "degraded"
+    assert r.fault_code == "prompt_missing_guidance"
+    assert "navigator" in r.detail
+    assert "location_ping_log" in r.detail, "the detail must name the tools, not just the agent"
+
+
+def test_it_never_reports_down(db):
+    """A prompt missing a line is a capability the owner is under-served on, not
+    a system fault. Same amber ceiling as project_hygiene — asserted with EVERY
+    agent broken, not just one, because a ceiling that only holds in the small
+    case is not a ceiling."""
+    from app.health_checks import check_prompt_guidance
+    for n in DEFAULT_AGENTS:
+        _agent_row(db, n, "gutted")
+
+    r = check_prompt_guidance(db, _component(db))
+    assert r.status == "degraded", "a fully-broken roster escalated past the ceiling"
+
+
+def test_an_unreviewed_agent_is_skipped_not_failed(db):
+    """An agent created through the Admin UI has never been reviewed, so there is
+    no basis to judge it — and inventing one is the fabricated verdict this
+    codebase keeps refusing."""
+    from app.health_checks import check_prompt_guidance
+    for n, spec in DEFAULT_AGENTS.items():
+        _agent_row(db, n, spec.system)
+    _agent_row(db, "some_ui_agent", "no ledger entry exists for me")
+
+    r = check_prompt_guidance(db, _component(db))
+    assert r.status == "ok", "an unreviewed agent was judged against a ledger it isn't in"
+
+
+def test_no_agents_is_unknown_not_ok(db):
+    """No evidence is not health."""
+    from app.health_checks import check_prompt_guidance
+    r = check_prompt_guidance(db, _component(db))
+    assert r.status == "unknown" and r.fault_code == "no_agents"
+
+
+def test_it_judges_naming_and_never_wording(db):
+    """SAFE AGAINST THE TRAVEL PRECEDENT. Production sometimes holds the truer
+    text — travel's "you cannot book" was more honest than the seed's
+    architectural hand-off while booking is disabled. A check comparing CONTENT
+    would have flagged that correct state as drift. This one asks only whether
+    the tool is named, which production can answer without the check having an
+    opinion about whose prose is better."""
+    from app.health_checks import check_prompt_guidance
+    for n, spec in DEFAULT_AGENTS.items():
+        _agent_row(db, n, spec.system)
+    # Completely different wording, every guided tool still named.
+    reworded = "Totally different prose. " + " ".join(guided_tools("travel"))
+    _agent_row(db, "travel", reworded)
+
+    r = check_prompt_guidance(db, _component(db))
+    assert r.status == "ok", "the check objected to wording rather than naming"
+
+
+def test_both_fault_codes_join_a_runbook(db):
+    from app.health import get_runbook, seed_health_topology
+    seed_health_topology(db)
+    for code in ("prompt_missing_guidance", "no_agents"):
+        rb = get_runbook(db, "prompt_guidance", code)
+        assert rb is not None, f"no runbook for prompt_guidance/{code}"
+    fix = get_runbook(db, "prompt_guidance", "prompt_missing_guidance").runbook
+    assert "OWNER ACTION" in fix.upper(), "the runbook must say a deploy will not fix it"
+    assert "DIFF BEFORE WRITING" in fix.upper()

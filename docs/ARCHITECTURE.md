@@ -674,6 +674,19 @@ it arrived.** Fulfilment is still counted from `status` and never from `responde
 structurally: the latter now looks like a reasonable filter and would count every late answer as
 on-time, turning a correctly-red check green with no fix arriving sooner.
 
+**Prompt review ledger + the live check** (`app/prompt_review.py`,
+`check_prompt_guidance`): the ledger records agent × tool × disposition — `guided` (the schema
+leaves a real decision unmade, so the prompt must name it) or `self-describing` — and CI fails when
+a roster grows past what has been reviewed. That catches drift nobody has thought of yet, which a
+curated per-agent list cannot. **A code file rather than a table**, so a review decision cannot be
+reconciled away by a deploy. The **live check** closes the limit CI cannot reach: it reads the
+production agent rows and asserts the same rule, because `seed_agents` never overwrites
+`system_prompt` and so a green CI run says only that the *seed* was reviewed. Amber, never down.
+**It judges naming, not wording** — deliberately, since production sometimes holds the truer prose
+(the travel case), and a content comparison would flag that correct state as drift. Two limits stay
+open by construction: a prompt edited in production but not in seed is invisible, and no guard can
+tell real guidance from a bare list of tool names.
+
 **Prompt drift** (`docs/design-note-prompt-drift.md`): `seed_agents` reconciles tool **rosters** and
 deliberately never overwrites `system_prompt` — so every new tool reaches production and none of the
 prose explaining it does. A 2026-08-02 audit found **all nine agents still on their day-one seed**;

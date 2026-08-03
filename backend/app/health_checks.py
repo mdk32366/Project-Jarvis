@@ -395,6 +395,71 @@ def check_github_writes(db: Session, c: Component) -> CheckResult:
     )
 
 
+def check_prompt_guidance(db: Session, c: Component) -> CheckResult:
+    """*Do the LIVE agent prompts name the tools that need guidance?*
+
+    THIS CLOSES THE ONE LIMIT THE CI GUARD CANNOT REACH. `tests/test_prompt_review.py`
+    asserts the same rule against the SEED — and the seed is not what runs.
+    `seed_agents` reconciles tool rosters but deliberately never overwrites
+    `system_prompt`, so editing `DEFAULT_AGENTS[...].system` turns CI green while
+    production keeps its old prompt. "Green CI does not mean production is
+    correct" was a documented caveat; this makes it something that goes amber
+    when it is not.
+
+    IT CHECKS NAMING, NOT WORDING — and that is what makes it safe to run at all.
+    The travel precedent (`docs/design-note-prompt-drift.md` §3) is that
+    production sometimes holds the *better* text: its "you cannot book" was truer
+    than the seed's architectural hand-off while booking is disabled. A check
+    comparing prompt CONTENT would have flagged that correct state as drift.
+    Asking only "is the tool's name present" is a question production can answer
+    without the check having an opinion about which prose is right.
+
+    Never `down`, capped at `degraded`. A prompt missing a line is a capability
+    the owner is under-served on, not a system fault — the same amber ceiling
+    `project_hygiene` and `github_writes` carry, and stated for the same reason:
+    inflating it teaches the eye to skip the page.
+
+    Agents in the DB with no ledger entry are SKIPPED rather than failed. An
+    agent created through the Admin UI has never been reviewed, so there is no
+    basis to judge it — and inventing one would be the fabricated verdict this
+    codebase keeps refusing.
+    """
+    from app.models import AgentConfig
+    from app.prompt_review import guided_tools
+
+    rows = db.query(AgentConfig).all()
+    if not rows:
+        return CheckResult(c.name, "unknown", "no_agents",
+                           "no agent rows seeded yet", checked_at=_now())
+
+    gaps: list[str] = []
+    reviewed = 0
+    for r in rows:
+        expected = guided_tools(r.name)
+        if not expected:
+            continue                      # unreviewed agent — no basis to judge
+        reviewed += 1
+        missing = [t for t in expected if t not in (r.system_prompt or "")]
+        if missing:
+            gaps.append(f"{r.name} ({', '.join(missing)})")
+
+    if not reviewed:
+        return CheckResult(c.name, "unknown", "no_agents",
+                           f"{len(rows)} agent row(s), none with a review ledger entry",
+                           checked_at=_now())
+
+    if gaps:
+        return CheckResult(
+            c.name, "degraded", "prompt_missing_guidance",
+            f"{len(gaps)} of {reviewed} reviewed agent(s) missing guidance: "
+            + "; ".join(gaps),
+            checked_at=_now())
+
+    return CheckResult(c.name, "ok", None,
+                       f"all {reviewed} reviewed agent(s) name their guided tools",
+                       checked_at=_now())
+
+
 def check_planning_sessions(db: Session, c: Component) -> CheckResult:
     """*Is a planning session rotting?* (TDD #2 §8)
 
@@ -555,6 +620,7 @@ _CHECKS = {
     "health_evaluator": check_health_evaluator,
     "github_writes": check_github_writes,
     "planning_sessions": check_planning_sessions,
+    "prompt_guidance": check_prompt_guidance,
 }
 # components whose up-status is the app itself (postgres/anthropic liveness is
 # really "is the app up") get app_up when they have no more specific check.

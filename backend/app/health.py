@@ -121,6 +121,11 @@ _COMPONENTS: list[dict] = [
     # Bookkeeping, like project_hygiene above and never `down` for the same
     # reason. `internal_subsystem` rather than `external_api`: nothing leaves the
     # box — the failure it watches for is a session started and forgotten.
+    # Reads the LIVE agent rows, which is the whole point: the CI guard asserts
+    # the same rule against the seed, and the seed is not what runs.
+    {"name": "prompt_guidance", "kind": "internal_subsystem", "depends_on": "postgres",
+     "check_type": "prompt_guidance",
+     "description": "Do the live agent prompts name the tools that need guidance?"},
     {"name": "planning_sessions", "kind": "internal_subsystem", "depends_on": "postgres",
      "check_type": "planning_sessions", "check_config": {"stale_days": 7},
      "description": "Is a planning session rotting — open and untouched, or more than one at once?"},
@@ -195,6 +200,24 @@ _REMEDIATIONS: list[dict] = [
     # the DETAIL, where it can name all of them; the runbook covers all four §7
     # starting points. A fault code the evidence cannot cleanly separate is the
     # orphan the join guard exists to catch.
+    {"component": "prompt_guidance", "fault_code": "prompt_missing_guidance", "severity": "info",
+     "runbook": "A live agent prompt does not name a tool the review ledger marked as "
+                "needing guidance, so that agent can call it but will rarely OFFER it — "
+                "reachable-but-unoffered, which is indistinguishable from not having it. "
+                "The detail names the agents and the tools. FIX IS AN OWNER ACTION, not a "
+                "deploy: seed_agents reconciles tool ROSTERS and deliberately never "
+                "overwrites system_prompt, so shipping a seed change will not close this. "
+                "Admin -> Agents -> the named agent -> edit -> System prompt. Extract the "
+                "seed text rather than composing one (app/agents.py DEFAULT_AGENTS), and "
+                "DIFF BEFORE WRITING: production sometimes holds the truer text, and "
+                "syncing wholesale over it has already nearly shipped a regression once "
+                "(docs/design-note-prompt-drift.md §3, the travel case). This check "
+                "deliberately judges NAMING, not wording — it cannot tell you which prose "
+                "is better, only that a tool is unmentioned."},
+    {"component": "prompt_guidance", "fault_code": "no_agents", "severity": "info",
+     "runbook": "No agent rows carry a review-ledger entry yet — expected on a fresh "
+                "system before seed_agents has run, and NOT a fault to chase. `unknown` "
+                "rather than ok, because no evidence is not health."},
     {"component": "planning_sessions", "fault_code": "session_stalled", "severity": "info",
      "runbook": "A planning session is open and going stale, or more than one is open at "
                 "once. Ask JARVIS 'planning status' — it names the slots still missing and "

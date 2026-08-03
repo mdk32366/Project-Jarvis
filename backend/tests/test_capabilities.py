@@ -352,6 +352,7 @@ _EMITTABLE_FAULTS = {
     # to join, so it needs a runbook like any other or the join renders blank.
     "github_writes":           {"write_failed", "no_evidence"},
     "planning_sessions":       {"session_stalled", "no_evidence"},
+    "prompt_guidance":         {"prompt_missing_guidance", "no_agents"},
 }
 
 
