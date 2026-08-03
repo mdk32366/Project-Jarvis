@@ -135,6 +135,28 @@ When adding a tool to an agent's roster:
    consider tying them — a test that reads both is cheap and is the only thing
    that will notice.
 
+### 5.1 One of those four is enforced. Three are not.
+
+Since 2026-08-03 (`app/prompt_review.py`, `tests/test_prompt_review.py`):
+
+| Question | Enforced? |
+|---|---|
+| 1. Does its schema leave a real decision unmade? | **YES — fails CI.** Every rostered tool must carry a disposition in the ledger, and every `guided` one must be named in that agent's prompt. |
+| 2. Can the capability actually be delivered right now? | No. |
+| 3. If not, does the tool say so when called? | No. |
+| 4. Does anything fail if the prompt and the flag drift apart? | No — except `travel`, which has a bespoke tie to `booking_enabled`. |
+
+**Stated plainly because a design note that implies more coverage than exists is
+the same failure it documents.** 2–4 are facts about the *world* — a vendor's
+activation state, what a tool prints at runtime, whether two things that should
+move together actually do — not facts about the repo. CI cannot read them.
+Question 1 is enforceable precisely because it is a repo fact: a roster grew.
+
+**And the enforcement reads the SEED, not production.** Green CI means the seed
+was reviewed, not that the live agent has the prose. The DB write remains an
+owner-authorised act, and a prompt edited in production but not in seed is
+invisible to all three guards — the inverse drift, named as a known gap.
+
 And when auditing prompts: **a difference from the seed is a question, not a
 finding.** Ask which text a user would rather have been told.
 
