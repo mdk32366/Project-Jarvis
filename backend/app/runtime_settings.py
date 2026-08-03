@@ -65,6 +65,10 @@ ALLOWED_KEYS: dict[str, _Key] = {
     "location_pull_enabled":           _Key("bool"),
     "location_pull_interval_minutes":  _Key("int", min=5, max=240),
     "location_pull_timeout_seconds":   _Key("int", min=30, max=900),
+    # Floor 5: anything tighter flags normal jitter as a fault. Ceiling 1440: a
+    # threshold longer than a day cannot fire inside an active-hours window
+    # anyway, so allowing more would only let it be set to something inert.
+    "location_stale_after_minutes":    _Key("int", min=5, max=1440),
     # Diagnostic only, default off. Flipping it on logs the received nonce when one
     # closes no request — the value, not just the fact. Not safety-critical: it gates
     # a log line, never an action. Not a secret either way: the nonce is a correlator

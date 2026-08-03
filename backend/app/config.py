@@ -165,6 +165,21 @@ class Settings(BaseSettings):
     # A fix older than this is treated as UNKNOWN, not trusted. A three-hour-old
     # position will confidently route you from a coffee shop you left at breakfast.
     location_max_age_minutes: int = 30
+    # DIFFERENT QUESTION FROM location_max_age_minutes ABOVE, despite the shared
+    # default of 30 — do not collapse them, they tune in opposite directions for
+    # legitimate reasons.
+    #
+    #   location_max_age_minutes  = "don't trust this fix for NAVIGATION."
+    #                               A consumer-side trust threshold.
+    #                               Answers: should I route from this position?
+    #   location_stale_after_minutes = "the FEED has stopped."
+    #                               A health threshold.
+    #                               Answers: has anything arrived recently at all?
+    #
+    # You might trust a fix for 10 minutes while tolerating a 60-minute gap in the
+    # feed, or the reverse. One is about the freshness of a datum you are about to
+    # act on; the other is about whether the pipe is alive.
+    location_stale_after_minutes: int = 30
     location_keep_pings: int = 200
     # Location-ping freshness is only meaningful during hours the owner expects to
     # be moving — an overnight gap while the phone charges is not a fault. The
