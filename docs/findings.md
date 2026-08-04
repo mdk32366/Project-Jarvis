@@ -46,6 +46,39 @@ another costume.
 **Same family as:** dead runbooks, two lists of one truth, and prompt drift —
 rosters shipping while the prose that governs them does not.
 
+### Amendment — the remedy above was too narrow, and was disproved within minutes
+
+Written at 17:26 and falsified at 17:27. A **second session** working the same
+repo cut another archive one minute after the rule was filed, at a commit that
+predated the PharmFold removal — so it also re-materialised three specs that had
+just been deleted for being in the wrong repo.
+
+**The rule as first written assumed one participant.** It said to put the
+retirement in the document that drives the practice, and that was done — in *this*
+repo's pre-work, which the other session does not read. A rule written into one
+participant's documents does not bind the others. The ritual did not survive
+because it was undocumented; it survived because the documentation reaches only
+whoever happens to open it.
+
+**This is the seed-versus-production gap exactly**, in process rather than code.
+`seed_agents` reconciles rosters and never overwrites `system_prompt`, so editing
+the seed turns CI green while production keeps the old prompt — which is why
+`check_prompt_guidance` had to read the *live* rows rather than the seed. Same
+shape here: the pre-work is the seed, the other session is production, and
+updating the seed changed nothing about what was running.
+
+**Corrected rule.** Filing a retirement is necessary and not sufficient. Ask
+**who is executing the practice**, and confirm the retirement reached *them* —
+not the document, the executor. Where there is more than one actor, a written
+rule is a claim about intent, and only observed behaviour is evidence of effect.
+This finding's own first draft is the demonstration.
+
+**A second hazard surfaced by the same event, recorded here rather than lost.**
+Two sessions sharing one working tree means either can publish the other's work:
+the other session's push carried commits I had deliberately not pushed to a
+**public** repo. Shared-tree concurrency has no guard in this project, and this
+note is not one.
+
 ---
 
 ## F-001 — A test count is only evidence if it comes from structured output at a named commit
