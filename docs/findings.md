@@ -9,6 +9,76 @@ what was measured, and what changes as a result.
 
 ---
 
+## F-003 — The audit trail is structurally incapable of seeing a gate that never resolves
+
+**2026-08-04** · found by asking why two project creations never happened.
+
+**Believed:** the confirmation gate was working on every channel, and
+`actions_audit` would show it if it were not.
+
+**Measured:** every gated tool — `send_email`, `create_event` with attendees,
+`book_flight`, `create_project_from_idea`, `create_project_repo` — had been
+**totally unreachable by email**, for the entire life of the channel. Eleven
+confirmations across two project creations, none resolved.
+
+Two independent causes, each sufficient on its own:
+
+- **Quoted reply text.** `email_pipeline._body_text` returns the whole
+  `text/plain` part, and no quoted-text stripping existed anywhere in the
+  codebase — verified by grep, not by memory. So a Gmail reply saying "Confirm."
+  reached `orchestrator.run()` as the word plus the entire quoted thread.
+  `_bare_match` requires **every** token to be affirmative-or-filler; a quote
+  block is hundreds of content words, so it returned `False` unconditionally.
+  The turn fell through to normal handling, the model read the quoted request as
+  a fresh one, called the gated tool again, and raised a **new** confirmation.
+  That is the loop.
+- **A 15-minute TTL against email latency.** Observed reply gaps that morning
+  were **76, 32 and 45 minutes**. Every one exceeded
+  `pending_confirmation_ttl_seconds = 900`. Fixing the quoting alone would still
+  have expired all four confirmations.
+
+**The quoting failure is the previous fix over-correcting.** `_bare_match`'s own
+docstring records that the prior check fired on anything *starting* with "yes",
+which sent a 36-hour-old email. The correction moved from over-permissive to
+unsatisfiable — on the one channel that quotes. Both failures are the same defect
+wearing opposite signs: the boundary between *a confirmation* and *a new
+instruction* was never separated from the transport's framing. The fix therefore
+strips the quote at the channel boundary and leaves `_bare_match` alone; the
+input was wrong, not the test.
+
+**Why nothing saw it.** This outage produced a stream of healthy-looking
+`actions_audit` rows for its entire life. Refusals and re-confirmations are
+*deliberately* in the ok-family — a refused booking is a healthy system — so an
+audit-derived check is **structurally incapable** of seeing a gate that never
+resolves. Every row it emitted was a good row. There was nothing to alert on.
+
+**Same family as:** the relay body, calendar liveness, and the UI auth latch.
+All four share one shape — **a failure that emits fluent, well-formed, plausible
+output.** Health checks catch components that stop; nothing here catches the ones
+that keep running and keep looking right. F-002's *"a dead step that still
+executes cleanly generates no evidence of its own deadness"* is the same
+sentence about a ritual instead of a gate.
+
+**Rule.** Where the healthy and the failed state emit the same evidence, the
+detector cannot be built from that evidence. It has to key on a **countable fact
+the failure produces and success does not**.
+
+**The trigger is named here rather than acted on.** No detection was built in
+this change, deliberately — a bespoke health check for one latch is how a panel
+becomes something the eye skips. The signal is: **a confirmation raised and
+re-raised on the same `thread_key` more than twice without resolution.** That is
+countable, needs no judgement, cannot be confabulated, and would have tripped on
+day one of this outage. It belongs in the defect journal
+(`TDD-defect-journal.md` §10) as its first automatic detector, not as a
+component.
+
+**What changed:** `channels/email_pipeline.py::strip_quoted_text` at the single
+`orchestrate()` call site, and a per-channel TTL behind
+`orchestrator._ttl(db, channel)` with email at four hours. `ARCHITECTURE.md` §3
+and §4 updated in the same PR.
+
+---
+
 ## F-002 — A decision that doesn't reach the ritual it governs does not take effect
 
 **2026-08-03** · found by asking why an archive was being cut at all.

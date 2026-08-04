@@ -98,6 +98,17 @@ class Settings(BaseSettings):
     # it's stale and can no longer be confirmed — a later "yes" must never fire a
     # buffered action from hours ago (audit: a 36h-old email was sent this way).
     pending_confirmation_ttl_seconds: int = 900   # 15 minutes
+    # ...but one constant cannot span three channels whose natural latencies differ
+    # by orders of magnitude. A call is bounded in seconds, a chat turn in minutes,
+    # an email in HOURS — observed reply gaps on 2026-08-04 were 76, 32 and 45
+    # minutes, every one of them past the 900s window, so every email confirmation
+    # expired unresolved. `orchestrator._VOCAB` already recognises that channels
+    # differ and narrows the vocabulary for voice; the TTL never got the same
+    # treatment. Read through `orchestrator._ttl(db, channel)`, never directly:
+    # this is the DEFAULT source, and the runtime overlay wins.
+    # Four hours is bounded by the working day rather than the session — long
+    # enough for a reply from bed, short enough that yesterday's readback is dead.
+    email_confirmation_ttl_seconds: int = 14400   # 4 hours
     # Master switch for real-money trading. Kept OFF until the dashboard has
     # proper auth/security. When False, place_stock_order is a hard-disabled stub.
     enable_trading: bool = False

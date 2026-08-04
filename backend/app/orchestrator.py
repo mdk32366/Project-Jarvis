@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import totp
+from app import runtime_settings, totp
 from app.config import settings
 from app.handlers.base import Context, Registry, build_registry
 from app.jobs import enqueue
@@ -58,6 +58,38 @@ _VOCAB = {
 
 def _vocab(channel: str) -> tuple[set[str], set[str]]:
     return _VOCAB.get(channel, (_AFFIRMATIVE, _NEGATIVE))
+
+
+# Channel-specific confirmation TTL, for the same reason `_VOCAB` exists: the
+# channels are not alike. `pending_confirmation_ttl_seconds` (900) is correct for
+# voice (a call is bounded by CallSid), for web chat (a live session) and for SMS
+# (live-ish, and a stale SMS "yes" is a real hazard). It is wrong for email, whose
+# natural reply latency is hours — on 2026-08-04 every emailed confirmation
+# expired unresolved at gaps of 76, 32 and 45 minutes.
+#
+# Only channels that DIFFER are named here; everything else takes the default, so
+# widening one transport never quietly widens the others. The TTL is a safety
+# control — it exists so a stale "yes" cannot fire an hours-old buffered action —
+# and raising it globally to fix one channel would trade a real guarantee for a
+# transport bug.
+_TTL_KEYS = {"email": "email_confirmation_ttl_seconds"}
+
+
+def _ttl(db: Session, channel: str) -> int:
+    """Seconds a pending confirmation on `channel` stays confirmable.
+
+    THE single source of the rule. Both the age check in `_resolve_pending` and the
+    cutoff in `_expire_stale_pending` read through here — they are two computations
+    of one rule and will drift the moment only one of them is changed.
+    """
+    key = _TTL_KEYS.get(channel)
+    if key is None:
+        return settings.pending_confirmation_ttl_seconds
+    try:
+        return int(runtime_settings.get_effective(db, key))
+    except Exception:  # noqa: BLE001 — a settings read must never break the gate
+        log.warning("could not read %s; using the default TTL", key, exc_info=True)
+        return settings.pending_confirmation_ttl_seconds
 
 _INSTRUCTIONS = """
 ## Operating instructions
@@ -218,8 +250,8 @@ def _resolve_pending(db: Session, registry: Registry, ctx: Context, user_text: s
             if created.tzinfo is None:
                 created = created.replace(tzinfo=timezone.utc)
             age = (datetime.now(timezone.utc) - created).total_seconds()
-            if age > settings.pending_confirmation_ttl_seconds:
-                _expire_stale_pending(db, ctx.thread_key)
+            if age > _ttl(db, ctx.channel):
+                _expire_stale_pending(db, ctx.thread_key, ctx.channel)
                 log.info("ignoring stale pending %s (%.0fs old) for thread %s",
                          pending.tool, age, ctx.thread_key)
                 return None
@@ -300,11 +332,16 @@ def _cancel_batch(db: Session, ctx: Context, pending: PendingConfirmation) -> st
     return "Cancelled all pending actions:\n" + "\n".join(f"- {r.summary}" for r in members)
 
 
-def _expire_stale_pending(db: Session, thread_key: str) -> int:
+def _expire_stale_pending(db: Session, thread_key: str, channel: str) -> int:
     """Mark every over-age un-resolved pending on this thread as 'expired', so
-    stale buffered actions stop lingering as landmines a future 'yes' could fire."""
-    cutoff = datetime.now(timezone.utc) - timedelta(
-        seconds=settings.pending_confirmation_ttl_seconds)
+    stale buffered actions stop lingering as landmines a future 'yes' could fire.
+
+    `channel` is passed, never inferred from the thread key: a thread key is an
+    address or a phone number, and deriving the transport from its shape is exactly
+    the proxy-instead-of-the-fact mistake. The cutoff reads `_ttl` so this and the
+    age check in `_resolve_pending` cannot disagree about what "stale" means.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=_ttl(db, channel))
     rows = (
         db.execute(
             select(PendingConfirmation)
