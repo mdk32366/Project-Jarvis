@@ -1,29 +1,47 @@
 # SESSION CLOSE-OUT — 2026-08-03
 
-**Opened at:** `d199a10` · head `0029_plan_draft_status` · 828 tests
+**Opened at:** `d199a10` · head `0029_plan_draft_status` · 828 tests *(unverified —
+never re-measured, but consistent; see below)*
 **Closed at:** `694ba29` · head **`0029`, unchanged** · **no migration all day** ·
-**877 passed / 2 skipped, 879 collected**
+**877 passed / 2 skipped, 879 collected** — measured via `--junitxml`
 
 **Eight PRs:** #69 `6f0b594`, #70 `72d826c`, #71 `ae8d5f9`, #72 `c9033f7`,
 #73 `ea7687f`, #74 `943a199`, #75 `f832d63`, #76 `0317482`.
 
-> **Correction — the #71 count was wrong, not merely truncated.** This document
-> first reported "886 passed / 2 skipped" at `ae8d5f9` and warned the number was
-> cut off in reporting. Confirmed by measurement: the close is **877 passed / 2
-> skipped**, from a `--junitxml` run rather than a truncated pipe.
+> ### Correction — today's suite counts were systematically overstated
 >
-> That is fewer tests than #71 claimed while HEAD carries **14 more test
-> functions** (847 → 861). Tests cannot rise while collection falls, so 886 was
-> never real; retiring `_JUDGMENT_TOOLS` in #73 removed only 2 plain tests. The
-> parametrisation overhead is ~18 collected cases above raw function count and
-> holds at both the open (810 → 828) and the close (861 → 879); the #71 figure
-> needed +41 and was the only one out of line.
+> Not one bad number. **Every count reported after the open was impossible.**
 >
-> **The lesson is §5's, turned on this document.** A reported artefact is not
-> evidence. 886 was carried forward across three PRs because it was written down,
-> and the caveat that flagged it named the wrong cause — inflation, not
-> truncation. The `#71` figure is left uncorrected above because it was never
-> re-measured at that revision; only the close was.
+> | commit | | test fns | max collectable | claimed passed | |
+> |---|---|---:|---:|---:|---|
+> | `d199a10` | open | 810 | **828** | 828 | consistent |
+> | `ae8d5f9` | #71 | 847 | 865 | **886** | impossible by 23 |
+> | `943a199` | #74 | 852 | 870 | **892** | impossible by 24 |
+> | `0317482` | HEAD | 861 | 879 | **877** | **measured** |
+>
+> Parametrisation adds a stable +18 collected cases over raw function count,
+> pinned at HEAD (861 → 879 measured) and corroborated at the open, where 810
+> functions predict exactly the 828 claimed.
+>
+> **886 and 892 were not inflated — they were impossible.** Each exceeds the total
+> number of tests that *existed* at its commit, so no run could have produced
+> them. That is a stronger conclusion than mis-transcription, and it was available
+> from the day's own data the whole time.
+>
+> **#71 actually passed ~863, not 886. #74 passed ~868, not 892.** Both marked
+> *unverified*: they are predicted from the +18 model, not re-run at those
+> revisions. The open's 828 is left as claimed for the same reason — an inferred
+> number in a resumption document is exactly what this correction exists to stop.
+>
+> **The pattern is the finding, not the arithmetic.** Two separate PRs, reported
+> from separate sessions, both overstating by ~23. Every "suite green at N" line
+> written today carried the same defect, and this document was treating those
+> lines as sourced artefacts. Recorded in `findings.md`.
+>
+> **A first attempt at this correction repeated the defect it was correcting.** It
+> put the overstatement at "~9" by subtracting a *claimed* figure at one commit
+> from a *measured* figure at a different commit with fourteen more tests in it —
+> two comparisons folded into one number. Caught in review, not by the author.
 
 Four arcs closed and one documentation set revised:
 
@@ -227,13 +245,28 @@ Four named documents: `architecture.md`, `decisions.md`, `findings.md`,
 
 ## 7. Outstanding
 
-**Open questions (mine, unanswered):**
+**Open questions — answered:**
 
-- **Is the naming check one shared function or two implementations?** The CI guard
-  and `prompt_guidance` assert the same rule against different sources. They read
-  the same ledger, which was the requirement. If the *check itself* is implemented
-  twice they will drift, and the drift will be invisible because both will be green
-  about different things.
+- ~~*Is the naming check one shared function or two implementations?*~~
+  **Two implementations, and it is the worse answer.**
+
+  ```
+  tests/test_prompt_review.py:48   missing = [t for t in guided_tools(agent) if t not in spec.system]
+  app/health_checks.py:452         missing = [t for t in expected if t not in (r.system_prompt or "")]
+  ```
+
+  They read the same ledger, which was the requirement — but the *comparison* is
+  written twice. Change one to case-insensitive or word-boundary matching and the
+  other will not follow, and both stay green about different things. That is the
+  dead-runbook shape (two records of one truth) inside the pair of guards built to
+  catch drift.
+
+  **Order for next session — small.** Extract the comparison into one function in
+  `prompt_review.py`; have the CI guard and `check_prompt_guidance` both call it.
+  **Then plant it: change the shared function and confirm BOTH the CI guard and the
+  `prompt_guidance` component redden. If only one goes red, they were not actually
+  sharing it** — which is the whole property being bought, and the plant is the only
+  thing that proves it.
 
 **Requires a write:**
 
@@ -243,8 +276,9 @@ Four named documents: `architecture.md`, `decisions.md`, `findings.md`,
 - **#76 plant gap.** "Skip is named" has no plant that reaches it. Suppress the
   skip list from the detail line and confirm the test reddens.
 - ~~**Suite count** — truncated in the final report; confirm with a run.~~
-  **Done.** 877 passed / 2 skipped, 879 collected, via `--junitxml`. The number
-  was inflated, not truncated — see the correction in the header.
+  **Done, and it found more than a number.** 877 passed / 2 skipped, 879 collected
+  at `694ba29` via `--junitxml`. Both #71's 886 and #74's 892 were *impossible*,
+  not truncated — see the correction in the header.
 
 **Requires the owner:**
 
