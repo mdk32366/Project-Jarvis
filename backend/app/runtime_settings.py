@@ -87,6 +87,15 @@ ALLOWED_KEYS: dict[str, _Key] = {
     # clearing the override (empty value) correctly returns to the autopay
     # default of None, which is how you say "this tenancy is not prepaid".
     "fly_balance_alert_threshold":     _Key("int", min=1, max=100000),
+    # How long an emailed readback stays confirmable. Behavioural, not a secret,
+    # and live-tunable because the right window is a property of the owner's inbox
+    # habits, not of the code. NOT safety-critical in the gate sense — it only ever
+    # NARROWS what a later "confirm" can fire, and the floor keeps it from being
+    # widened into a stale-yes hazard. Floor 300: anything tighter is the 15-minute
+    # window that produced the 2026-08-04 latch. Ceiling 86400: a confirmation
+    # older than a day is not answering something just proposed, which is the whole
+    # premise of the TTL.
+    "email_confirmation_ttl_seconds":  _Key("int", min=300, max=86400),
 }
 
 _TRUE = {"1", "true", "yes", "on", "t"}

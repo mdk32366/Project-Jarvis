@@ -120,6 +120,20 @@ Channel quirks that matter:
 - **Email** has one deliberate hole: airline confirmation emails from non-whitelisted
   senders are never orchestrated, but *are* parsed into the `trips` table
   (`travel.record_trip_from_email`).
+- **Email is the only channel that quotes**, so inbound bodies are passed through
+  `channels/email_pipeline.py::strip_quoted_text` — a pure function, no DB and no network,
+  the same shape as `secretscan` — before they reach `orchestrate()`. It truncates at the
+  first quote marker (Gmail/Apple attribution incl. hard-wrapped, bare `>` levels, Outlook
+  `-----Original Message-----` / rule / header block, and the `-- ` signature delimiter) and
+  keeps what is above it. Without it a reply saying "Confirm." carries the whole thread, and
+  `orchestrator._bare_match` — which requires *every* token to be affirmative-or-filler —
+  fails on every reply, so no emailed confirmation can ever resolve (F-003).
+  Two rules make it safe rather than merely effective: an **interleaved** reply, where the
+  owner typed *below* a quote level, is left intact so it falls through to normal handling as
+  the new instruction it is; and if stripping would yield **nothing**, the original body is
+  returned — a stripper that can silently erase a message is worse than one that
+  under-strips. It is applied at the single `orchestrate()` call site and **not** inside
+  `_body_text`, because the trip-capture path above parses the full airline email.
 - **SMS** replies also mirror to the owner's email when `sms_email_copy` is on.
 
 ---
@@ -166,9 +180,24 @@ Everything else executes immediately — the prompt explicitly forbids preemptiv
 outright. A misconfigured agent roster fails closed. Voice confirmation vocabulary is
 narrowed — "ok"/"yeah" never trigger a gated action; "confirm"/"affirmative"/"execute" do.
 
-**Confirmation hygiene & batching.** A pending confirmation expires after
-`pending_confirmation_ttl_seconds` (a stale "yes" can't fire an hours-old action), and only a
-*bare* affirmative confirms — "yes, and also do X" is a new request, not a confirmation.
+**Confirmation hygiene & batching.** A pending confirmation expires after a TTL (a stale
+"yes" can't fire an hours-old action), and only a *bare* affirmative confirms — "yes, and
+also do X" is a new request, not a confirmation.
+
+**The TTL is per-channel**, for the same reason `_VOCAB` is: the transports are not alike.
+`orchestrator._ttl(db, channel)` is the single source of the rule — **both** the age check in
+`_resolve_pending` and the cutoff in `_expire_stale_pending` read through it, so the two
+cannot drift into disagreeing about what "stale" means, and `_expire_stale_pending` is passed
+the channel explicitly rather than inferring it from the thread key.
+
+| Channel | TTL | Why |
+|---|---|---|
+| `voice` / `web` / `sms` | `pending_confirmation_ttl_seconds` (900) | A call is bounded by CallSid; chat is a live session; a stale SMS "yes" is a real hazard. Unchanged. |
+| `email` | `email_confirmation_ttl_seconds` (14400 = 4h), runtime-tunable, bounds 300–86400 | Mail latency is hours, not minutes — observed reply gaps of 76/32/45 min all died against 900s (F-003). Bounded by the working day rather than the session: long enough for a reply from bed, short enough that yesterday's readback is dead. |
+
+Only channels that *differ* are named in `_TTL_KEYS`; everything else takes the default, so
+widening one transport can never quietly widen the others. The TTL is a safety control, which
+is why it was not simply raised globally.
 
 A compound "do this, that, and the other" is handled in one turn in **two passes**: pass 1
 executes every ungated action (tasks, docs, sheets) and any outright refusals; pass 2 buffers
@@ -877,7 +906,7 @@ Public `/`, `/privacy`, `/terms` are carrier-compliance pages.
 All env-driven via pydantic `Settings` (`backend/app/config.py`):
 
 - **Models**: `jarvis_model=claude-sonnet-5` (orchestrator + agents), `jarvis_router_model=claude-haiku-4-5` (reflector, distiller, watch judge)
-- **Gate**: `confirm_threshold_usd=50`, `booking_code_ttl_seconds=300`, `booking_code_max_attempts=3`, `max_booking_usd=3000`
+- **Gate**: `confirm_threshold_usd=50`, `booking_code_ttl_seconds=300`, `booking_code_max_attempts=3`, `max_booking_usd=3000`, `pending_confirmation_ttl_seconds=900` (voice/web/sms), `email_confirmation_ttl_seconds=14400` (email only, runtime-tunable — read via `orchestrator._ttl`, never directly)
 - **Kill switches**: `enable_trading=False`, `booking_enabled=False`, `voice_enabled`, `outbound_calls_enabled`, `briefing_enabled`, `enable_reflector`, `episodes_enabled`
 - **Identity**: `OWNER_*` block — Tier-1 ground truth and Duffel passenger data
 - **Whitelists**: `ALLOWED_SENDERS`, `ALLOWED_NUMBERS` — the only identities that may command JARVIS
