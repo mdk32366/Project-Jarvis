@@ -9,6 +9,45 @@ what was measured, and what changes as a result.
 
 ---
 
+## F-002 — A decision that doesn't reach the ritual it governs does not take effect
+
+**2026-08-03** · found by asking why an archive was being cut at all.
+
+**Believed:** handing the Planner a repo archive was the grounding step.
+
+**Measured:** it was decided **2026-07-17** — seventeen days earlier — that there
+would be no archive. `design-note-project-code-sync.md` is titled *"decision: no
+archive"* and says the Project syncs source straight from GitHub, so a zip is
+opaque to the architect and gives it *less* than the live sync.
+
+Three archives were cut on 2026-08-03 anyway, and two sessions' worth of pre-work
+carried the step forward.
+
+**Why it survived.** The decision was written where decisions go and was never
+wrong. But it was recorded as a *statement* and the ritual was a *habit*, and
+nothing connected them. The 08-01 pre-work actively instructed the opposite —
+*"ground in a fresh `git archive HEAD` tarball"* — and no guard existed to notice
+that an instruction contradicted a filed decision, because instructions and
+decisions live in different documents and only humans read both.
+
+**The tell was cheap and nobody asked for it.** One question — *is the repo
+connected as a Project source?* — settled seventeen days of wasted steps. It went
+unasked because the ritual was working: the zips were produced, they were valid,
+nothing failed. **A dead step that still executes cleanly generates no evidence of
+its own deadness.**
+
+**Rule.** When a decision retires a practice, the retirement goes into the
+document that *drives the practice*, not only into the note that records the
+reasoning. A design note is where you justify a rule; the runbook, pre-work, or
+checklist is where the rule takes effect. Recording it in only the first is the
+`docs/README.md` decision-log failure and the `_JUDGMENT_TOOLS` duplication in
+another costume.
+
+**Same family as:** dead runbooks, two lists of one truth, and prompt drift —
+rosters shipping while the prose that governs them does not.
+
+---
+
 ## F-001 — A test count is only evidence if it comes from structured output at a named commit
 
 **2026-08-03** · found while confirming a figure a close-out had flagged as

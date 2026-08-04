@@ -97,6 +97,17 @@ motivating question**. Enter deliberately or not at all.
 
 ## Standing reminders
 
+- **Do not cut, upload, or ask for a repo archive.** The claude.ai Project syncs
+  source directly from GitHub, so the Planner already reads `backend/`, `ui/` and
+  `docs/` at `main`. Decided **2026-07-17** in
+  `design-note-project-code-sync.md`, whose title is literally *"decision: no
+  archive"* — a zip is opaque to the Project and gives the architect **less** than
+  the live sync. Grounding means "read the repo," not "receive a snapshot."
+
+  *This line exists because the note alone was not enough: archives were still
+  being cut on 2026-08-03, seventeen days after the decision. See `findings.md`
+  F-002.*
+
 - **Step 0 of every build order:** `alembic heads`. Draft migration numbers go
   stale.
 - **Plants:** inject a value **no branch can legitimately produce** (§2.7), and
