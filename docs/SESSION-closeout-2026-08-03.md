@@ -1,13 +1,29 @@
 # SESSION CLOSE-OUT — 2026-08-03
 
 **Opened at:** `d199a10` · head `0029_plan_draft_status` · 828 tests
-**Closed at:** head **`0029`, unchanged** · **no migration all day**
+**Closed at:** `694ba29` · head **`0029`, unchanged** · **no migration all day** ·
+**877 passed / 2 skipped, 879 collected**
 
 **Eight PRs:** #69 `6f0b594`, #70 `72d826c`, #71 `ae8d5f9`, #72 `c9033f7`,
-#73 `ea7687f`, #74 `943a199`, #75, #76.
+#73 `ea7687f`, #74 `943a199`, #75 `f832d63`, #76 `0317482`.
 
-*Suite count at close was truncated in the final report — confirm with a run before
-citing it. Everything else here is from a reported artefact.*
+> **Correction — the #71 count was wrong, not merely truncated.** This document
+> first reported "886 passed / 2 skipped" at `ae8d5f9` and warned the number was
+> cut off in reporting. Confirmed by measurement: the close is **877 passed / 2
+> skipped**, from a `--junitxml` run rather than a truncated pipe.
+>
+> That is fewer tests than #71 claimed while HEAD carries **14 more test
+> functions** (847 → 861). Tests cannot rise while collection falls, so 886 was
+> never real; retiring `_JUDGMENT_TOOLS` in #73 removed only 2 plain tests. The
+> parametrisation overhead is ~18 collected cases above raw function count and
+> holds at both the open (810 → 828) and the close (861 → 879); the #71 figure
+> needed +41 and was the only one out of line.
+>
+> **The lesson is §5's, turned on this document.** A reported artefact is not
+> evidence. 886 was carried forward across three PRs because it was written down,
+> and the caveat that flagged it named the wrong cause — inflation, not
+> truncation. The `#71` figure is left uncorrected above because it was never
+> re-measured at that revision; only the close was.
 
 Four arcs closed and one documentation set revised:
 
@@ -226,7 +242,9 @@ Four named documents: `architecture.md`, `decisions.md`, `findings.md`,
   applied.
 - **#76 plant gap.** "Skip is named" has no plant that reaches it. Suppress the
   skip list from the detail line and confirm the test reddens.
-- **Suite count** — truncated in the final report; confirm with a run.
+- ~~**Suite count** — truncated in the final report; confirm with a run.~~
+  **Done.** 877 passed / 2 skipped, 879 collected, via `--junitxml`. The number
+  was inflated, not truncated — see the correction in the header.
 
 **Requires the owner:**
 
