@@ -6,6 +6,8 @@ tests prove a sub-agent CANNOT execute them, and that they never leak into the
 sub-agent registry.
 """
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from app.handlers.base import Context, ToolFault, build_registry
@@ -286,6 +288,16 @@ def _duffel_offer(amount, dep, arr, orig="SEA", dest="SFO", stops=0, carrier="Al
     return {"total_amount": amount, "total_currency": "USD", "slices": [{"segments": segs}]}
 
 
+def _future_flight_date(days_ahead=30):
+    """ISO date strictly after UTC today so `_resolve_flight_date` cannot refuse it.
+
+    Production compares against `datetime.now(timezone.utc).date()`, not local
+    `date.today()`. Offsetting from that same clock keeps these tests from
+    rotting on calendar rollover or timezone mismatch.
+    """
+    return (datetime.now(timezone.utc).date() + timedelta(days=days_ahead)).isoformat()
+
+
 def test_search_flights_returns_cheapest_first(ctx, monkeypatch):
     import httpx
     from app.config import settings
@@ -293,10 +305,11 @@ def test_search_flights_returns_cheapest_first(ctx, monkeypatch):
 
     monkeypatch.setattr(settings, "duffel_api_key", "duffel_test_x")
 
+    day = _future_flight_date(30)
     offers = [
-        _duffel_offer("312.40", "2026-08-04T09:15:00", "2026-08-04T11:30:00"),
-        _duffel_offer("189.00", "2026-08-04T06:00:00", "2026-08-04T08:20:00"),
-        _duffel_offer("245.99", "2026-08-04T14:00:00", "2026-08-04T18:45:00", stops=1),
+        _duffel_offer("312.40", f"{day}T09:15:00", f"{day}T11:30:00"),
+        _duffel_offer("189.00", f"{day}T06:00:00", f"{day}T08:20:00"),
+        _duffel_offer("245.99", f"{day}T14:00:00", f"{day}T18:45:00", stops=1),
     ]
 
     class R:
@@ -312,7 +325,7 @@ def test_search_flights_returns_cheapest_first(ctx, monkeypatch):
     monkeypatch.setattr(httpx, "Client", C)
 
     out = travel._search_flights(
-        {"origin": "SEA", "destination": "SFO", "date": "2026-08-04"}, ctx)
+        {"origin": "SEA", "destination": "SFO", "date": day}, ctx)
 
     assert "3 options" in out
     assert out.index("$189") < out.index("$246")     # cheapest first
@@ -344,15 +357,17 @@ def test_search_flights_supports_open_jaw(ctx, monkeypatch):
 
     monkeypatch.setattr(httpx, "Client", C)
 
+    outbound = _future_flight_date(30)
+    inbound = _future_flight_date(35)
     travel._search_flights({
-        "origin": "SEA", "destination": "SFO", "date": "2026-08-04",
-        "return_date": "2026-08-09", "return_from": "SMF", "return_to": "SEA",
+        "origin": "SEA", "destination": "SFO", "date": outbound,
+        "return_date": inbound, "return_from": "SMF", "return_to": "SEA",
     }, ctx)
 
     slices = captured["data"]["slices"]
     assert len(slices) == 2
-    assert slices[0] == {"origin": "SEA", "destination": "SFO", "departure_date": "2026-08-04"}
-    assert slices[1] == {"origin": "SMF", "destination": "SEA", "departure_date": "2026-08-09"}
+    assert slices[0] == {"origin": "SEA", "destination": "SFO", "departure_date": outbound}
+    assert slices[1] == {"origin": "SMF", "destination": "SEA", "departure_date": inbound}
 
 
 def test_search_flights_reports_a_bad_key_plainly(ctx, monkeypatch):
@@ -377,7 +392,7 @@ def test_search_flights_reports_a_bad_key_plainly(ctx, monkeypatch):
     # duffel component's health can go red — the message still names the fix.
     with pytest.raises(ToolFault, match="DUFFEL_API_KEY"):
         travel._search_flights(
-            {"origin": "SEA", "destination": "SFO", "date": "2026-08-04"}, ctx)
+            {"origin": "SEA", "destination": "SFO", "date": _future_flight_date()}, ctx)
 
 
 def test_search_flights_never_crashes_the_loop(ctx, monkeypatch):
@@ -399,7 +414,7 @@ def test_search_flights_never_crashes_the_loop(ctx, monkeypatch):
     reg = build_registry()  # sub-agent registry — where search_flights lives
     result, status = reg.run_tool(
         "search_flights",
-        {"origin": "SEA", "destination": "SFO", "date": "2026-08-04"}, ctx)
+        {"origin": "SEA", "destination": "SFO", "date": _future_flight_date()}, ctx)
     assert status == "error"
     assert "couldn't reach" in result.lower()
 
