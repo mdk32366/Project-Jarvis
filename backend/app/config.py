@@ -201,7 +201,7 @@ class Settings(BaseSettings):
     # makes the relay answer NotRegistered to every send (silently, behind a 200).
     autoremote_key: str = ""
     location_pull_enabled: bool = True
-    location_pull_interval_minutes: int = 15
+    location_pull_interval_minutes: int = 10
     # A request unanswered for this long is swept to `timeout`. Without the sweep,
     # `pending` rows accumulate and the responsiveness check can never read false.
     location_pull_timeout_seconds: int = 120
